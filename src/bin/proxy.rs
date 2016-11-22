@@ -42,8 +42,8 @@ fn main() {
         Ok(())
     });
 
-    // let handle = core.handle();
-    // handle.spawn(srv.map_err(|e| panic!("srv error: {}", e)));
+    // you can run multiple core.run() in multiple threads, and use SO_REUSEPORT
+    // tokio does not currently support thread pool executors but you can thread.spawn N times.
     core.run(srv).unwrap();
 }
 
@@ -63,7 +63,8 @@ impl Http10Request {
             for i in 1..buf.len() {
                 if buf[i] == ('\r' as u8) && buf[i + 1] == ('\n' as u8) &&
                    buf[i + 2] == ('\r' as u8) && buf[i + 3] == ('\n' as u8) {
-                    result = Some(i);
+                    // Return the position in the stream that is the end of the frame.
+                    result = Some(i + 3);
                     break;
                 }
             }
@@ -80,6 +81,9 @@ impl Codec for Http10Request {
 
     fn decode(&mut self, buf: &mut EasyBuf) -> Result<Option<EasyBuf>, io::Error> {
         println!("Http10Request::decode");
+        println!("buf: {:?}", buf.as_slice());
+        println!("buf.len(): {:?}", buf.len());
+        // TODO: find a nicer, more functional way of do
         // find where in the document there are two newlines
         match Http10Request::find_two_newlines(buf.as_slice()) {
             Some(i) => {
@@ -101,7 +105,7 @@ impl Codec for Http10Request {
     }
 
     fn encode(&mut self, msg: EasyBuf, into: &mut Vec<u8>) {
-        println!("Http10Request::encode to body {:?}", msg.as_slice());
+        println!("Http10Request::encode to body {:?} ({})", msg.as_slice(), msg.len());
         into.extend_from_slice(msg.as_slice());
     }
 }
@@ -114,20 +118,22 @@ impl Codec for Http10Response {
     type Out = EasyBuf;
 
     fn decode(&mut self, buf: &mut EasyBuf) -> Result<Option<EasyBuf>, io::Error> {
-        println!("HTTP10Response::decode");
         let amt = buf.len();
+        println!("Http10Response::decode");
+        println!("buf: {:?}", buf.as_slice());
+        println!("buf.len(): {:?}", buf.len());
         Ok(Some(buf.drain_to(amt)))
     }
 
     fn decode_eof(&mut self, buf: &mut EasyBuf) -> io::Result<EasyBuf> {
-        println!("Http10Response::decode_eof");
+       println!("Http10Response::decode_eof");
         let amt = buf.len();
         let rv: io::Result<EasyBuf> = Ok(buf.drain_to(amt));
         rv
     }
 
     fn encode(&mut self, msg: EasyBuf, into: &mut Vec<u8>) {
-        println!("Http10Response::encode");
+        println!("HTTP10Response::encode wrote {} bytes", msg.len());
         into.extend_from_slice(msg.as_slice());
     }
 }

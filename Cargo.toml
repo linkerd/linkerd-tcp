@@ -6,7 +6,7 @@ authors = ["Steve Jenson <stevej@buoyant.io>"]
 
 [dependencies]
 tokio-core = { git = "https://github.com/tokio-rs/tokio-core" }
-futures = { git = "https://github.com/alexcrichton/futures-rs" }
+futures = "0.1.4"
 log = "0.3"
 mio = "0.6"
 scoped-tls = "0.1.0"
