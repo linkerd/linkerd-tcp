@@ -29,12 +29,20 @@ fn main() {
     // The source addr for clients to connect to. we can either get it
     // from the environment (ARGV[1]) or use a default
     let addr = env::args().nth(1).unwrap_or("127.0.0.1:7575".to_string());
-    let addr = addr.parse().unwrap();
+    let addr = addr.parse()
+        .map_err(|err| {
+            panic!("unable to parse '{}' due to: {}.", addr, err);
+        })
+        .unwrap();
 
     // The target addr to proxy connections to.
     let target_addr = env::args().nth(2).unwrap_or("127.0.0.1:8080".to_string());
     // we have to set this to a SocketAddr due to a type inference failure later.
-    let target_addr = target_addr.parse::<SocketAddr>().unwrap();
+    let target_addr = target_addr.parse::<SocketAddr>()
+        .map_err(|err| {
+            panic!("unable to parse '{}' due to {}.", target_addr, err);
+        })
+        .unwrap();
 
     // Create the event loop and TCP listener we'll accept connections on.
     let mut core = Core::new().unwrap();
@@ -43,24 +51,24 @@ fn main() {
     let buffer = Rc::new(RefCell::new(vec![0; 64 * 1024]));
 
     let listener = TcpListener::bind(&addr, &handle).unwrap();
-    println!("Listening for http proxy connections on {}", addr);
+    info!("Listening for http connections on {}", addr);
     let clients = listener.incoming().map(move |(socket, addr)| {
         (Client {
-            buffer: buffer.clone(),
-            // type inference fails here if we don't parse it as a SocketAddr
-            addr: target_addr.clone(),
-            handle: handle.clone(),
-        }.serve(socket), addr)
+                buffer: buffer.clone(),
+                // type inference fails here if we don't parse it as a SocketAddr
+                addr: target_addr.clone(),
+                handle: handle.clone(),
+            }
+            .serve(socket),
+         addr)
     });
 
     let handle = core.handle();
     let server = clients.for_each(|(client, addr)| {
         handle.spawn(client.then(move |res| {
             match res {
-                Ok((_, _)) => {
-                    //println!("proxied {}/{} bytes for {}", a, b, addr)
-                }
-                Err(e) => println!("error for {}: {}", addr, e),
+                Ok((a, b)) => debug!("proxied {}/{} bytes for {}", a, b, addr),
+                Err(e) => error!("error for {}: {}", addr, e),
             }
             futures::finished(())
         }));
@@ -77,18 +85,25 @@ struct Client {
     buffer: Rc<RefCell<Vec<u8>>>,
     // The remote server to connect to
     addr: SocketAddr,
-    // a handle to the runner
+    // a handle to the event loop. Cannot cross a thread boundary.
     handle: Handle,
 }
 
 impl Client {
     // conn is the incoming connection to proxy
-    fn serve(self, ingress: TcpStream) -> Box<Future<Item=(u64, u64), Error=io::Error>> {
+    fn serve(self, ingress: TcpStream) -> Box<Future<Item = (u64, u64), Error = io::Error>> {
         let handle = self.handle.clone();
         let addr = self.addr.clone();
-        let connected = TcpStream::connect(&addr, &handle).then(move |egress_result| {
-            egress_result.and_then(|egress| Ok((ingress, egress)))
-        });
+        let connected = TcpStream::connect(&addr, &handle)
+            .map_err(move |err| {
+                panic!("unable to connect to {} due to reason: {}", addr, err);
+            })
+            .then(move |egress_result| {
+                // If outbound connection failure happens, it's because we're assuming success
+                // on the below line
+                debug!("Opening connection to egress address {}", addr);
+                egress_result.and_then(|egress| Ok((ingress, egress)))
+            });
         let buffer = self.buffer.clone();
         mybox(connected.and_then(|(c1, c2)| {
             let c1 = Rc::new(c1);
@@ -103,7 +118,7 @@ impl Client {
 
 // !!! Code from here is verbatim from the tokio-socks5 example. !!!
 
-fn mybox<F: Future + 'static>(f: F) -> Box<Future<Item=F::Item, Error=F::Error>> {
+fn mybox<F: Future + 'static>(f: F) -> Box<Future<Item = F::Item, Error = F::Error>> {
     Box::new(f)
 }
 
@@ -128,9 +143,7 @@ struct Transfer {
 }
 
 impl Transfer {
-    fn new(reader: Rc<TcpStream>,
-           writer: Rc<TcpStream>,
-           buffer: Rc<RefCell<Vec<u8>>>) -> Transfer {
+    fn new(reader: Rc<TcpStream>, writer: Rc<TcpStream>, buffer: Rc<RefCell<Vec<u8>>>) -> Transfer {
         Transfer {
             reader: reader,
             writer: writer,
@@ -174,7 +187,7 @@ impl Future for Transfer {
             let read_ready = self.reader.poll_read().is_ready();
             let write_ready = self.writer.poll_write().is_ready();
             if !read_ready || !write_ready {
-                return Ok(Async::NotReady)
+                return Ok(Async::NotReady);
             }
 
             // TODO: This exact logic for reading/writing amounts may need an
@@ -208,7 +221,7 @@ impl Future for Transfer {
             let n = try_nb!((&*self.reader).read(&mut buffer));
             if n == 0 {
                 try!(self.writer.shutdown(Shutdown::Write));
-                return Ok(self.amt.into())
+                return Ok(self.amt.into());
             }
             self.amt += n as u64;
 

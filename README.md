@@ -7,12 +7,22 @@ Quick howto
 Mac/Linux
 
 * Install Rust with `curl -sSf https://static.rust-lang.org/rustup.sh | sh`
-* `cargo build`
-* `target/debug/proxy2`
+* `cargo build` (or `cargo build --release` if you're ready for production)
+* `target/debug/proxy2` or `target/release/proxy2`
 
 ## FAQ
 
-Usage: `proxy2 source_addr:port target_addr:port`
+### Usage
+
+`target/release/proxy2 source_ip:port target_ip:port`
+
+Yes, you have to use IP addresses for now, we don't resolve names.
+
+### Logging
+
+`RUST_LOG=debug target/release/proxy2` will show you tons of tokio logging messages.
+
+
 
 # License
 
