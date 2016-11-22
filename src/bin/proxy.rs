@@ -12,6 +12,8 @@ use tokio_core::io::{EasyBuf, Io, Codec};
 
 use futures::{Future, Stream, Sink};
 
+// Due to framing bugs and lack of connection reuse, this is considered buggy
+// and is superseded by proxy2
 fn main() {
     // The source addr for clients to connect to.
     let addr = env::args().nth(1).unwrap_or("127.0.0.1:7575".to_string());
@@ -30,10 +32,8 @@ fn main() {
 
     let srv = listener.incoming().for_each(move |(ingress, addr)| {
         println!("New Connection: {}", addr);
-        //   sink      , stream
         let (in_sink, in_stream) = ingress.framed(Http10Request).split();
         let handler = TcpStream::connect(&target_addr, &handle).and_then(|egress| {
-            //   sink     , stream
             let (out_sink, out_stream) = egress.framed(Http10Response).split();
             out_sink.send_all(in_stream).and_then(|_| in_sink.send_all(out_stream))
         });

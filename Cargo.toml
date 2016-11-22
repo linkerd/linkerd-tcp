@@ -5,9 +5,11 @@ version = "0.1.0"
 authors = ["Steve Jenson <stevej@buoyant.io>"]
 
 [dependencies]
-tokio-core = { git = "https://github.com/tokio-rs/tokio-core" }
+# Pinning this to a known good version
+tokio-core = {git = "https://github.com/tokio-rs/tokio-core", rev = "1a48b79474402435f371c31f3121f9ec6cd9aab7"}
 futures = "0.1.4"
 log = "0.3"
 mio = "0.6"
 scoped-tls = "0.1.0"
 slab = "0.3"
+env_logger = "0.3"
