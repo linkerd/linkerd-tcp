@@ -1,4 +1,4 @@
-//! A simple Layer 3 proxy. Currently TCP only.
+//! A simple Layer 4 proxy. Currently TCP only.
 
 #[macro_use]
 extern crate log;
@@ -18,17 +18,20 @@ use std::str;
 
 use futures::{Future, Poll, Async};
 use futures::stream::Stream;
-use tokio_core::reactor::{Core, Handle};
+use tokio_core::reactor::Core;
 use tokio_core::net::{TcpStream, TcpListener};
+
+extern crate galadriel;
+use galadriel::pool;
+use galadriel::pool::{ConnectionPool, Pool};
 
 // This works! Use it!!
 fn main() {
-    // This is a common Rust idiom.
     drop(env_logger::init());
 
     // The source addr for clients to connect to. we can either get it
     // from the environment (ARGV[1]) or use a default
-    let addr = env::args().nth(1).unwrap_or("127.0.0.1:7575".to_string());
+    let addr = env::args().nth(1).unwrap_or("0.0.0.0:7575".to_string());
     let addr = addr.parse()
         .map_err(|err| {
             panic!("unable to parse '{}' due to: {}.", addr, err);
@@ -37,7 +40,7 @@ fn main() {
 
     // The target addr to proxy connections to.
     let target_addr = env::args().nth(2).unwrap_or("127.0.0.1:8080".to_string());
-    // we have to set this to a SocketAddr due to a type inference failure later.
+    // we have to set this to a SocketAddr due to a type inference problem later.
     let target_addr = target_addr.parse::<SocketAddr>()
         .map_err(|err| {
             panic!("unable to parse '{}' due to {}.", target_addr, err);
@@ -47,9 +50,10 @@ fn main() {
     // Create the event loop and TCP listener we'll accept connections on.
     let mut core = Core::new().unwrap();
     let handle = core.handle();
+    debug!("Creating a Connection Pool");
+    let pool = pool::new(target_addr.clone(), handle.clone());
     // A shared buffer for a single proxy to share for ingress/egress.
     let buffer = Rc::new(RefCell::new(vec![0; 64 * 1024]));
-
     let listener = TcpListener::bind(&addr, &handle).unwrap();
     info!("Listening for http connections on {}", addr);
     let clients = listener.incoming().map(move |(socket, addr)| {
@@ -57,13 +61,13 @@ fn main() {
                 buffer: buffer.clone(),
                 // type inference fails here if we don't parse it as a SocketAddr
                 addr: target_addr.clone(),
-                handle: handle.clone(),
+                pool: &pool,
             }
             .serve(socket),
          addr)
     });
 
-    let handle = core.handle();
+    let handle = core.handle().clone();
     let server = clients.for_each(|(client, addr)| {
         handle.spawn(client.then(move |res| {
             match res {
@@ -80,37 +84,39 @@ fn main() {
     core.run(server).unwrap();
 }
 
-struct Client {
+struct Client<'a> {
     // A buffer for ingress/egress to share
     buffer: Rc<RefCell<Vec<u8>>>,
     // The remote server to connect to
     addr: SocketAddr,
-    // a handle to the event loop. Cannot cross a thread boundary.
-    handle: Handle,
+    pool: &'a Pool,
 }
 
-impl Client {
-    // conn is the incoming connection to proxy
+impl<'a> Client<'a> {
+    // ingress is the incoming connection to proxy
     fn serve(self, ingress: TcpStream) -> Box<Future<Item = (u64, u64), Error = io::Error>> {
-        let handle = self.handle.clone();
         let addr = self.addr.clone();
-        let connected = TcpStream::connect(&addr, &handle)
-            .map_err(move |err| {
+        debug!("Getting a connection from the pool");
+        let connection = self.pool.checkout();
+
+        let connected = connection.map_err(move |err| {
                 panic!("unable to connect to {} due to reason: {}", addr, err);
             })
-            .then(move |egress_result| {
+            .and_then(move |egress| {
                 // If outbound connection failure happens, it's because we're assuming success
                 // on the below line
                 debug!("Opening connection to egress address {}", addr);
-                egress_result.and_then(|egress| Ok((ingress, egress)))
+                Ok((ingress, egress))
             });
+        
         let buffer = self.buffer.clone();
-        mybox(connected.and_then(|(c1, c2)| {
-            let c1 = Rc::new(c1);
-            let c2 = Rc::new(c2);
+        // TODO: somewhere in here we need to return the connection to the pool
+        mybox(connected.and_then(move |(ingress, egress)| {
+            let ingress = Rc::new(ingress);
+            let egress = Rc::new(egress);
 
-            let half1 = Transfer::new(c1.clone(), c2.clone(), buffer.clone());
-            let half2 = Transfer::new(c2, c1, buffer);
+            let half1 = Transfer::new(ingress.clone(), egress.clone(), buffer.clone());
+            let half2 = Transfer::new(egress, ingress, buffer);
             half1.join(half2)
         }))
     }
