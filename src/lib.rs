@@ -6,8 +6,8 @@ extern crate futures;
 #[macro_use]
 extern crate tokio_core;
 
-pub mod pool;
-pub use self::pool::Pool;
+pub mod transfer;
+pub use transfer::BufferedTransfer;
 
 #[cfg(test)]
 mod tests {

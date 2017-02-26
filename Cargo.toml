@@ -1,18 +1,17 @@
 [package]
 name = "galadriel"
-description = "Experiments in using rust and tokio-core to build networking tools"
-version = "0.1.0"
-authors = ["Steve Jenson <stevej@buoyant.io>"]
+description = """Experiments in using rust and tokio-core to build networking tools"""
+version = "0.0.1"
+authors = [
+  "Steve Jenson <stevej@buoyant.io>",
+  "Oliver Gould <ver@buoyant.io>"
+]
 readme = "README.md"
 license = "Apache-2.0"
 include = ["src/*.rs", "src/**/.rs"]
 
 [dependencies]
-# Don't upgrade to bare HEAD, always pin to a known good version
-tokio-core = {git = "https://github.com/tokio-rs/tokio-core", rev = "3b38e518cab98fc7d1aa2e55b5df91df1d22c713" }
-futures = "0.1.4"
-log = "0.3"
-mio = "0.6"
-scoped-tls = "0.1.0"
-slab = "0.3"
 env_logger = "0.3"
+futures = "0.1.9"
+log = "0.3"
+tokio-core = "0.1.4"
