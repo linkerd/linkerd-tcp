@@ -1,70 +1,98 @@
 //! A simple Layer 4 proxy. Currently TCP only.
 
+#[macro_use]
+extern crate log;
+extern crate env_logger;
+#[macro_use]
+extern crate futures;
+extern crate galadriel;
+extern crate getopts;
+extern crate rand;
+extern crate tokio_core;
+
+use futures::{Future, Stream};
+use rand::{Rng, thread_rng};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::env;
-use std::io;
+use std::io::{self, Write};
 use std::net::SocketAddr;
+use std::process;
 use std::sync::{Arc, atomic, RwLock};
 use std::thread;
 use std::time::Duration;
-
-extern crate rand;
-use rand::{Rng, thread_rng};
-
-#[macro_use]
-extern crate log;
-extern crate env_logger;
-
-#[macro_use]
-extern crate futures;
-use futures::{Future, Stream};
-
-extern crate tokio_core;
 use tokio_core::reactor::Core;
 use tokio_core::net::{TcpListener, TcpStream};
 
-extern crate galadriel;
 use galadriel::transfer::BufferedTransfer;
 
 const WINDOW_SIZE: usize = 64 * 1024;
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    let program = args[0].clone();
+
+    let opts = {
+        let mut opts = getopts::Options::new();
+        opts.optflag("h", "help", "print this help menu");
+        opts.optopt("l",
+                    "listen-addr",
+                    "listen on the given addr:port [default: 0.0.0.0:7575]",
+                    "ADDR");
+        opts.optopt("n",
+                    "namerd-addr",
+                    "Connect to Namerd's HTTP API on addr:port [default: 127.0.0.1:4180]",
+                    "ADDR");
+        opts
+    };
+
+    let matches = opts.parse(&args[1..]).unwrap();
     drop(env_logger::init());
 
-    // The source addr for clients to connect to. we can either get it
-    // from the environment (ARGV[1]) or use a default
-    let listen_addr = parse_addr(env::args().nth(1).unwrap_or("0.0.0.0:7575".to_string()));
-    let namerd_addr = parse_addr(env::args().nth(2).unwrap_or("127.0.0.1:4180".to_string()));
+    let listen_addr = matches.opt_str("listen-addr")
+        .unwrap_or("0.0.0.0:7575".to_string())
+        .parse()
+        .unwrap();
+
+    let namerd_addr = matches.opt_str("namerd-addr")
+        .unwrap_or("127.0.0.1:4180".to_string())
+        .parse()
+        .unwrap();
+
+    let target_path;
+    if matches.free.len() == 1 {
+        let path = matches.free[0].clone();
+        if path.starts_with("/") {
+            target_path = path;
+        } else {
+            let ref mut err = io::stderr();
+            let _ = writeln!(err, "invalid path: {}", path);
+            print_usage(err, &program, &opts);
+            process::exit(64);
+        }
+    } else {
+        let ref mut err = io::stderr();
+        let _ = writeln!(err, "missing TARGET");
+        print_usage(err, &program, &opts);
+        process::exit(64);
+    }
 
     // Create the event loop and TCP listener we'll accept connections on.
     let mut core = Core::new().unwrap();
-    let handle = core.handle();
-
-    let namerd = {
-        let down_addr = parse_addr(env::args().nth(2).unwrap_or("127.0.0.1:8080".to_string()));
-        Arc::new(NamerdLookup::periodic(namerd_addr, Duration::from_secs(3), down_addr))
-    };
 
     let proxy = {
-        let buffer = Rc::new(RefCell::new(vec![0; WINDOW_SIZE]));
-
+        let handle = core.handle();
         let listener = TcpListener::bind(&listen_addr, &handle).unwrap();
         info!("Listening on {}", listen_addr);
 
-        let get_addr = || {
-            let namerd = namerd.clone();
-            let sample: Rc<HashMap<SocketAddr, f32>> = namerd.sample().clone();
-            let keys = sample.keys();
-            let addrs: Vec<&SocketAddr> = keys.collect();
-            let mut rng = thread_rng();
-            let addr = *rng.choose(&addrs).unwrap();
-            *addr
-        };
+        let namerd = NamerdLookup::periodic(&namerd_addr, Duration::from_secs(3));
+        info!("Querying namerd for {} on {}", namerd_addr, &target_path);
 
+        let buffer = Rc::new(RefCell::new(vec![0; WINDOW_SIZE]));
         listener.incoming().for_each(move |(up_stream, up_addr)| {
-            let down_addr = get_addr();
+            let down_endpoint = namerd.endpoint();
+            let down_addr = down_endpoint.addr();
 
             debug!("Proxying {} to {}", up_addr, down_addr);
             let connect = TcpStream::connect(&down_addr, &handle);
@@ -75,12 +103,12 @@ fn main() {
             handle.spawn(tx.then(move |res| {
                 match res {
                     Err(e) => error!("Error proxying {} to {}: {}", up_addr, down_addr, e),
-                    Ok((d, u)) => {
+                    Ok((down_bytes, up_bytes)) => {
                         debug!("Proxied {} to {}: down={}B up={}B",
                                up_addr,
                                down_addr,
-                               d,
-                               u)
+                               down_bytes,
+                               up_bytes)
                     }
                 };
                 Ok(())
@@ -93,14 +121,11 @@ fn main() {
     // SO_REUSEPORT tokio does not currently support thread pool
     // executors but you can thread.spawn N times.
     core.run(proxy).unwrap();
-    // namerd.close();
 }
 
-fn parse_addr(a: String) -> SocketAddr {
-    match a.parse() {
-        Err(err) => panic!("unable to parse '{}' due to: {}.", a, err),
-        Ok(addr) => addr,
-    }
+fn print_usage(out: &mut Write, program: &str, opts: &getopts::Options) {
+    let brief = format!("Usage: {} TARGET [options]", program);
+    let _ = write!(out, "{}", opts.usage(&brief));
 }
 
 fn transmit_duplex(up_stream: TcpStream,
@@ -114,54 +139,110 @@ fn transmit_duplex(up_stream: TcpStream,
     Box::new(down_tx.join(up_tx))
 }
 
-// struct Endpoint(SocketAddr);
+trait WithAddr {
+    fn addr(&self) -> SocketAddr;
+}
 
-// trait Endpointer {
-//     fn get() -> Endpoint;
-// }
+trait Endpointer {
+    type Endpoint: WithAddr;
+    fn endpoint(&self) -> Self::Endpoint;
+}
+
+#[derive(Debug, PartialEq)]
+struct EndpointState {
+    weight: f32,
+    load: f64,
+}
 
 struct NamerdLookup {
     is_running: Arc<atomic::AtomicBool>,
     thread: Rc<RefCell<thread::JoinHandle<()>>>,
-    addr_weights: Arc<RwLock<HashMap<SocketAddr, f32>>>,
+    endpoints: Arc<RwLock<HashMap<SocketAddr, Arc<RwLock<EndpointState>>>>>,
 }
 
 impl NamerdLookup {
-    fn periodic(addr: SocketAddr, period: Duration, xxx_addr: SocketAddr) -> NamerdLookup {
-        let name = format!("namerd-{}-{}", addr.ip(), addr.port());
+    fn periodic(addr: &SocketAddr, period: Duration) -> NamerdLookup {
         let is_running = Arc::new(atomic::AtomicBool::new(true));
-        let addr_weights = {
-            let mut map = HashMap::new();
-            map.insert(xxx_addr, 1.0 as f32);
-            Arc::new(RwLock::new(map))
+        let endpoints = {
+            let mut set = HashMap::new();
+            // FIXME
+            set.insert("127.0.0.1:8080".to_string().parse().unwrap(),
+                       Arc::new(RwLock::new(EndpointState {
+                           weight: 1.0,
+                           load: 0.0,
+                       })));
+            Arc::new(RwLock::new(set))
         };
         let thread = {
             let is_running = is_running.clone();
-            let addr_weights = addr_weights.clone();
+            let endpoints = endpoints.clone();
+            let addr = addr.clone();
             thread::Builder::new()
-                .name(name.to_string())
+                .name(format!("namerd-{}-{}", addr.ip(), addr.port()).to_string())
                 .spawn(move || while is_running.load(atomic::Ordering::Relaxed) {
-                    info!("TODO hit the resolve api at {}...", addr);
-                    drop(addr_weights.write().unwrap());
+                    debug!("TODO hit the resolve api at {}...", addr);
+                    let eps = endpoints.write().unwrap();
+                    drop(eps);
                     thread::sleep(period);
                 })
                 .unwrap()
         };
         NamerdLookup {
-            addr_weights: addr_weights,
             is_running: is_running,
             thread: Rc::new(RefCell::new(thread)),
+            endpoints: endpoints,
         }
-    }
-
-    fn sample(&self) -> Rc<HashMap<SocketAddr, f32>> {
-        Rc::new(self.addr_weights.read().unwrap().clone())
     }
 }
 
 impl Drop for NamerdLookup {
     fn drop(&mut self) {
+        info!("shutting down namerd");
         self.is_running.store(false, atomic::Ordering::SeqCst);
-        // self.thread.into_inner().join().unwrap();
+        // let mut thread = self.thread.borrow_mut();
+        // thread.join().unwrap();
+    }
+}
+
+struct Endpoint {
+    addr: SocketAddr,
+    state: Arc<RwLock<EndpointState>>,
+}
+
+impl WithAddr for Endpoint {
+    fn addr(&self) -> SocketAddr {
+        self.addr.clone()
+    }
+}
+
+impl Drop for Endpoint {
+    fn drop(&mut self) {
+        let mut state = self.state.write().unwrap();
+        assert!(state.load >= 1.0);
+        state.load -= 1.0;
+    }
+}
+
+impl Endpointer for NamerdLookup {
+    type Endpoint = Endpoint;
+
+    fn endpoint(&self) -> Endpoint {
+        let endpoints = self.endpoints.read().unwrap();
+        let addrs: Vec<(&SocketAddr, &Arc<RwLock<EndpointState>>)> = endpoints.iter().collect();
+        // XXX for now we just choose a node at random.
+        // We should employ some strategy that combines load and weight
+        let (addr, state): (&SocketAddr, &Arc<RwLock<EndpointState>>) =
+            *thread_rng().choose(&addrs).unwrap();
+        let addr = addr.clone();
+        let state = (*state).clone();
+        {
+            let mut state = state.write().unwrap();
+            debug!("Using {} {:?}", addr, *state);
+            state.load += 1.0;
+        }
+        Endpoint {
+            addr: addr,
+            state: state,
+        }
     }
 }

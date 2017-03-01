@@ -30,7 +30,10 @@ pub struct BufferedTransfer {
 }
 
 impl BufferedTransfer {
-    pub fn new(reader: Rc<TcpStream>, writer: Rc<TcpStream>, buffer: Rc<RefCell<Vec<u8>>>) -> BufferedTransfer {
+    pub fn new(reader: Rc<TcpStream>,
+               writer: Rc<TcpStream>,
+               buffer: Rc<RefCell<Vec<u8>>>)
+               -> BufferedTransfer {
         BufferedTransfer {
             reader: reader,
             writer: writer,
