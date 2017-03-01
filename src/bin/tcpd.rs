@@ -57,7 +57,7 @@ fn main() {
         .arg(Arg::with_name("namerd-addr")
             .short("n")
             .long("namerd-addr")
-            .default_value("127.1.1.1:4180")
+            .default_value("127.0.0.1:4180")
             .takes_value(true)
             .value_name("ADDR")
             .help("The address of namerd's HTTP interface"))
@@ -105,7 +105,10 @@ fn main() {
                                             namerd_interval,
                                             namerd_ns.to_string(),
                                             target_path.to_string());
-        info!("Querying namerd for {} on {}", namerd_addr, target_path);
+        info!("Querying namerd for {} on {} every {}s",
+              namerd_addr,
+              target_path,
+              namerd_interval.as_secs());
 
         let buffer = Rc::new(RefCell::new(vec![0; WINDOW_SIZE]));
         listener.incoming().for_each(move |(up_stream, up_addr)| {
@@ -200,7 +203,7 @@ impl NamerdLookup {
                     let client = Client::new();
                     while is_running.load(atomic::Ordering::Relaxed) {
                         match client.get(url.clone()).send() {
-                            Err(e) => stderr(format!("Failed to fetch addresses: {}", e)),
+                            Err(e) => stderr(format!("Error fetching addresses: {}", e)),
                             Ok(rsp) => {
                                 if rsp.status == StatusCode::Ok {
                                     let parsed: json::Result<NamerdResponse> =
