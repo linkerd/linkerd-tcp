@@ -1,12 +1,12 @@
 //! A simple Layer 4 proxy. Currently TCP only.
 
+extern crate clap;
 #[macro_use]
 extern crate log;
 extern crate env_logger;
 #[macro_use]
 extern crate futures;
 extern crate galadriel;
-extern crate getopts;
 #[macro_use]
 extern crate hyper;
 extern crate rand;
@@ -16,6 +16,7 @@ extern crate serde_json;
 extern crate tokio_core;
 extern crate url;
 
+use clap::{Arg, App};
 use futures::{Future, Stream};
 use hyper::Client;
 use hyper::status::StatusCode;
@@ -24,7 +25,6 @@ use serde_json as json;
 use std::cell::RefCell;
 use std::collections::{HashSet, HashMap};
 use std::rc::Rc;
-use std::env;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::process;
@@ -44,64 +44,52 @@ fn stderr(msg: String) {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let program = args[0].clone();
-
-    let opts = {
-        let mut opts = getopts::Options::new();
-        opts.optflag("h", "help", "print this help menu");
-        opts.optopt("l",
-                    "listen-addr",
-                    "listen on the given addr:port [default: 0.0.0.0:7575]",
-                    "ADDR");
-        opts.optopt("n",
-                    "namerd-addr",
-                    "Connect to Namerd's HTTP API on addr:port [default: 127.0.0.1:4180]",
-                    "ADDR");
-        opts.optopt("N",
-                    "namerd-ns",
-                    "Namerd namespace [default: default]",
-                    "NS");
-        opts.optopt("i",
-                    "namerd-interval",
-                    "Namerd poll interval, in seconds [default: 60]",
-                    "SECONDS");
-        opts
-    };
-
-    let flags = opts.parse(&args[1..]).unwrap();
     drop(env_logger::init());
+    let opts = App::new("tcpd")
+        .version("0.1")
+        .arg(Arg::with_name("listen-addr")
+            .short("l")
+            .long("listen-addr")
+            .default_value("0.0.0.0:7575")
+            .takes_value(true)
+            .value_name("ADDR")
+            .help("Accept connections on the given local address and port"))
+        .arg(Arg::with_name("namerd-addr")
+            .short("n")
+            .long("namerd-addr")
+            .default_value("127.1.1.1:4180")
+            .takes_value(true)
+            .value_name("ADDR")
+            .help("The address of namerd's HTTP interface"))
+        .arg(Arg::with_name("namerd-ns")
+            .short("N")
+            .long("namerd-ns")
+            .default_value("default")
+            .takes_value(true)
+            .value_name("NS")
+            .help("Namerd namespace in which the target will be resolved"))
+        .arg(Arg::with_name("namerd-interval")
+            .short("i")
+            .long("namerd-interval")
+            .default_value("60")
+            .takes_value(true)
+            .value_name("SECS")
+            .help("Namerd refresh interval in seconds"))
+        .arg(Arg::with_name("TARGET")
+            .required(true)
+            .index(1)
+            .help("Destination name (e.g. /svc/foo)"))
+        .get_matches();
 
-    let listen_addr = flags.opt_str("listen-addr")
-        .unwrap_or("0.0.0.0:7575".to_string())
-        .parse()
-        .unwrap();
+    let listen_addr = opts.value_of("listen-addr").unwrap().parse().unwrap();
+    let namerd_addr = opts.value_of("namerd-addr").unwrap().parse().unwrap();
+    let namerd_ns = opts.value_of("namerd-ns").unwrap();
+    let namerd_interval =
+        Duration::from_secs(opts.value_of("namerd-interval").unwrap().parse().unwrap());
 
-    let namerd_addr = flags.opt_str("namerd-addr")
-        .unwrap_or("127.0.0.1:4180".to_string())
-        .parse()
-        .unwrap();
-
-    let namerd_interval = flags.opt_str("namerd-interval")
-        .map(|s| Duration::from_secs(s.parse().unwrap()))
-        .unwrap_or(Duration::from_secs(60));
-
-    let namerd_ns = flags.opt_str("namerd-ns")
-        .unwrap_or("default".to_string());
-
-    let target_path;
-    if flags.free.len() == 1 {
-        let path = flags.free[0].clone();
-        if path.starts_with("/") {
-            target_path = path;
-        } else {
-            stderr(format!("invalid path: {}", path));
-            print_usage(&mut io::stderr(), &program, &opts);
-            process::exit(64);
-        }
-    } else {
-        stderr("missing TARGET".to_string());
-        print_usage(&mut io::stderr(), &program, &opts);
+    let target_path = opts.value_of("TARGET").unwrap();
+    if !target_path.starts_with("/") {
+        stderr(format!("TARGET not a /path: {}", target_path));
         process::exit(64);
     }
 
@@ -115,8 +103,8 @@ fn main() {
 
         let namerd = NamerdLookup::periodic(&namerd_addr,
                                             namerd_interval,
-                                            namerd_ns,
-                                            target_path.clone());
+                                            namerd_ns.to_string(),
+                                            target_path.to_string());
         info!("Querying namerd for {} on {}", namerd_addr, target_path);
 
         let buffer = Rc::new(RefCell::new(vec![0; WINDOW_SIZE]));
@@ -151,11 +139,6 @@ fn main() {
     // SO_REUSEPORT tokio does not currently support thread pool
     // executors but you can thread.spawn N times.
     core.run(proxy).unwrap();
-}
-
-fn print_usage(out: &mut Write, program: &str, opts: &getopts::Options) {
-    let brief = format!("Usage: {} TARGET [options]", program);
-    let _ = write!(out, "{}", opts.usage(&brief));
 }
 
 fn transmit_duplex(up_stream: TcpStream,
