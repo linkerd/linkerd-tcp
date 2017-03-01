@@ -8,12 +8,19 @@ authors = [
 ]
 readme = "README.md"
 license = "Apache-2.0"
-include = ["src/*.rs", "src/**/.rs"]
+
+[profile.release]
+debug = true
 
 [dependencies]
 env_logger = "0.3"
 futures = "0.1.9"
 getopts = "0.2"
+hyper = "0.10"
 log = "0.3"
 rand = "0.3"
+serde = "0.9"
+serde_derive = "0.9"
+serde_json = "0.9"
 tokio-core = "0.1.4"
+url = "1.4"
