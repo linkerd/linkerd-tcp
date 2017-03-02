@@ -1,5 +1,6 @@
 //! A simple Layer 4 proxy. Currently TCP only.
 
+#[macro_use]
 extern crate clap;
 #[macro_use]
 extern crate log;
@@ -45,8 +46,11 @@ fn stderr(msg: String) {
 
 fn main() {
     drop(env_logger::init());
-    let opts = App::new("tcpd")
-        .version("0.1")
+
+    let tcpd_app = App::new(crate_name!())
+        .version(crate_version!())
+        .about(crate_description!())
+        .author(crate_authors!("\n"))
         .arg(Arg::with_name("listen-addr")
             .short("l")
             .long("listen-addr")
@@ -78,19 +82,21 @@ fn main() {
         .arg(Arg::with_name("TARGET")
             .required(true)
             .index(1)
-            .help("Destination name (e.g. /svc/foo)"))
-        .get_matches();
+            .help("Destination name (e.g. /svc/foo)"));
 
+    let opts = tcpd_app.get_matches();
     let listen_addr = opts.value_of("listen-addr").unwrap().parse().unwrap();
     let namerd_addr = opts.value_of("namerd-addr").unwrap().parse().unwrap();
     let namerd_ns = opts.value_of("namerd-ns").unwrap();
-    let namerd_interval =
-        Duration::from_secs(opts.value_of("namerd-interval").unwrap().parse().unwrap());
+    let namerd_interval = {
+        let i = opts.value_of("namerd-interval").unwrap().parse().unwrap();
+        Duration::from_secs(i)
+    };
 
     let target_path = opts.value_of("TARGET").unwrap();
     if !target_path.starts_with("/") {
         stderr(format!("TARGET not a /path: {}", target_path));
-        process::exit(64);
+        process::exit(64); // EX_USAGE
     }
 
     // Create the event loop and TCP listener we'll accept connections on.
