@@ -23,8 +23,12 @@ type EndpointMap = Arc<RwLock<HashMap<SocketAddr, Arc<RwLock<EndpointState>>>>>;
 
 pub struct Endpointer {
     is_running: Arc<AtomicBool>,
+
+    /// The thread is moved into the Endpointer so its lifetime is
+    /// managed appropriately.
     #[allow(dead_code)]
     thread: thread::JoinHandle<()>,
+
     endpoints: EndpointMap,
 }
 
@@ -37,53 +41,69 @@ impl Endpointer {
         let is_running = Arc::new(AtomicBool::new(true));
         let endpoints: EndpointMap = Arc::new(RwLock::new(HashMap::new()));
 
-        let name = format!("namerd-{}-{}-{}",
-                           addr.ip(),
-                           addr.port().to_string(),
-                           target);
+        let thread_name = format!("namerd-{}-{}-{}",
+                                  addr.ip(),
+                                  addr.port().to_string(),
+                                  target);
 
-        let base = format!("http://{}:{}/api/1/resolve/{}",
-                           addr.ip(),
-                           addr.port().to_string(),
-                           namespace);
-
-        let thread = {
-            let is_running = is_running.clone();
-            let endpoints = endpoints.clone();
-            let url = Url::parse_with_params(&base, &[("path", &target)]).unwrap();
-            thread::Builder::new()
-                .name(name)
-                .spawn(move || {
-                    let client = Client::new();
-                    while is_running.load(atomic::Ordering::Relaxed) {
-                        match client.get(url.clone()).send() {
-                            Err(e) => warn!("Error fetching addresses: {}", e),
-                            Ok(rsp) => {
-                                if rsp.status != StatusCode::Ok {
-                                    warn!("Failed to fetch addresses: {}", rsp.status);
-                                } else {
-                                    let r: json::Result<NamerdResponse> = json::from_reader(rsp);
-                                    match r {
-                                        Err(e) => warn!("Failed to parse response: {}", e),
-                                        Ok(rsp) => update(rsp.addrs, endpoints.clone()),
-                                    }
-                                }
-                            }
-                        }
-                        thread::sleep(period);
-                    }
-                })
-                .unwrap()
+        let url = {
+            let base = format!("http://{}:{}/api/1/resolve/{}",
+                               addr.ip(),
+                               addr.port().to_string(),
+                               namespace);
+            Url::parse_with_params(&base, &[("path", &target)]).unwrap()
         };
+
         Endpointer {
-            is_running: is_running,
-            thread: thread,
-            endpoints: endpoints,
+            is_running: is_running.clone(),
+            endpoints: endpoints.clone(),
+            thread: polling_thread(thread_name, url, period, is_running, endpoints),
         }
     }
 }
 
-fn update(namerd_addrs: Vec<NamerdAddr>, endpoints: EndpointMap) {
+fn polling_thread(thread_name: String,
+                  url: Url,
+                  period: Duration,
+                  is_running: Arc<AtomicBool>,
+                  endpoints: EndpointMap)
+                  -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || {
+            let client = Client::new();
+            while is_running.load(atomic::Ordering::Relaxed) {
+                match client.get(url.clone()).send() {
+                    Err(e) => warn!("Error fetching addresses: {}", e),
+                    Ok(rsp) => {
+                        if rsp.status != StatusCode::Ok {
+                            warn!("Failed to fetch addresses: {}", rsp.status);
+                        } else {
+                            let r: json::Result<NamerdResponse> = json::from_reader(rsp);
+                            match r {
+                                Err(e) => warn!("Failed to parse response: {}", e),
+                                Ok(rsp) => {
+                                    if rsp.kind == "bound" {
+                                        update_endpoints(rsp.addrs, endpoints.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                thread::sleep(period);
+            }
+        })
+        .unwrap()
+}
+
+/// Update an EndpointMap in-place with a new set of namerd_addrs.
+fn update_endpoints(namerd_addrs: Vec<NamerdAddr>, endpoints: EndpointMap) {
+    // We never intentionally clear the EndpointMap.
+    if namerd_addrs.len() == 0 {
+        return;
+    }
+
     let weights = {
         let mut weights = HashMap::new();
         for na in namerd_addrs.iter() {
