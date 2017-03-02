@@ -4,6 +4,7 @@ use hyper::Client;
 use hyper::status::StatusCode;
 use rand::{Rng, thread_rng};
 use std::collections::{HashSet, HashMap};
+use std::f32;
 use std::net::SocketAddr;
 use std::time::Duration;
 use serde_json as json;
@@ -15,7 +16,7 @@ use url::Url;
 #[derive(Debug, PartialEq)]
 struct EndpointState {
     weight: f32,
-    load: f64,
+    load: f32,
 }
 
 type EndpointMap = Arc<RwLock<HashMap<SocketAddr, Arc<RwLock<EndpointState>>>>>;
@@ -186,8 +187,9 @@ impl ::Endpointer for Endpointer {
                            s1.weight,
                            s1.load);
 
-                    // TODO Weighting.
-                    if s0.load < s1.load {
+                    let load0 = weighted_load(s0.load, s0.weight);
+                    let load1 = weighted_load(s1.load, s1.weight);
+                    if load0 < load1 {
                         (addr0.clone(), (*state0).clone())
                     } else {
                         (addr1.clone(), (*state1).clone())
@@ -209,6 +211,15 @@ impl ::Endpointer for Endpointer {
                 })
             }
         }
+    }
+}
+
+/// The higher the weight, the lower the load.
+fn weighted_load(load: f32, weight: f32) -> f32 {
+    if weight == 0.0 {
+        f32::INFINITY
+    } else {
+        load / weight
     }
 }
 
