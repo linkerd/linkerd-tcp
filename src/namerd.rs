@@ -214,7 +214,7 @@ impl ::Endpointer for Endpointer {
     }
 }
 
-/// The higher the weight, the lower the load.
+/// When weights go high, loads go low.
 fn weighted_load(load: f32, weight: f32) -> f32 {
     if weight == 0.0 {
         f32::INFINITY
