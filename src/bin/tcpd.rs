@@ -96,9 +96,9 @@ fn main() {
                                                   namerd_interval,
                                                   namerd_ns.to_string(),
                                                   target_path.to_string());
-        info!("Querying namerd for {} on {} every {}s",
-              namerd_addr,
+        info!("Updating {} from {} every {}s",
               target_path,
+              namerd_addr,
               namerd_interval.as_secs());
 
         let buffer = Rc::new(RefCell::new(vec![0; WINDOW_SIZE]));
