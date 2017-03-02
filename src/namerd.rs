@@ -83,17 +83,20 @@ impl Endpointer {
 }
 
 fn update(namerd_addrs: Vec<NamerdAddr>, endpoints: EndpointMap) {
-    // TODO weights
-    let addrs = namerd_addrs.iter()
-        .map(|na| {
+    let weights = {
+        let mut weights = HashMap::new();
+        for na in namerd_addrs.iter() {
             let ip = na.ip.parse().unwrap();
-            SocketAddr::new(ip, na.port)
-        })
-        .collect::<HashSet<SocketAddr>>();
+            let w = na.meta.endpoint_addr_weight.unwrap_or(1.0);
+            weights.insert(SocketAddr::new(ip, na.port), w);
+        }
+        weights
+    };
+    let addrs = weights.keys().collect::<HashSet<&SocketAddr>>();
 
     let mut eps = endpoints.write().unwrap();
 
-    // Figure out which endpoints have been removed. And then remove them.
+    // Figure out which endpoints have been removed.
     let rm_keys = eps.keys()
         .filter_map(|&a| if addrs.contains(&a) {
             None
@@ -101,6 +104,8 @@ fn update(namerd_addrs: Vec<NamerdAddr>, endpoints: EndpointMap) {
             Some(a.clone())
         })
         .collect::<HashSet<SocketAddr>>();
+
+    // Then, remove them.
     for k in rm_keys.iter() {
         trace!("removing {:?}", k);
         eps.remove(&k);
@@ -108,13 +113,19 @@ fn update(namerd_addrs: Vec<NamerdAddr>, endpoints: EndpointMap) {
 
     // Finally, add new endpoints.
     for addr in addrs.iter() {
-        if !eps.contains_key(&addr) {
-            trace!("Adding {}", addr);
+        let weight = weights[*addr];
+        if eps.contains_key(addr) {
+            trace!("Updating {} *{}", addr, weight);
+            let mut s = eps.get(addr).unwrap().write().unwrap();
+            s.weight = weight;
+
+        } else {
+            trace!("Adding {} *{}", addr, weight);
             let state = Arc::new(RwLock::new(EndpointState {
-                weight: 1.0,
+                weight: weight,
                 load: 0.0,
             }));
-            eps.insert(addr.clone(), state);
+            eps.insert(**addr, state);
         }
     }
 }
@@ -141,42 +152,62 @@ impl ::WithAddr for Endpoint {
 impl ::Endpointer for Endpointer {
     type Endpoint = Endpoint;
 
-    fn endpoint(&self) -> Endpoint {
+    fn endpoint(&self) -> Option<Endpoint> {
         let endpoints = self.endpoints.read().unwrap();
+
         let addrs: Vec<(&SocketAddr, &Arc<RwLock<EndpointState>>)> = endpoints.iter().collect();
+        match addrs.len() {
+            0 => None,
+            n => {
+                let (addr, state) = if n == 1 {
+                    let (addr0, state0) = addrs[0];
+                    (addr0.clone(), (*state0).clone())
+                } else {
+                    // Pick two distinct endpoints at random.
+                    let (i0, i1) = {
+                        let mut rng = thread_rng();
+                        let i0 = rng.gen_range(0, n);
+                        let mut i1 = i0;
+                        while i0 == i1 {
+                            i1 = rng.gen_range(0, n);
+                        }
+                        (i0, i1)
+                    };
+                    let (addr0, state0) = addrs[i0];
+                    let (addr1, state1) = addrs[i1];
 
-        // Select two nodes at random and choose the lesser-loaded node.
-        // TODO Weighting.
-        let (addr, state) = {
-            let (addr0, state0): (&SocketAddr, &Arc<RwLock<EndpointState>>) =
-                *thread_rng().choose(&addrs).unwrap();
-            let (addr1, state1): (&SocketAddr, &Arc<RwLock<EndpointState>>) =
-                *thread_rng().choose(&addrs).unwrap();
-            let load0 = (*state0).read().unwrap().load;
-            let load1 = (*state1).read().unwrap().load;
-            trace!("Choosing between {} @{} and {} @{}",
-                   addr0,
-                   load0,
-                   addr1,
-                   load1);
-            if load0 < load1 {
-                (addr0.clone(), (*state0).clone())
-            } else {
-                (addr1.clone(), (*state1).clone())
+                    let s0 = (*state0).read().unwrap();
+                    let s1 = (*state1).read().unwrap();
+                    trace!("Choosing between {} *{} @{} and {} *{} @{}",
+                           addr0,
+                           s0.weight,
+                           s0.load,
+                           addr1,
+                           s1.weight,
+                           s1.load);
+
+                    // TODO Weighting.
+                    if s0.load < s1.load {
+                        (addr0.clone(), (*state0).clone())
+                    } else {
+                        (addr1.clone(), (*state1).clone())
+                    }
+                };
+
+                // XXX currently we use a simple load metric (# active
+                // conns).  This load metric should be pluggable to
+                // account for throughput, etc.
+                {
+                    let mut state = state.write().unwrap();
+                    state.load += 1.0;
+                    trace!("Using {} {:?}", addr, *state);
+                }
+
+                Some(Endpoint {
+                    addr: addr,
+                    state: state,
+                })
             }
-        };
-
-        // XXX currently we use a simple load metric (# active conns).
-        // This load metric should be pluggable to account for
-        // throughput, etc.
-        {
-            let mut state = state.write().unwrap();
-            state.load += 1.0;
-            trace!("Using {} {:?}", addr, *state);
-        }
-        Endpoint {
-            addr: addr,
-            state: state,
         }
     }
 }
@@ -202,5 +233,15 @@ struct NamerdResponse {
 struct NamerdAddr {
     ip: String,
     port: u16,
-    meta: HashMap<String, String>,
+    meta: Meta,
+}
+
+#[derive(Debug, Deserialize)]
+struct Meta {
+    authority: Option<String>,
+
+    #[serde(rename = "nodeName")]
+    node_name: Option<String>,
+
+    endpoint_addr_weight: Option<f32>,
 }

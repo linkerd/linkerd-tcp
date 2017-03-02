@@ -32,7 +32,7 @@ fn stderr(msg: String) {
 fn main() {
     drop(env_logger::init());
 
-    let tcpd_app = App::new("tcpd")
+    let app = App::new("tcpd")
         .version(crate_version!())
         .about(crate_description!())
         .author(crate_authors!("\n"))
@@ -69,7 +69,7 @@ fn main() {
             .index(1)
             .help("Destination name (e.g. /svc/foo)"));
 
-    let opts = tcpd_app.get_matches();
+    let opts = app.get_matches();
     let listen_addr = opts.value_of("listen-addr").unwrap().parse().unwrap();
     let namerd_addr = opts.value_of("namerd-addr").unwrap().parse().unwrap();
     let namerd_ns = opts.value_of("namerd-ns").unwrap();
@@ -103,29 +103,32 @@ fn main() {
 
         let buffer = Rc::new(RefCell::new(vec![0; WINDOW_SIZE]));
         listener.incoming().for_each(move |(up_stream, up_addr)| {
-            let down_endpoint = namerd.endpoint();
-            let down_addr = down_endpoint.addr();
-
-            // debug!("Proxying {} to {}", up_addr, down_addr);
-            let connect = TcpStream::connect(&down_addr, &handle);
-            let tx = {
-                let buffer = buffer.clone();
-                connect.and_then(|down_stream| transmit_duplex(up_stream, down_stream, buffer))
+            match namerd.endpoint() {
+                None => (),
+                Some(down_endpoint) => {
+                    let down_addr = down_endpoint.addr();
+                    // debug!("Proxying {} to {}", up_addr, down_addr);
+                    let connect = TcpStream::connect(&down_addr, &handle);
+                    let tx = {
+                        let buffer = buffer.clone();
+                        connect.and_then(|down_stream| transmit_duplex(up_stream, down_stream, buffer))
+                    };
+                    handle.spawn(tx.then(move |res| {
+                        match res {
+                            Err(e) => error!("Error proxying {} to {}: {}", up_addr, down_addr, e),
+                            Ok((down_bytes, up_bytes)) => {
+                                drop(down_endpoint); // make sure this is moved into this scope.
+                                debug!("proxied {} to {}: down={}B up={}B",
+                                       up_addr,
+                                       down_addr,
+                                       down_bytes,
+                                       up_bytes)
+                            }
+                        };
+                        Ok(())
+                    }));
+                }
             };
-            handle.spawn(tx.then(move |res| {
-                match res {
-                    Err(e) => error!("Error proxying {} to {}: {}", up_addr, down_addr, e),
-                    Ok((down_bytes, up_bytes)) => {
-                        drop(down_endpoint); // make sure this is moved into this scope.
-                        debug!("proxied {} to {}: down={}B up={}B",
-                               up_addr,
-                               down_addr,
-                               down_bytes,
-                               up_bytes)
-                    }
-                };
-                Ok(())
-            }));
             Ok(())
         })
     };

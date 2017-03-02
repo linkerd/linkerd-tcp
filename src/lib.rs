@@ -27,5 +27,5 @@ pub trait WithAddr {
 
 pub trait Endpointer {
     type Endpoint: WithAddr;
-    fn endpoint(&self) -> Self::Endpoint;
+    fn endpoint(&self) -> Option<Self::Endpoint>;
 }
