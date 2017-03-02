@@ -22,25 +22,24 @@ struct EndpointState {
 type EndpointMap = Arc<RwLock<HashMap<SocketAddr, Arc<RwLock<EndpointState>>>>>;
 
 pub struct Endpointer {
+    endpoints: EndpointMap,
+
     is_running: Arc<AtomicBool>,
 
     /// The thread is moved into the Endpointer so its lifetime is
     /// managed appropriately.
     #[allow(dead_code)]
     thread: thread::JoinHandle<()>,
-
-    endpoints: EndpointMap,
 }
 
 impl Endpointer {
+    /// An Endpointer that periodically polls namerd, in a dedicated
+    /// thread, to resolve a name to a set of addresses.
     pub fn periodic(addr: &SocketAddr,
                     period: Duration,
                     namespace: String,
                     target: String)
                     -> Endpointer {
-        let is_running = Arc::new(AtomicBool::new(true));
-        let endpoints: EndpointMap = Arc::new(RwLock::new(HashMap::new()));
-
         let thread_name = format!("namerd-{}-{}-{}",
                                   addr.ip(),
                                   addr.port().to_string(),
@@ -54,6 +53,8 @@ impl Endpointer {
             Url::parse_with_params(&base, &[("path", &target)]).unwrap()
         };
 
+        let is_running = Arc::new(AtomicBool::new(true));
+        let endpoints = Arc::new(RwLock::new(HashMap::new()));
         Endpointer {
             is_running: is_running.clone(),
             endpoints: endpoints.clone(),
@@ -136,9 +137,11 @@ fn update_endpoints(namerd_addrs: Vec<NamerdAddr>, endpoints: EndpointMap) {
     for addr in addrs.iter() {
         let weight = weights[*addr];
         if eps.contains_key(addr) {
-            trace!("Updating {} *{}", addr, weight);
             let mut s = eps.get(addr).unwrap().write().unwrap();
-            s.weight = weight;
+            if s.weight != weight {
+                trace!("Updating {} *{}", addr, weight);
+                s.weight = weight;
+            }
 
         } else {
             trace!("Adding {} *{}", addr, weight);
@@ -185,7 +188,10 @@ impl ::Endpointer for Endpointer {
                     (addr0.clone(), (*state0).clone())
                 } else {
                     // Pick two distinct endpoints at random.
-                    let (i0, i1) = {
+                    let (i0, i1) = if n == 2 {
+                        // If there are only two, no need to roll the die.
+                        (0, 1)
+                    } else {
                         let mut rng = thread_rng();
                         let i0 = rng.gen_range(0, n);
                         let mut i1 = i0;
@@ -199,16 +205,19 @@ impl ::Endpointer for Endpointer {
 
                     let s0 = (*state0).read().unwrap();
                     let s1 = (*state1).read().unwrap();
-                    trace!("Choosing between {} *{} @{} and {} *{} @{}",
+                    trace!("Choosing between {} @{}/{} and {} @{}/{}",
                            addr0,
-                           s0.weight,
                            s0.load,
+                           s0.weight,
                            addr1,
-                           s1.weight,
-                           s1.load);
+                           s1.load,
+                           s1.weight);
 
-                    let load0 = weighted_load(s0.load, s0.weight);
-                    let load1 = weighted_load(s1.load, s1.weight);
+                    // When weights go high, loads go low. Note that
+                    // division by zero yields a load of infinity,
+                    // which is what we want.
+                    let load0 = s0.load / s0.weight;
+                    let load1 = s1.load / s1.weight;
                     if load0 < load1 {
                         (addr0.clone(), (*state0).clone())
                     } else {
@@ -231,15 +240,6 @@ impl ::Endpointer for Endpointer {
                 })
             }
         }
-    }
-}
-
-/// When weights go high, loads go low.
-fn weighted_load(load: f32, weight: f32) -> f32 {
-    if weight == 0.0 {
-        f32::INFINITY
-    } else {
-        load / weight
     }
 }
 

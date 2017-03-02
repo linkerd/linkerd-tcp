@@ -1,6 +1,6 @@
 [package]
-name = "galadriel"
-description = """Experiments in using rust and tokio-core to build networking tools"""
+name = "linkerd_tcp"
+description = "A native TCP proxy for the linkerd service mesh"
 version = "0.0.1"
 authors = [
   "Steve Jenson <stevej@buoyant.io>",

@@ -7,41 +7,37 @@ extern crate log;
 extern crate env_logger;
 #[macro_use]
 extern crate futures;
-extern crate galadriel;
+extern crate linkerd_tcp;
 extern crate tokio_core;
 
 use clap::{Arg, App};
 use futures::{Future, Stream};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::io::{self, Write};
-use std::process;
+use std::io;
+use std::net::SocketAddr;
 use std::time::Duration;
 use tokio_core::reactor::Core;
 use tokio_core::net::{TcpListener, TcpStream};
 
-use galadriel::{BufferedTransfer, Endpointer, WithAddr};
-use galadriel::namerd;
+use linkerd_tcp::{BufferedTransfer, Endpointer, WithAddr};
+use linkerd_tcp::namerd;
 
 const WINDOW_SIZE: usize = 64 * 1024;
-
-fn stderr(msg: String) {
-    let _ = writeln!(&mut io::stderr(), "{}", msg);
-}
 
 fn main() {
     drop(env_logger::init());
 
-    let app = App::new("tcpd")
+    let app = App::new(crate_name!())
         .version(crate_version!())
         .about(crate_description!())
-        .author(crate_authors!("\n"))
         .arg(Arg::with_name("listen-addr")
             .short("l")
             .long("listen-addr")
             .default_value("0.0.0.0:7575")
             .takes_value(true)
             .value_name("ADDR")
+            .validator(is_socket_addr)
             .help("Accept connections on the given local address and port"))
         .arg(Arg::with_name("namerd-addr")
             .short("n")
@@ -49,6 +45,7 @@ fn main() {
             .default_value("127.0.0.1:4180")
             .takes_value(true)
             .value_name("ADDR")
+            .validator(is_socket_addr)
             .help("The address of namerd's HTTP interface"))
         .arg(Arg::with_name("namerd-ns")
             .short("N")
@@ -67,6 +64,7 @@ fn main() {
         .arg(Arg::with_name("TARGET")
             .required(true)
             .index(1)
+            .validator(is_path_like)
             .help("Destination name (e.g. /svc/foo)"));
 
     let opts = app.get_matches();
@@ -77,41 +75,44 @@ fn main() {
         let i = opts.value_of("namerd-interval").unwrap().parse().unwrap();
         Duration::from_secs(i)
     };
-
     let target_path = opts.value_of("TARGET").unwrap();
-    if !target_path.starts_with("/") {
-        stderr(format!("TARGET not a /path: {}", target_path));
-        process::exit(64); // EX_USAGE
-    }
 
-    // Create the event loop and TCP listener we'll accept connections on.
+    let balancer = namerd::Endpointer::periodic(&namerd_addr,
+                                                namerd_interval,
+                                                namerd_ns.to_string(),
+                                                target_path.to_string());
+    info!("Updating {} from {} every {}s",
+          target_path,
+          namerd_addr,
+          namerd_interval.as_secs());
+
+    // Create the event loop. All work done in the service of proxying
+    // requests is done on this reactor in the main thread.
     let mut core = Core::new().unwrap();
 
+    // Listen on a socket. For each connection accepted, ask the
+    // balancer for a downstream endpoint. Initiate a connection to
+    // that endpoint and proxy all data between the upstream and
+    // downstream connections, copying data into a temporary buffer.
     let proxy = {
         let handle = core.handle();
         let listener = TcpListener::bind(&listen_addr, &handle).unwrap();
         info!("Listening on {}", listen_addr);
 
-        let namerd = namerd::Endpointer::periodic(&namerd_addr,
-                                                  namerd_interval,
-                                                  namerd_ns.to_string(),
-                                                  target_path.to_string());
-        info!("Updating {} from {} every {}s",
-              target_path,
-              namerd_addr,
-              namerd_interval.as_secs());
-
         let buffer = Rc::new(RefCell::new(vec![0; WINDOW_SIZE]));
         listener.incoming().for_each(move |(up_stream, up_addr)| {
-            match namerd.endpoint() {
-                None => (),
+            match balancer.endpoint() {
+                None => error!("No endpoints are available"),
                 Some(down_endpoint) => {
+                    // TODO retry on failed connections...
                     let down_addr = down_endpoint.addr();
                     // debug!("Proxying {} to {}", up_addr, down_addr);
                     let connect = TcpStream::connect(&down_addr, &handle);
                     let tx = {
                         let buffer = buffer.clone();
-                        connect.and_then(|down_stream| transmit_duplex(up_stream, down_stream, buffer))
+                        connect.and_then(|down_stream| {
+                            transmit_duplex(up_stream, down_stream, buffer)
+                        })
                     };
                     handle.spawn(tx.then(move |res| {
                         match res {
@@ -133,10 +134,21 @@ fn main() {
         })
     };
 
-    // You can run multiple `core.run()` in multiple threads, and use
-    // SO_REUSEPORT tokio does not currently support thread pool
-    // executors but you can thread.spawn N times.
     core.run(proxy).unwrap();
+}
+
+fn is_path_like(v: String) -> Result<(), String> {
+    if v.starts_with("/") {
+        Ok(())
+    } else {
+        Err("The value did not start with a /".to_string())
+    }
+}
+
+fn is_socket_addr(v: String) -> Result<(), String> {
+    v.parse::<SocketAddr>()
+        .map(|_| ())
+        .map_err(|_| "The value must be an address in the form IP:PORT".to_string())
 }
 
 fn transmit_duplex(up_stream: TcpStream,
