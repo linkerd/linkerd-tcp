@@ -8,35 +8,20 @@ extern crate env_logger;
 #[macro_use]
 extern crate futures;
 extern crate galadriel;
-#[macro_use]
-extern crate hyper;
-extern crate rand;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
 extern crate tokio_core;
-extern crate url;
 
 use clap::{Arg, App};
 use futures::{Future, Stream};
-use hyper::Client;
-use hyper::status::StatusCode;
-use rand::{Rng, thread_rng};
-use serde_json as json;
 use std::cell::RefCell;
-use std::collections::{HashSet, HashMap};
 use std::rc::Rc;
 use std::io::{self, Write};
-use std::net::SocketAddr;
 use std::process;
-use std::sync::{Arc, atomic, RwLock};
-use std::thread;
 use std::time::Duration;
 use tokio_core::reactor::Core;
 use tokio_core::net::{TcpListener, TcpStream};
-use url::Url;
 
-use galadriel::transfer::BufferedTransfer;
+use galadriel::{BufferedTransfer, Endpointer, WithAddr};
+use galadriel::namerd;
 
 const WINDOW_SIZE: usize = 64 * 1024;
 
@@ -47,7 +32,7 @@ fn stderr(msg: String) {
 fn main() {
     drop(env_logger::init());
 
-    let tcpd_app = App::new(crate_name!())
+    let tcpd_app = App::new("tcpd")
         .version(crate_version!())
         .about(crate_description!())
         .author(crate_authors!("\n"))
@@ -107,10 +92,10 @@ fn main() {
         let listener = TcpListener::bind(&listen_addr, &handle).unwrap();
         info!("Listening on {}", listen_addr);
 
-        let namerd = NamerdLookup::periodic(&namerd_addr,
-                                            namerd_interval,
-                                            namerd_ns.to_string(),
-                                            target_path.to_string());
+        let namerd = namerd::Endpointer::periodic(&namerd_addr,
+                                                  namerd_interval,
+                                                  namerd_ns.to_string(),
+                                                  target_path.to_string());
         info!("Querying namerd for {} on {} every {}s",
               namerd_addr,
               target_path,
@@ -160,198 +145,4 @@ fn transmit_duplex(up_stream: TcpStream,
     let down_tx = BufferedTransfer::new(up.clone(), down.clone(), buffer.clone());
     let up_tx = BufferedTransfer::new(down, up, buffer.clone());
     Box::new(down_tx.join(up_tx))
-}
-
-trait WithAddr {
-    fn addr(&self) -> SocketAddr;
-}
-
-trait Endpointer {
-    type Endpoint: WithAddr;
-    fn endpoint(&self) -> Self::Endpoint;
-}
-
-
-#[derive(Debug, PartialEq)]
-struct EndpointState {
-    weight: f32,
-    load: f64,
-}
-
-struct NamerdLookup {
-    is_running: Arc<atomic::AtomicBool>,
-    thread: thread::JoinHandle<()>,
-    endpoints: Arc<RwLock<HashMap<SocketAddr, Arc<RwLock<EndpointState>>>>>,
-}
-
-impl NamerdLookup {
-    fn periodic(addr: &SocketAddr,
-                period: Duration,
-                namespace: String,
-                name: String)
-                -> NamerdLookup {
-        let is_running = Arc::new(atomic::AtomicBool::new(true));
-        let endpoints: Arc<RwLock<HashMap<SocketAddr, Arc<RwLock<EndpointState>>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let thread = {
-            let is_running = is_running.clone();
-            let endpoints = endpoints.clone();
-            let addr = addr.clone();
-            let url = {
-                let base = format!("http://{}:{}/api/1/resolve/{}",
-                                   addr.ip(),
-                                   addr.port().to_string(),
-                                   namespace);
-                Url::parse_with_params(&base, &[("path", &name)]).unwrap()
-            };
-            thread::Builder::new()
-                .name(format!("namerd-{}-{}", addr.ip(), addr.port()).to_string())
-                .spawn(move || {
-                    let client = Client::new();
-                    while is_running.load(atomic::Ordering::Relaxed) {
-                        match client.get(url.clone()).send() {
-                            Err(e) => stderr(format!("Error fetching addresses: {}", e)),
-                            Ok(rsp) => {
-                                if rsp.status == StatusCode::Ok {
-                                    let parsed: json::Result<NamerdResponse> =
-                                        json::from_reader(rsp);
-                                    match parsed {
-                                        Err(e) => {
-                                            stderr(format!("Failed to parse response: {}", e))
-                                        }
-                                        Ok(rsp) => {
-                                            // TODO extract weights from meta.
-                                            let addrs = rsp.addrs
-                                                .iter()
-                                                .map(|na| {
-                                                    let ip = na.ip.parse().unwrap();
-                                                    SocketAddr::new(ip, na.port)
-                                                })
-                                                .collect::<HashSet<SocketAddr>>();
-                                            let mut eps = endpoints.write().unwrap();
-                                            let rm_keys = eps.keys()
-                                                .filter_map(|&a| if addrs.contains(&a) {
-                                                    None
-                                                } else {
-                                                    Some(a.clone())
-                                                })
-                                                .collect::<HashSet<SocketAddr>>();
-                                            for k in rm_keys.iter() {
-                                                println!("removing {:?}", k);
-                                                eps.remove(&k);
-                                            }
-                                            for addr in addrs.iter() {
-                                                if !eps.contains_key(&addr) {
-                                                    println!("Adding {}", addr);
-                                                    eps.insert(addr.clone(),
-                                                               Arc::new(RwLock::new(EndpointState {
-                                                                   weight: 1.0,
-                                                                   load: 0.0,
-                                                               })));
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    stderr(format!("Failed to fetch addresses: {}", rsp.status));
-                                }
-                            }
-                        }
-                        thread::sleep(period);
-                    }
-                })
-                .unwrap()
-        };
-        NamerdLookup {
-            is_running: is_running,
-            thread: thread,
-            endpoints: endpoints,
-        }
-    }
-}
-
-impl Drop for NamerdLookup {
-    fn drop(&mut self) {
-        info!("shutting down namerd");
-        self.is_running.store(false, atomic::Ordering::SeqCst);
-        // self.thread.join().unwrap();
-    }
-}
-
-struct Endpoint {
-    addr: SocketAddr,
-    state: Arc<RwLock<EndpointState>>,
-}
-
-impl WithAddr for Endpoint {
-    fn addr(&self) -> SocketAddr {
-        self.addr.clone()
-    }
-}
-
-impl Endpointer for NamerdLookup {
-    type Endpoint = Endpoint;
-
-    fn endpoint(&self) -> Endpoint {
-        let endpoints = self.endpoints.read().unwrap();
-        let addrs: Vec<(&SocketAddr, &Arc<RwLock<EndpointState>>)> = endpoints.iter().collect();
-
-        // Select two nodes at random and choose the lesser-loaded node.
-        // TODO Weighting.
-        let (addr, state) = {
-            let (addr0, state0): (&SocketAddr, &Arc<RwLock<EndpointState>>) =
-                *thread_rng().choose(&addrs).unwrap();
-            let (addr1, state1): (&SocketAddr, &Arc<RwLock<EndpointState>>) =
-                *thread_rng().choose(&addrs).unwrap();
-            let load0 = (*state0).read().unwrap().load;
-            let load1 = (*state1).read().unwrap().load;
-            trace!("Choosing between {} @{} and {} @{}",
-                   addr0,
-                   load0,
-                   addr1,
-                   load1);
-            if load0 < load1 {
-                (addr0.clone(), (*state0).clone())
-            } else {
-                (addr1.clone(), (*state1).clone())
-            }
-        };
-
-        // XXX currently we use a simple load metric (# active conns).
-        // This load metric should be pluggable to account for
-        // throughput, etc.
-        {
-            let mut state = state.write().unwrap();
-            state.load += 1.0;
-            trace!("Using {} {:?}", addr, *state);
-        }
-        Endpoint {
-            addr: addr,
-            state: state,
-        }
-    }
-}
-
-impl Drop for Endpoint {
-    fn drop(&mut self) {
-        let mut state = self.state.write().unwrap();
-        trace!("releasing endpoint: {:?}", *state);
-        assert!(state.load >= 1.0);
-        state.load -= 1.0;
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct NamerdResponse {
-    #[serde(rename = "type")]
-    kind: String,
-    addrs: Vec<NamerdAddr>,
-    meta: HashMap<String, String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NamerdAddr {
-    ip: String,
-    port: u16,
-    meta: HashMap<String, String>,
 }
