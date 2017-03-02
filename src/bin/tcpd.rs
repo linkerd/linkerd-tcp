@@ -115,7 +115,7 @@ fn main() {
             let down_endpoint = namerd.endpoint();
             let down_addr = down_endpoint.addr();
 
-            debug!("Proxying {} to {}", up_addr, down_addr);
+            // debug!("Proxying {} to {}", up_addr, down_addr);
             let connect = TcpStream::connect(&down_addr, &handle);
             let tx = {
                 let buffer = buffer.clone();
@@ -125,7 +125,8 @@ fn main() {
                 match res {
                     Err(e) => error!("Error proxying {} to {}: {}", up_addr, down_addr, e),
                     Ok((down_bytes, up_bytes)) => {
-                        debug!("Proxied {} to {}: down={}B up={}B",
+                        drop(down_endpoint); // make sure this is moved into this scope.
+                        debug!("proxied {} to {}: down={}B up={}B",
                                up_addr,
                                down_addr,
                                down_bytes,
@@ -289,14 +290,26 @@ impl Endpointer for NamerdLookup {
         let endpoints = self.endpoints.read().unwrap();
         let addrs: Vec<(&SocketAddr, &Arc<RwLock<EndpointState>>)> = endpoints.iter().collect();
 
-        // TODO choose an endpoint more intelligently.
-        // E.g.
-        // - if there are more nodes, choose two distinct nodes (at random)
-        // - choose based on weight and load
-        let (addr, state): (&SocketAddr, &Arc<RwLock<EndpointState>>) =
-            *thread_rng().choose(&addrs).unwrap();
-        let addr = addr.clone();
-        let state = (*state).clone();
+        // Select two nodes at random and choose the lesser-loaded node.
+        // TODO Weighting.
+        let (addr, state) = {
+            let (addr0, state0): (&SocketAddr, &Arc<RwLock<EndpointState>>) =
+                *thread_rng().choose(&addrs).unwrap();
+            let (addr1, state1): (&SocketAddr, &Arc<RwLock<EndpointState>>) =
+                *thread_rng().choose(&addrs).unwrap();
+            let load0 = (*state0).read().unwrap().load;
+            let load1 = (*state1).read().unwrap().load;
+            trace!("Choosing between {} @{} and {} @{}",
+                   addr0,
+                   load0,
+                   addr1,
+                   load1);
+            if load0 < load1 {
+                (addr0.clone(), (*state0).clone())
+            } else {
+                (addr1.clone(), (*state1).clone())
+            }
+        };
 
         // XXX currently we use a simple load metric (# active conns).
         // This load metric should be pluggable to account for
@@ -304,7 +317,7 @@ impl Endpointer for NamerdLookup {
         {
             let mut state = state.write().unwrap();
             state.load += 1.0;
-            debug!("Using {} {:?}", addr, *state);
+            trace!("Using {} {:?}", addr, *state);
         }
         Endpoint {
             addr: addr,
@@ -316,6 +329,7 @@ impl Endpointer for NamerdLookup {
 impl Drop for Endpoint {
     fn drop(&mut self) {
         let mut state = self.state.write().unwrap();
+        trace!("releasing endpoint: {:?}", *state);
         assert!(state.load >= 1.0);
         state.load -= 1.0;
     }
