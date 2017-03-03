@@ -1,29 +1,77 @@
-# Galadriel is an experiment in building TCP middleware in Rust
+# linkerd.tcp #
 
-Quick howto
+A native TCP proxy for the linkerd service mesh.
 
-## Building and Running
+Status: _experimental_
 
-Mac/Linux
+## Features ##
 
-* Install Rust with `curl -sSf https://static.rust-lang.org/rustup.sh | sh`
-* `cargo build` (or `cargo build --release` if you're ready for production)
-* `target/debug/proxy2` or `target/release/proxy2`
+- Resolves destinations through namerd for generic, dynamic service
+  discovery
+- Least-connection layer 4 load balancing
+- Supports endpoint weighting (i.e. for "red line" testing)
 
-## FAQ
+### TODO ###
 
-### Usage
+- [] Stream updates from namerd. (Currently polling).
+- [] Circuit breaking.
+- [] Initiate downstream connections ahead-of-time to reduce
+  connection establishment latency.
+- [] Metrics
+- [] Config file (read linkerd's config?)
+- [] Native TLS upstream
+- [] Native TLS downstream
+- [] TLS Key rotation
 
-`target/release/proxy2 source_ip:port target_ip:port`
+## Quickstart ##
 
-Yes, you have to use IP addresses for now, we don't resolve names.
+1. Install [Rust and Cargo][install-rust].
+2. Configure and run [namerd][namerd] with the _io.l5d.httpController_ interface.
+3. From this repository, run: `cargo run -- -i 10 -n
+   namerd.example.com:4180 -N mynamespace /svc/targetsvc`
 
-### Logging
-
-`RUST_LOG=debug target/release/proxy2` will show you tons of tokio logging messages.
+## Usage ##
 
 
 
-# License
+### Logging ###
 
-This is copyright Buoyant, Inc and released under the terms of the Apache License 2.0
+```
+tcpd 0.0.1
+Steve Jenson <stevej@buoyant.io>
+Oliver Gould <ver@buoyant.io>
+A native TCP proxy for the linkerd service mesh
+
+USAGE:
+    tcpd [OPTIONS] <TARGET>
+
+FLAGS:
+    -h, --help       Prints help information
+    -V, --version    Prints version information
+
+OPTIONS:
+    -l, --listen-addr <ADDR>        Accept connections on the given local address and port [default: 0.0.0.0:7575]
+    -n, --namerd-addr <ADDR>        The address of namerd's HTTP interface [default: 127.0.0.1:4180]
+    -i, --namerd-interval <SECS>    Namerd refresh interval in seconds [default: 60]
+    -N, --namerd-ns <NS>            Namerd namespace in which the target will be resolved [default: default]
+
+ARGS:
+    <TARGET>    Destination name (e.g. /svc/foo)
+```
+
+As in all rust applications, the `RUST_LOG` environment variable.
+
+
+## License ##
+
+Copyright 2017, Buoyant Inc. All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use these files except in compliance with the License. You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
+
+
+<!-- references -->
+[install-rust]: https://www.rust-lang.org/en-US/install.html
+[namerd]: https://github.com/linkerd/linkerd/tree/master/namerd
