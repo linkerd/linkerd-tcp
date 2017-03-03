@@ -1,132 +1,13 @@
-//! A simple Layer 4 proxy. Currently TCP only.
-
-#[macro_use]
-extern crate log;
-extern crate env_logger;
-#[macro_use]
-extern crate futures;
-#[macro_use]
-extern crate tokio_core;
+// !!! Code from here is verbatim from the tokio-socks5 example. !!!
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::env;
 use std::io::{self, Read, Write};
-use std::net::SocketAddr;
 use std::net::Shutdown;
-use std::str;
 
-use futures::{Future, Poll, Async};
-use futures::stream::Stream;
-use tokio_core::reactor::Core;
-use tokio_core::net::{TcpStream, TcpListener};
+use futures::{Async, Future, Poll};
 
-extern crate galadriel;
-use galadriel::pool;
-use galadriel::pool::{ConnectionPool, Pool};
-
-// This works! Use it!!
-fn main() {
-    drop(env_logger::init());
-
-    // The source addr for clients to connect to. we can either get it
-    // from the environment (ARGV[1]) or use a default
-    let addr = env::args().nth(1).unwrap_or("0.0.0.0:7575".to_string());
-    let addr = addr.parse()
-        .map_err(|err| {
-            panic!("unable to parse '{}' due to: {}.", addr, err);
-        })
-        .unwrap();
-
-    // The target addr to proxy connections to.
-    let target_addr = env::args().nth(2).unwrap_or("127.0.0.1:8080".to_string());
-    // we have to set this to a SocketAddr due to a type inference problem later.
-    let target_addr = target_addr.parse::<SocketAddr>()
-        .map_err(|err| {
-            panic!("unable to parse '{}' due to {}.", target_addr, err);
-        })
-        .unwrap();
-
-    // Create the event loop and TCP listener we'll accept connections on.
-    let mut core = Core::new().unwrap();
-    let handle = core.handle();
-    debug!("Creating a Connection Pool");
-    let pool = pool::new(target_addr.clone(), handle.clone());
-    // A shared buffer for a single proxy to share for ingress/egress.
-    let buffer = Rc::new(RefCell::new(vec![0; 64 * 1024]));
-    let listener = TcpListener::bind(&addr, &handle).unwrap();
-    info!("Listening for http connections on {}", addr);
-    let clients = listener.incoming().map(move |(socket, addr)| {
-        (Client {
-                buffer: buffer.clone(),
-                // type inference fails here if we don't parse it as a SocketAddr
-                addr: target_addr.clone(),
-                pool: &pool,
-            }
-            .serve(socket),
-         addr)
-    });
-
-    let handle = core.handle().clone();
-    let server = clients.for_each(|(client, addr)| {
-        handle.spawn(client.then(move |res| {
-            match res {
-                Ok((a, b)) => debug!("proxied {}/{} bytes for {}", a, b, addr),
-                Err(e) => error!("error for {}: {}", addr, e),
-            }
-            futures::finished(())
-        }));
-        Ok(())
-    });
-
-    // you can run multiple `core.run()` in multiple threads, and use SO_REUSEPORT
-    // tokio does not currently support thread pool executors but you can thread.spawn N times.
-    core.run(server).unwrap();
-}
-
-struct Client<'a> {
-    // A buffer for ingress/egress to share
-    buffer: Rc<RefCell<Vec<u8>>>,
-    // The remote server to connect to
-    addr: SocketAddr,
-    pool: &'a Pool,
-}
-
-impl<'a> Client<'a> {
-    // ingress is the incoming connection to proxy
-    fn serve(self, ingress: TcpStream) -> Box<Future<Item = (u64, u64), Error = io::Error>> {
-        let addr = self.addr.clone();
-        debug!("Getting a connection from the pool");
-        let connection = self.pool.checkout();
-
-        let connected = connection.map_err(move |err| {
-                panic!("unable to connect to {} due to reason: {}", addr, err);
-            })
-            .and_then(move |egress| {
-                // If outbound connection failure happens, it's because we're assuming success
-                // on the below line
-                debug!("Opening connection to egress address {}", addr);
-                Ok((ingress, egress))
-            });
-        
-        let buffer = self.buffer.clone();
-        // TODO: somewhere in here we need to return the connection to the pool
-        mybox(connected.and_then(move |(ingress, egress)| {
-            let ingress = Rc::new(ingress);
-            let egress = Rc::new(egress);
-
-            let half1 = Transfer::new(ingress.clone(), egress.clone(), buffer.clone());
-            let half2 = Transfer::new(egress, ingress, buffer);
-            half1.join(half2)
-        }))
-    }
-}
-
-// !!! Code from here is verbatim from the tokio-socks5 example. !!!
-
-fn mybox<F: Future + 'static>(f: F) -> Box<Future<Item = F::Item, Error = F::Error>> {
-    Box::new(f)
-}
+use tokio_core::net::TcpStream;
 
 /// A future representing reading all data from one side of a proxy connection
 /// and writing it to another.
@@ -136,7 +17,7 @@ fn mybox<F: Future + 'static>(f: F) -> Box<Future<Item = F::Item, Error = F::Err
 /// This is intended to show off how the combinators are not all that can be
 /// done with futures, but rather more custom (or optimized) implementations can
 /// be implemented with just a trait impl!
-struct Transfer {
+pub struct BufferedTransfer {
     // The two I/O objects we'll be reading.
     reader: Rc<TcpStream>,
     writer: Rc<TcpStream>,
@@ -145,16 +26,19 @@ struct Transfer {
     buf: Rc<RefCell<Vec<u8>>>,
 
     // The number of bytes we've written so far.
-    amt: u64,
+    atm: u64,
 }
 
-impl Transfer {
-    fn new(reader: Rc<TcpStream>, writer: Rc<TcpStream>, buffer: Rc<RefCell<Vec<u8>>>) -> Transfer {
-        Transfer {
+impl BufferedTransfer {
+    pub fn new(reader: Rc<TcpStream>,
+               writer: Rc<TcpStream>,
+               buffer: Rc<RefCell<Vec<u8>>>)
+               -> BufferedTransfer {
+        BufferedTransfer {
             reader: reader,
             writer: writer,
             buf: buffer,
-            amt: 0,
+            atm: 0,
         }
     }
 }
@@ -162,7 +46,7 @@ impl Transfer {
 // Here we implement the `Future` trait for `Transfer` directly. This does not
 // use any combinators, and shows how you might implement it in custom
 // situations if needed.
-impl Future for Transfer {
+impl Future for BufferedTransfer {
     // Our future resolves to the number of bytes transferred, or an I/O error
     // that happens during the connection, if any.
     type Item = u64;
@@ -227,9 +111,9 @@ impl Future for Transfer {
             let n = try_nb!((&*self.reader).read(&mut buffer));
             if n == 0 {
                 try!(self.writer.shutdown(Shutdown::Write));
-                return Ok(self.amt.into());
+                return Ok(self.atm.into());
             }
-            self.amt += n as u64;
+            self.atm += n as u64;
 
             // Unlike above, we don't handle `WouldBlock` specially, because
             // that would play into the logic mentioned above (tracking read
