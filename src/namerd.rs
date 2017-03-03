@@ -1,255 +1,102 @@
 //! Namerd Endpointer
 
-use hyper::Client;
+use bytes::{Buf, BufMut, IntoBuf, BytesMut};
+use futures::{Future, Stream, future};
+use futures::future::BoxFuture;
+use hyper::{Body, Chunk, Client};
+use hyper::client::Connect;
 use hyper::status::StatusCode;
-use rand::{Rng, thread_rng};
-use std::collections::{HashSet, HashMap};
-use std::f32;
-use std::net::SocketAddr;
-use std::time::Duration;
+use std::{f32, net, time};
+use std::collections::HashMap;
 use serde_json as json;
-use std::thread;
-use std::sync::{Arc, RwLock};
-use std::sync::atomic::{self, AtomicBool};
+use tokio_timer::Timer;
 use url::Url;
 
-#[derive(Debug, PartialEq)]
-struct EndpointState {
-    weight: f32,
-    load: f32,
-}
+#[derive(Debug)]
+pub struct NamerdError(String);
 
-type EndpointMap = Arc<RwLock<HashMap<SocketAddr, Arc<RwLock<EndpointState>>>>>;
+type AddrsFuture = BoxFuture<Vec<::WeightedAddr>, NamerdError>;
+type AddrsStream = Box<Stream<Item = Vec<::WeightedAddr>, Error = NamerdError>>;
 
-pub struct Endpointer {
-    endpoints: EndpointMap,
-
-    is_running: Arc<AtomicBool>,
-
-    /// The thread is moved into the Endpointer so its lifetime is
-    /// managed appropriately.
-    #[allow(dead_code)]
-    thread: thread::JoinHandle<()>,
-}
-
-impl Endpointer {
-    /// An Endpointer that periodically polls namerd, in a dedicated
-    /// thread, to resolve a name to a set of addresses.
-    pub fn periodic(addr: &SocketAddr,
-                    period: Duration,
-                    namespace: String,
-                    target: String)
-                    -> Endpointer {
-        let thread_name = format!("namerd-{}-{}-{}",
-                                  addr.ip(),
-                                  addr.port().to_string(),
-                                  target);
-
-        let url = {
-            let base = format!("http://{}:{}/api/1/resolve/{}",
-                               addr.ip(),
-                               addr.port().to_string(),
-                               namespace);
-            Url::parse_with_params(&base, &[("path", &target)]).unwrap()
-        };
-
-        let is_running = Arc::new(AtomicBool::new(true));
-        let endpoints = Arc::new(RwLock::new(HashMap::new()));
-        Endpointer {
-            is_running: is_running.clone(),
-            endpoints: endpoints.clone(),
-            thread: polling_thread(thread_name, url, period, is_running, endpoints),
-        }
-    }
-}
-
-fn polling_thread(thread_name: String,
-                  url: Url,
-                  period: Duration,
-                  is_running: Arc<AtomicBool>,
-                  endpoints: EndpointMap)
-                  -> thread::JoinHandle<()> {
-    thread::Builder::new()
-        .name(thread_name)
-        .spawn(move || {
-            let client = Client::new();
-            while is_running.load(atomic::Ordering::Relaxed) {
-                match client.get(url.clone()).send() {
-                    Err(e) => warn!("Error fetching addresses: {}", e),
-                    Ok(rsp) => {
-                        if rsp.status != StatusCode::Ok {
-                            warn!("Failed to fetch addresses: {}", rsp.status);
-                        } else {
-                            let r: json::Result<NamerdResponse> = json::from_reader(rsp);
-                            match r {
-                                Err(e) => warn!("Failed to parse response: {}", e),
-                                Ok(rsp) => {
-                                    if rsp.kind == "bound" {
-                                        update_endpoints(rsp.addrs, endpoints.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                thread::sleep(period);
-            }
-        })
-        .unwrap()
-}
-
-/// Update an EndpointMap in-place with a new set of namerd_addrs.
-fn update_endpoints(namerd_addrs: Vec<NamerdAddr>, endpoints: EndpointMap) {
-    // We never intentionally clear the EndpointMap.
-    if namerd_addrs.len() == 0 {
-        return;
-    }
-
-    let weights = {
-        let mut weights = HashMap::new();
-        for na in namerd_addrs.iter() {
-            let ip = na.ip.parse().unwrap();
-            let w = na.meta.endpoint_addr_weight.unwrap_or(1.0);
-            weights.insert(SocketAddr::new(ip, na.port), w);
-        }
-        weights
+/// Make a Resolver that periodically polls namerd to resolve a name
+/// to a set of addresses.
+pub fn resolve<C: Connect>(client: Client<C>,
+                           addr: net::SocketAddr,
+                           period: time::Duration,
+                           namespace: String,
+                           target: String)
+                           -> AddrsStream {
+    let url = {
+        let base = format!("http://{}:{}/api/1/resolve/{}",
+                           addr.ip(),
+                           addr.port().to_string(),
+                           namespace);
+        Url::parse_with_params(&base, &[("path", &target)]).unwrap()
     };
-    let addrs = weights.keys().collect::<HashSet<&SocketAddr>>();
 
-    let mut eps = endpoints.write().unwrap();
+    let stream = request(&client, url.clone())
+        .into_stream()
+        .chain(Timer::default()
+                   .interval(period)
+                   .map_err(|e| NamerdError(format!("timer error: {}", e)))
+                   .then(move |_| request(&client, url.clone())));
 
-    // Figure out which endpoints have been removed.
-    let rm_keys = eps.keys()
-        .filter_map(|&a| if addrs.contains(&a) {
-            None
-        } else {
-            Some(a.clone())
-        })
-        .collect::<HashSet<SocketAddr>>();
+    Box::new(stream)
+}
 
-    // Then, remove them.
-    for k in rm_keys.iter() {
-        trace!("removing {:?}", k);
-        eps.remove(&k);
-    }
+fn request<C: Connect>(client: &Client<C>,
+                       url: Url)
+                       -> Box<Future<Item = Vec<::WeightedAddr>, Error = NamerdError>> {
+    debug!("Polling namerd at {}", url.to_string());
+    let rsp = client.get(url.clone())
+        .map_err(|e| NamerdError(format!("request failed: {}", e)))
+        .and_then(|rsp| match *rsp.status() {
+                      StatusCode::Ok => parse_body(rsp.body()),
+                      status => invalid_rsp(status),
+                  });
+    Box::new(rsp)
+}
 
-    // Finally, add new endpoints.
-    for addr in addrs.iter() {
-        let weight = weights[*addr];
-        if eps.contains_key(addr) {
-            let mut s = eps.get(addr).unwrap().write().unwrap();
-            if s.weight != weight {
-                trace!("Updating {} *{}", addr, weight);
-                s.weight = weight;
-            }
+fn invalid_rsp(status: StatusCode) -> AddrsFuture {
+    future::err(NamerdError(format!("unexpected response status: {}", status))).boxed()
+}
 
-        } else {
-            trace!("Adding {} *{}", addr, weight);
-            let state = Arc::new(RwLock::new(EndpointState {
-                weight: weight,
-                load: 0.0,
-            }));
-            eps.insert(**addr, state);
+fn parse_body(body: Body) -> AddrsFuture {
+    body.collect()
+        .map_err(|e| NamerdError(format!("failed to read response: {}", e)))
+        .and_then(|chunks| parse_chunks(chunks))
+        .boxed()
+}
+
+fn parse_chunks(chunks: Vec<Chunk>) -> Result<Vec<::WeightedAddr>, NamerdError> {
+    let buf = {
+        let mut sz = 0;
+        for c in chunks.iter() {
+            sz += (*c).len();
         }
-    }
-}
-
-impl Drop for Endpointer {
-    fn drop(&mut self) {
-        info!("shutting down namerd");
-        self.is_running.store(false, atomic::Ordering::SeqCst);
-        // self.thread.join().unwrap();
-    }
-}
-
-pub struct Endpoint {
-    addr: SocketAddr,
-    state: Arc<RwLock<EndpointState>>,
-}
-
-impl ::WithAddr for Endpoint {
-    fn addr(&self) -> SocketAddr {
-        self.addr.clone()
-    }
-}
-
-impl ::Endpointer for Endpointer {
-    type Endpoint = Endpoint;
-
-    fn endpoint(&self) -> Option<Endpoint> {
-        let endpoints = self.endpoints.read().unwrap();
-
-        let addrs: Vec<(&SocketAddr, &Arc<RwLock<EndpointState>>)> = endpoints.iter().collect();
-        match addrs.len() {
-            0 => None,
-            n => {
-                let (addr, state) = if n == 1 {
-                    let (addr0, state0) = addrs[0];
-                    (addr0.clone(), (*state0).clone())
-                } else {
-                    // Pick two distinct endpoints at random.
-                    let (i0, i1) = if n == 2 {
-                        // If there are only two, no need to roll the die.
-                        (0, 1)
-                    } else {
-                        let mut rng = thread_rng();
-                        let i0 = rng.gen_range(0, n);
-                        let mut i1 = i0;
-                        while i0 == i1 {
-                            i1 = rng.gen_range(0, n);
-                        }
-                        (i0, i1)
-                    };
-                    let (addr0, state0) = addrs[i0];
-                    let (addr1, state1) = addrs[i1];
-
-                    let s0 = (*state0).read().unwrap();
-                    let s1 = (*state1).read().unwrap();
-                    trace!("Choosing between {} @{}/{} and {} @{}/{}",
-                           addr0,
-                           s0.load,
-                           s0.weight,
-                           addr1,
-                           s1.load,
-                           s1.weight);
-
-                    // When weights go high, loads go low. Note that
-                    // division by zero yields a load of infinity,
-                    // which is what we want.
-                    let load0 = s0.load / s0.weight;
-                    let load1 = s1.load / s1.weight;
-                    if load0 < load1 {
-                        (addr0.clone(), (*state0).clone())
-                    } else {
-                        (addr1.clone(), (*state1).clone())
-                    }
-                };
-
-                // XXX currently we use a simple load metric (# active
-                // conns).  This load metric should be pluggable to
-                // account for throughput, etc.
-                {
-                    let mut state = state.write().unwrap();
-                    state.load += 1.0;
-                    trace!("Using {} {:?}", addr, *state);
-                }
-
-                Some(Endpoint {
-                    addr: addr,
-                    state: state,
-                })
-            }
+        let mut buf = BytesMut::with_capacity(sz);
+        for c in chunks.iter() {
+            buf.put_slice(&*c)
         }
+        buf.freeze().into_buf()
+    };
+    let result: json::Result<NamerdResponse> = json::from_reader(buf.reader());
+    match result {
+        Err(e) => Err(NamerdError(format!("parse error: {}", e))),
+        Ok(ref nrsp) if nrsp.kind == "bound" => Ok(to_weighted_addrs(&nrsp.addrs)),
+        Ok(_) => Ok(vec![]),
     }
 }
 
-impl Drop for Endpoint {
-    fn drop(&mut self) {
-        let mut state = self.state.write().unwrap();
-        trace!("releasing endpoint: {:?}", *state);
-        assert!(state.load >= 1.0);
-        state.load -= 1.0;
+fn to_weighted_addrs(namerd_addrs: &[NamerdAddr]) -> Vec<::WeightedAddr> {
+    // We never intentionally clear the EndpointMap.
+    let mut weighted_addrs: Vec<::WeightedAddr> = Vec::new();
+    for na in namerd_addrs {
+        let addr = net::SocketAddr::new(na.ip.parse().unwrap(), na.port);
+        let w = na.meta.endpoint_addr_weight.unwrap_or(1.0);
+        weighted_addrs.push(::WeightedAddr(addr, w));
     }
+    weighted_addrs
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,4 +1,4 @@
-# linkerd.tcp #
+# linkerd-tcp #
 
 A native TCP proxy for the linkerd service mesh.
 
@@ -13,15 +13,18 @@ Status: _experimental_
 
 ### TODO ###
 
-- [] Stream updates from namerd. (Currently polling).
-- [] Circuit breaking.
-- [] Initiate downstream connections ahead-of-time to reduce
-  connection establishment latency.
-- [] Metrics
-- [] Config file (read linkerd's config?)
-- [] Native TLS upstream
-- [] Native TLS downstream
-- [] TLS Key rotation
+- [ ] Metrics (stevej)
+- [ ] Admin: export prom (stevej)
+- [ ] Stream updates from namerd. (Currently polling).
+- [ ] Config file
+- [ ] Native TLS upstream
+- [ ] Native TLS downstream
+
+#### Later ####
+
+- [ ] Configurable circuit breaking.
+- [ ] Configurable connection management.
+- [ ] TLS Key rotation
 
 ## Quickstart ##
 
@@ -34,16 +37,12 @@ Status: _experimental_
 
 
 
-### Logging ###
-
 ```
-tcpd 0.0.1
-Steve Jenson <stevej@buoyant.io>
-Oliver Gould <ver@buoyant.io>
+linkerd-tcp 0.0.1
 A native TCP proxy for the linkerd service mesh
 
 USAGE:
-    tcpd [OPTIONS] <TARGET>
+    linkerd-tcp [OPTIONS] <TARGET>
 
 FLAGS:
     -h, --help       Prints help information
@@ -54,12 +53,16 @@ OPTIONS:
     -n, --namerd-addr <ADDR>        The address of namerd's HTTP interface [default: 127.0.0.1:4180]
     -i, --namerd-interval <SECS>    Namerd refresh interval in seconds [default: 60]
     -N, --namerd-ns <NS>            Namerd namespace in which the target will be resolved [default: default]
+    -w, --window-size-kb <KB>        [default: 64]
 
 ARGS:
-    <TARGET>    Destination name (e.g. /svc/foo)
+    <TARGET>    Destination name (e.g. /svc/foo) to be resolved through namerd
 ```
 
-As in all rust applications, the `RUST_LOG` environment variable.
+
+### Logging ###
+
+As in most rust applications, the `RUST_LOG` environment variable.
 
 
 ## License ##

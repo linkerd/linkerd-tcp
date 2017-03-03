@@ -1,26 +1,36 @@
 [package]
-name = "linkerd_tcp"
+name = "linkerd-tcp"
 description = "A native TCP proxy for the linkerd service mesh"
 version = "0.0.1"
 authors = [
+  "Oliver Gould <ver@buoyant.io>",
   "Steve Jenson <stevej@buoyant.io>",
-  "Oliver Gould <ver@buoyant.io>"
 ]
+homepage = "https://linkerd.io"
 readme = "README.md"
 license = "Apache-2.0"
+
+[[bin]]
+name = "linkerd-tcp"
+# doc = false
 
 [profile.release]
 debug = true
 
 [dependencies]
+bytes = "0.4"
 clap = "2.20"
 env_logger = "0.3"
-futures = "0.1.9"
-hyper = "0.10"
+futures = "0.1"
+# We use newly-added tokio integration
+hyper = { git = "https://github.com/hyperium/hyper" }
+hyper-tls = { git = "https://github.com/hyperium/hyper-tls" }
 log = "0.3"
 rand = "0.3"
 serde = "0.9"
 serde_derive = "0.9"
 serde_json = "0.9"
-tokio-core = "0.1.4"
+tokio-core = "0.1"
+tokio-service = "0.1"
+tokio-timer = "0.1"
 url = "1.4"
