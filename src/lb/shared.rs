@@ -14,7 +14,8 @@ impl Shared {
         where A: Stream<Item = Vec<WeightedAddr>, Error = io::Error> + 'static
     {
         let (tx, rx) = mpsc::channel(max_waiters);
-        handle.spawn(Driver::new(rx.fuse(), balancer));
+        let driver = Driver::new(rx.fuse(), balancer);
+        handle.spawn(driver);
         return Shared(tx);
     }
 }

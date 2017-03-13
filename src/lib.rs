@@ -16,6 +16,7 @@ extern crate serde;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
+extern crate serde_yaml;
 #[macro_use]
 extern crate tokio_core;
 extern crate tokio_timer;
@@ -23,6 +24,7 @@ extern crate url;
 
 use std::net;
 
+pub mod config;
 pub mod lb;
 pub use lb::Balancer;
 pub mod namerd;

@@ -1,4 +1,5 @@
 use futures::{Async, AsyncSink, Future, Poll, Sink, Stream};
+use std::fmt;
 
 /// This is similar to `futures::stream::Forwar ` but also calls
 /// poll_complete on wakeups. This is important to keep connection
@@ -13,7 +14,8 @@ pub struct Driver<S: Stream, K: Sink<SinkItem = S::Item>> {
 
 impl<S, K> Driver<S, K>
     where S: Stream,
-          K: Sink<SinkItem = S::Item>
+          K: Sink<SinkItem = S::Item>,
+          K::SinkError: fmt::Display
 {
     pub fn new(src: S, snk: K) -> Driver<S, K> {
         Driver {
@@ -28,9 +30,10 @@ impl<S, K> Driver<S, K>
             None => Ok(true),
             Some(item) => {
                 debug!("offering an upstream connection downstream");
-                match self.sink
+                let send = self.sink
                     .start_send(item)
-                    .map_err(|_| error!("Failed to poll sink"))? {
+                    .map_err(|e| error!("Failed to send item to sink: {}", e));
+                match send? {
                     AsyncSink::Ready => {
                         debug!("downstream is ready");
                         Ok(true)
@@ -51,40 +54,47 @@ impl<S, K> Driver<S, K>
 /// aggressively to
 impl<S, K> Future for Driver<S, K>
     where S: Stream,
-          K: Sink<SinkItem = S::Item>
+          K: Sink<SinkItem = S::Item>,
+          K::SinkError: fmt::Display
 {
     type Item = ();
     type Error = ();
 
     fn poll(&mut self) -> Poll<(), Self::Error> {
+        debug!("polling");
         self.sink
             .poll_complete()
-            .map_err(|_| error!("Failed to poll sink"))?;
+            .map_err(|e| error!("Failed to poll sink: {}", e))?;
         loop {
             if self.send_ready()? {
                 assert!(self.ready.is_none());
                 {
-                    // check
-                    let done =
-                        self.sink.poll_complete().map_err(|_| error!("Failed to poll stream"));
+                    let done = self.sink
+                        .poll_complete()
+                        .map_err(|e| error!("Failed to poll sink: {}", e));
                     if let Async::Ready(_) = done? {
                         return Ok(Async::Ready(()));
                     }
                 }
-                match self.stream
-                    .poll()
-                    .map_err(|_| error!("Failed to poll stream"))? {
-                    Async::Ready(Some(item)) => {
-                        self.ready = Some(item);
-                        // Continue trying to send.
+                {
+                    let ready = self.stream
+                        .poll()
+                        .map_err(|_| error!("Failed to poll stream"));
+                    match ready? {
+                        Async::Ready(Some(item)) => {
+                            self.ready = Some(item);
+                            // Continue trying to send.
+                        }
+                        Async::Ready(None) => {
+                            return self.sink
+                                .poll_complete()
+                                .map_err(|e| error!("Failed to poll sink: {}", e));
+                        }
+                        Async::NotReady => return Ok(Async::NotReady),
                     }
-                    Async::Ready(None) => {
-                        return self.sink.poll_complete().map_err(|_| error!("Failed to poll sink"));
-                    }
-                    Async::NotReady => return Ok(Async::NotReady),
                 }
             } else {
-                return self.sink.poll_complete().map_err(|_| error!("Failed to poll sink"));
+                return self.sink.poll_complete().map_err(|e| error!("Failed to poll sink: {}", e));
             }
         }
     }
