@@ -1,30 +1,29 @@
-// !!! Code from here is verbatim from the tokio-socks5 example. !!!
+//! Inspired by tokio-socks5 example.
 
 use futures::{Async, Future, Poll};
+use std::net;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::io::{self, Read, Write};
-use std::net::Shutdown;
 use tokio_core::net::TcpStream;
 
-/// A future representing reading all data from one side of a proxy connection
-/// and writing it to another.
+/// A future representing reading all data from one side of a proxy connection and writing
+/// it to another.
 ///
-/// This future, unlike the handshake performed above, is implemented via a
-/// custom implementation of the `Future` trait rather than with combinators.
-/// This is intended to show off how the combinators are not all that can be
-/// done with futures, but rather more custom (or optimized) implementations can
-/// be implemented with just a trait impl!
+/// In the typical case, nothing allocations are required.  If the write side exhibits
+/// backpressure, however, a buffer is allocated to
 pub struct ProxyStream {
-    // The two I/O objects we'll be reading.
     reader: Rc<TcpStream>,
     writer: Rc<TcpStream>,
 
     // The shared global buffer that all connections on our server are using.
     buf: Rc<RefCell<Vec<u8>>>,
 
+    // Holds data that can't be fully written.
+    pending: Option<Vec<u8>>,
+
     // The number of bytes we've written so far.
-    atm: u64,
+    bytes_transferred: u64,
 }
 
 impl ProxyStream {
@@ -36,7 +35,8 @@ impl ProxyStream {
             reader: reader,
             writer: writer,
             buf: buffer,
-            atm: 0,
+            pending: None,
+            bytes_transferred: 0,
         }
     }
 }
@@ -50,81 +50,66 @@ impl Future for ProxyStream {
     type Item = u64;
     type Error = io::Error;
 
-    /// Attempts to drive this future to completion, checking if it's ready to
-    /// be completed.
+    /// Attempts to drive this future to completion.
     ///
-    /// This method is the core foundation of completing a future over time. It
-    /// is intended to never block and return "quickly" to ensure that it
-    /// doesn't block the event loop.
-    ///
-    /// Completion for our `Transfer` future is defined when one side hits EOF
-    /// and we've written all remaining data to the other side of the
-    /// connection. The behavior of `Future::poll` is in general not specified
-    /// after a future resolves (e.g. in this case returns an error or how many
-    /// bytes were transferred), so we don't need to maintain state beyond that
-    /// point.
+    /// Reads from from the `reader` into a shared buffer, before writing to If a
+    /// Flushes all pending data before reading any more.
     fn poll(&mut self) -> Poll<u64, io::Error> {
-        let mut buffer = self.buf.borrow_mut();
-
-        // Here we loop over the two TCP halves, reading all data from one
-        // connection and writing it to another. The crucial performance aspect
-        // of this server, however, is that we wait until both the read half and
-        // the write half are ready on the connection, allowing the buffer to
-        // only be temporarily used in a small window for all connections.
         loop {
-            match (self.reader.poll_read(), self.writer.poll_write()) {
-                (Async::Ready(()), Async::Ready(())) =>
-                    debug!("reader and writer are ready"),
-                (r, w) => {
-                    debug!("reader={:?} and writer={:?}", r, w);
+            if !self.writer.poll_write().is_ready() {
+                debug!("writer not ready");
+                return Ok(Async::NotReady);
+            }
+
+            // Try to flush pending bytes to the writer.
+            if let Some(mut pending) = self.pending.take() {
+                let psz = pending.len();
+                debug!("writing {} pending bytes", psz);
+                let wsz = try!((&*self.writer).write(&pending));
+                debug!("wrote {} bytes", wsz);
+                self.bytes_transferred += wsz as u64;
+                if wsz < psz {
+                    // If all of the pending bytes couldn't be complete, save the
+                    // remainder for next time.
+                    pending.drain(0..wsz);
+                    self.pending = Some(pending);
                     return Ok(Async::NotReady);
                 }
             }
+            assert!(self.pending.is_none());
 
-            // TODO: This exact logic for reading/writing amounts may need an
-            //       update
-            //
-            // Right now the `buffer` is actually pretty big, 64k, and it could
-            // be the case that one end of the connection can far outpace
-            // another. For example we may be able to always read 64k from the
-            // read half but only be able to write 5k to the client. This is a
-            // pretty bad situation because we've got data in a buffer that's
-            // intended to be ephemeral!
-            //
-            // Ideally here we'd actually adapt the rate of reads to match the
-            // rate of writes. That is, we'd prefer to have some form of
-            // adaptive algorithm which keeps track of how many bytes are
-            // written and match the read rate to the write rate. It's possible
-            // for connections to have an even smaller (and optional) buffer on
-            // the side representing the "too much data they read" if that
-            // happens, and then the next call to `read` could compensate by not
-            // reading so much again.
-            //
-            // In any case, though, this is easily implementable in terms of
-            // adding fields to `Transfer` and is complicated enough to
-            // otherwise detract from the example in question here. As a result,
-            // we simply read into the global buffer and then assert that we
-            // write out exactly the same amount.
-            //
-            // This means that we may trip the assert below, but it should be
-            // relatively easily fixable with the strategy above!
+            // There's nothing pending, so try to proxy some data (if both sides are
+            // ready for it).
+            if !self.reader.poll_read().is_ready() || !self.writer.poll_write().is_ready() {
+                debug!("writer or reader is not ready");
+                return Ok(Async::NotReady);
+            }
 
-            let rsz = try_nb!((&*self.reader).read(&mut buffer));
+            // Read some data into our shared buffer.
+            let mut buf = self.buf.borrow_mut();
+            let rsz = try_nb!((&*self.reader).read(&mut buf));
             if rsz == 0 {
+                // Nothing left to read, return the total number of bytes transferred.
                 debug!("read end of stream");
-                try!(self.writer.shutdown(Shutdown::Write));
-                return Ok(self.atm.into());
+                try!(self.writer.shutdown(net::Shutdown::Write));
+                return Ok(self.bytes_transferred.into());
             }
             debug!("read {} bytes", rsz);
-            self.atm += rsz as u64;
 
-            // Unlike above, we don't handle `WouldBlock` specially, because
-            // that would play into the logic mentioned above (tracking read
-            // rates and write rates), so we just ferry along that error for
-            // now.
-            let wsz = try!((&*self.writer).write(&buffer[..rsz]));
+            // Attempt to write from the shared buffer.
+            let wsz = try!((&*self.writer).write(&buf[..rsz]));
             debug!("wrote {} bytes", wsz);
-            assert_eq!(rsz, wsz);
+            self.bytes_transferred += wsz as u64;
+            if wsz < rsz {
+                // Allocate a temporary buffer to the unwritten remainder for next time.
+                let mut p = Vec::with_capacity(rsz - wsz);
+                p.copy_from_slice(&buf[wsz..rsz]);
+                self.pending = Some(p);
+                return Ok(Async::NotReady);
+            }
+
+            // We shouldn't be looping if we couldn't write everything.
+            assert!(self.pending.is_none());
         }
     }
 }

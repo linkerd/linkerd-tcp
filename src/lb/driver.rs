@@ -2,7 +2,7 @@ use futures::{Async, AsyncSink, Future, Poll, Sink, Stream};
 use std::fmt;
 
 /// This is similar to `futures::stream::Forwar ` but also calls
-/// poll_complete on wakeups. This is important to keep connection
+/// `poll_complete` on wakeups. This is important to keep connection
 /// pool up to date when no new requests are coming in.
 ///
 // Borrowed from tk-pool.
@@ -50,7 +50,7 @@ impl<S, K> Driver<S, K>
 }
 
 /// A Future that is complete when the stream has been fully flushed
-/// into the sink. Ensures that the sink's poll_complete() is called
+/// into the sink. Ensures that the sink's `poll_complete` is called
 /// aggressively to
 impl<S, K> Future for Driver<S, K>
     where S: Stream,

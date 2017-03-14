@@ -1,6 +1,6 @@
 //! Namerd Endpointer
 
-use bytes::{Buf, BufMut, IntoBuf, BytesMut};
+use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
 use futures::{Future, Stream, future};
 use futures::future::BoxFuture;
 use hyper::{Body, Chunk, Client};
@@ -23,8 +23,8 @@ type AddrsStream = Box<Stream<Item = Vec<::WeightedAddr>, Error = NamerdError>>;
 pub fn resolve<C: Connect>(client: Client<C>,
                            addr: net::SocketAddr,
                            period: time::Duration,
-                           namespace: String,
-                           target: String)
+                           namespace: &str,
+                           target: &str)
                            -> AddrsStream {
     let url = {
         let base = format!("http://{}:{}/api/1/resolve/{}",
@@ -34,26 +34,25 @@ pub fn resolve<C: Connect>(client: Client<C>,
         Url::parse_with_params(&base, &[("path", &target)]).unwrap()
     };
 
-    let stream = request(&client, url.clone())
-        .into_stream()
-        .chain(Timer::default()
-                   .interval(period)
-                   .map_err(|e| NamerdError(format!("timer error: {}", e)))
-                   .then(move |_| request(&client, url.clone())));
+    let init = request(&client, url.clone());
+    let updates = Timer::default()
+        .interval(period)
+        .map_err(|e| NamerdError(format!("timer error: {}", e)))
+        .then(move |_| request(&client, url.clone()));
 
-    Box::new(stream)
+    Box::new(init.into_stream().chain(updates))
 }
 
 fn request<C: Connect>(client: &Client<C>,
                        url: Url)
                        -> Box<Future<Item = Vec<::WeightedAddr>, Error = NamerdError>> {
     debug!("Polling namerd at {}", url.to_string());
-    let rsp = client.get(url.clone())
+    let rsp = client.get(url)
         .map_err(|e| NamerdError(format!("request failed: {}", e)))
         .and_then(|rsp| match *rsp.status() {
-                      StatusCode::Ok => parse_body(rsp.body()),
-                      status => invalid_rsp(status),
-                  });
+            StatusCode::Ok => parse_body(rsp.body()),
+            status => invalid_rsp(status),
+        });
     Box::new(rsp)
 }
 
@@ -64,23 +63,29 @@ fn invalid_rsp(status: StatusCode) -> AddrsFuture {
 fn parse_body(body: Body) -> AddrsFuture {
     body.collect()
         .map_err(|e| NamerdError(format!("failed to read response: {}", e)))
-        .and_then(|chunks| parse_chunks(chunks))
+        .and_then(|chunks| parse_chunks(&chunks))
         .boxed()
 }
 
-fn parse_chunks(chunks: Vec<Chunk>) -> Result<Vec<::WeightedAddr>, NamerdError> {
-    let buf = {
-        let mut sz = 0;
-        for c in chunks.iter() {
-            sz += (*c).len();
-        }
-        let mut buf = BytesMut::with_capacity(sz);
-        for c in chunks.iter() {
-            buf.put_slice(&*c)
-        }
-        buf.freeze().into_buf()
-    };
-    let result: json::Result<NamerdResponse> = json::from_reader(buf.reader());
+fn bytes_in(chunks: &[Chunk]) -> usize {
+    let mut sz = 0;
+    for c in chunks {
+        sz += (*c).len();
+    }
+    sz
+}
+
+fn to_buf(chunks: &[Chunk]) -> Bytes {
+    let mut buf = BytesMut::with_capacity(bytes_in(chunks));
+    for c in chunks {
+        buf.put_slice(&*c)
+    }
+    buf.freeze()
+}
+
+fn parse_chunks(chunks: &[Chunk]) -> Result<Vec<::WeightedAddr>, NamerdError> {
+    let r = to_buf(chunks).into_buf().reader();
+    let result: json::Result<NamerdResponse> = json::from_reader(r);
     match result {
         Err(e) => Err(NamerdError(format!("parse error: {}", e))),
         Ok(ref nrsp) if nrsp.kind == "bound" => Ok(to_weighted_addrs(&nrsp.addrs)),

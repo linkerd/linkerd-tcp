@@ -14,6 +14,7 @@ pub fn from_str(mut txt: &str) -> io::Result<AppConfig> {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AppConfig {
     pub proxies: Vec<ProxyConfig>,
+    pub buffer_size: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -21,7 +22,6 @@ pub struct ProxyConfig {
     pub servers: Vec<ServerConfig>,
     pub namerd: NamerdConfig,
     pub client: Option<ClientConfig>,
-    pub buffer_size: Option<usize>,
     pub max_waiters: Option<usize>,
 }
 

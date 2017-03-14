@@ -17,21 +17,23 @@ pub struct Duplex {
     up_size: u64,
 }
 
-pub fn new(down_addr: SocketAddr,
-           down_stream: TcpStream,
-           up_addr: SocketAddr,
-           up_stream: TcpStream,
-           buf: Rc<RefCell<Vec<u8>>>)
-           -> Duplex {
-    let up = Rc::new(up_stream);
-    let down = Rc::new(down_stream);
-    Duplex {
-        down_addr: down_addr,
-        up_addr: up_addr,
-        down: Some(ProxyStream::new(up.clone(), down.clone(), buf.clone())),
-        up: Some(ProxyStream::new(down, up, buf)),
-        down_size: 0,
-        up_size: 0,
+impl Duplex {
+    pub fn new(down_addr: SocketAddr,
+               down_stream: TcpStream,
+               up_addr: SocketAddr,
+               up_stream: TcpStream,
+               buf: Rc<RefCell<Vec<u8>>>)
+               -> Duplex {
+        let up = Rc::new(up_stream);
+        let down = Rc::new(down_stream);
+        Duplex {
+            down_addr: down_addr,
+            up_addr: up_addr,
+            down: Some(ProxyStream::new(up.clone(), down.clone(), buf.clone())),
+            up: Some(ProxyStream::new(down, up, buf)),
+            down_size: 0,
+            up_size: 0,
+        }
     }
 }
 

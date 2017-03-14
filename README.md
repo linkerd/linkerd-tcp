@@ -15,16 +15,15 @@ Status: _experimental_
 
 - [ ] Metrics (stevej)
 - [ ] Admin: export prom (stevej)
-- [ ] Stream updates from namerd. (Currently polling).
-- [ ] Config file
-- [ ] Native TLS upstream
-- [ ] Native TLS downstream
+- [ ] Native TLS upstream (ver)
+- [ ] Native TLS downstream (ver)
 
 #### Later ####
 
 - [ ] Configurable circuit breaking.
 - [ ] Configurable connection management.
 - [ ] TLS Key rotation
+- [ ] Use one of namerd's streaming/long-polling interfaces.
 
 ## Quickstart ##
 

@@ -1,8 +1,8 @@
 //! A simple layer-4 load balancing library on tokio.
 //!
 //! Inspired by https://github.com/tailhook/tk-pool.
-//!
 //! Copyright 2016 The tk-pool Developers
+//!
 //! Copyright 2017 Buoyant, Inc.
 
 extern crate bytes;
@@ -19,12 +19,13 @@ extern crate serde_json;
 extern crate serde_yaml;
 #[macro_use]
 extern crate tokio_core;
+extern crate tokio_tls;
 extern crate tokio_timer;
 extern crate url;
 
 use std::net;
 
-pub mod config;
+pub mod app;
 pub mod lb;
 pub use lb::Balancer;
 pub mod namerd;

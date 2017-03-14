@@ -2,8 +2,8 @@
 //!
 //! Inspired by https://github.com/tailhook/tk-pool.
 //!
-//! Copyright 2016 The tk-pool Developers
-//! Copyright 2017 Buoyant, Inc.
+//! TODO: if removed endpoints can't be considered for load balancing, they should be
+//! removed from `endpoints.
 
 use futures::{StartSend, AsyncSink, Async, Future, Poll, Sink, Stream};
 use rand::{self, Rng};
@@ -31,20 +31,22 @@ pub type Upstream = (TcpStream, SocketAddr);
 
 /// Distributes TCP connections across a pool of downstreams.
 ///
-/// May only be accessed from a single thread.
+/// May only be accessed from a single thread.  Use `Balancer::into_shared` for a
+/// cloneable/shareable variant.
 ///
-/// ## Panics ##
+/// ## Panics
 ///
-/// Panics when a peer is unable to receive an entire write (because we don't have any
-/// provisions for maintaining a buffer between polls). This is a bug.
+/// Panics if the `Stream` of address of resolutions ends. It must never complete.
+///
 pub struct Balancer<A> {
     // Streams address updates (i.e. from service discovery).
     addr: A,
 
-    // The state of
-    endpoints: VecDeque<(SocketAddr, Endpoint)>,
+    // The states of all known possibly-available endpoints.
+    endpoints: VecDeque<Endpoint>,
 
-    // A single buffer, used by all connections, to store data when transferring between remotes.
+    // Holds transfer data between socks (because we don't yet employ a 0-copy strategy).
+    // This buffer is used for _all_ transfers in this balancer.
     buffer: Rc<RefCell<Vec<u8>>>,
 
     // Establishes downstream connections.
@@ -55,10 +57,10 @@ impl<A> Balancer<A>
     where A: Stream<Item = Vec<WeightedAddr>, Error = io::Error>
 {
     /// Creates a new balancer with the given address stream
-    pub fn new(addr: A, bufsz: usize, handle: Handle) -> Balancer<A> {
+    pub fn new(addr: A, buf: Rc<RefCell<Vec<u8>>>, handle: Handle) -> Balancer<A> {
         Balancer {
             addr: addr,
-            buffer: Rc::new(RefCell::new(vec![0;bufsz])),
+            buffer: buf,
             endpoints: VecDeque::new(),
             handle: handle,
         }
@@ -89,42 +91,16 @@ impl<A> Balancer<A>
                 trace!("addr update");
 
                 // First, put all of the new addrs in a hash.
-                let new = {
-                    let mut s = HashMap::new();
-                    for ref wa in new.iter() {
-                        s.insert(wa.0.clone(), wa.clone());
-                    }
-                    s
-                };
+                let new = addr_weight_map(&new);
 
-                // Then, iterate through the existing endpoints,
-                // figuring out which ones have been removed from
-                // service discovery, and updating the weights of others.
-                let same = {
-                    let mut same = HashSet::new();
-                    for mut addr_ep in self.endpoints.iter_mut() {
-                        let (ref addr, ref mut ep) = *addr_ep;
-                        match new.get(addr) {
-                            None => ep.removed = true,
-                            Some(&&WeightedAddr(_, weight)) => {
-                                ep.removed = false;
-                                ep.weight = weight.clone();
-                                same.insert(addr.clone());
-                            }
-                        }
-                    }
-                    same
-                };
+                // Then, iterate through the existing endpoints, figuring out which ones
+                // have been removed from service discovery, and updating the weights of
+                // others.
+                let same = update_endpoints(&mut self.endpoints, &new);
 
-                // Finally, go through the new addresses again and add
-                // new nodes where appropriate.
-                for (addr, weight) in new.iter() {
-                    let addr = addr.clone();
-                    if !same.contains(&addr) {
-                        let ep = Endpoint::new((*weight).clone());
-                        self.endpoints.push_back((addr, ep));
-                    }
-                }
+                // Finally, go through the new addresses again and add new nodes where
+                // appropriate.
+                add_new_endpoints(&mut self.endpoints, &new, &same);
 
                 Ok(())
             }
@@ -135,22 +111,22 @@ impl<A> Balancer<A>
     fn poll_endpoints(&mut self) -> io::Result<()> {
         trace!("polling {} endpoints", self.endpoints.len());
         for _ in 0..self.endpoints.len() {
-            let (addr, mut ep) = self.endpoints.pop_front().unwrap();
+            let mut ep = self.endpoints.pop_front().unwrap();
             ep.poll_connections()?;
             ep.start_connecting(&self.handle);
-            if ep.removed && ep.active.len() == 0 {
-                debug!("endpoint evicted: {}", addr);
+            if ep.removed && ep.active.is_empty() {
+                debug!("endpoint evicted: {}", ep.addr);
             } else {
-                self.endpoints.push_back((addr, ep));
+                self.endpoints.push_back(ep);
             }
         }
         Ok(())
     }
 
-    /// Begins proxying between the upstream and a downstream endpoint.
+    /// Dispatches an `Upstream` to a downstream `Endpoint`, if possible.
     ///
     /// Chooses two endpoints at random and uses the lesser-loaded of the two.
-    fn start_proxying(&mut self, up: Upstream) -> StartSend<Upstream, io::Error> {
+    fn dispatch(&mut self, up: Upstream) -> StartSend<Upstream, io::Error> {
         trace!("choosing a downstream for {}", up.1);
         // Choose an endpoint.
         match self.endpoints.len() {
@@ -158,8 +134,7 @@ impl<A> Balancer<A>
             0 => Ok(AsyncSink::NotReady(up)),
             1 => {
                 // One endpoint, use it.
-                let ref mut eps = self.endpoints;
-                let (_, ref mut ep) = eps[0];
+                let mut ep = &mut self.endpoints[0];
                 Ok(ep.transmit(up, self.buffer.clone()))
             }
             sz => {
@@ -179,27 +154,27 @@ impl<A> Balancer<A>
                 };
                 // Determine the index of the lesser-loaded endpoint
                 let i = {
-                    let (a0, ref ep0) = self.endpoints[i0];
-                    let (a1, ref ep1) = self.endpoints[i1];
+                    let ep0 = &self.endpoints[i0];
+                    let ep1 = &self.endpoints[i1];
                     if ep0.load() <= ep1.load() {
                         trace!("downstream: {} *{} (not {} *{})",
-                               a0,
+                               ep0.addr,
                                ep0.weight,
-                               a1,
+                               ep1.addr,
                                ep1.weight);
                         i0
                     } else {
                         trace!("downstream: {} *{} (not {} *{})",
-                               a1,
+                               ep1.addr,
                                ep1.weight,
-                               a0,
+                               ep1.addr,
                                ep0.weight);
                         i1
                     }
                 };
                 // Once we know the index of the endpoint we want to use, we obtain a
                 // mutable reference to begin proxying.
-                let (_, ref mut ep) = *self.endpoints.get_mut(i).unwrap();
+                let mut ep = &mut self.endpoints[i];
 
                 // Give the upstream to the downstream endpoint.
                 Ok(ep.transmit(up, self.buffer.clone()))
@@ -208,22 +183,67 @@ impl<A> Balancer<A>
     }
 }
 
-/// Receives `Upstream` sockets
+fn addr_weight_map(new: &[WeightedAddr]) -> HashMap<SocketAddr, f32> {
+    let mut s = HashMap::new();
+    for wa in new {
+        s.insert(wa.0, wa.1);
+    }
+    s
+}
+
+fn update_endpoints(eps: &mut VecDeque<Endpoint>,
+                    new: &HashMap<SocketAddr, f32>)
+                    -> HashSet<SocketAddr> {
+    let mut same = HashSet::new();
+    for ref mut ep in eps {
+        match new.get(&ep.addr) {
+            None => ep.removed = true,
+            Some(&weight) => {
+                ep.removed = false;
+                ep.weight = weight;
+                same.insert(ep.addr);
+            }
+        }
+    }
+    same
+}
+
+fn add_new_endpoints(eps: &mut VecDeque<Endpoint>,
+                     new: &HashMap<SocketAddr, f32>,
+                     same: &HashSet<SocketAddr>) {
+    for (addr, weight) in new {
+        if !same.contains(addr) {
+            let ep = Endpoint::new(*addr, *weight);
+            eps.push_back(ep);
+        }
+    }
+}
+
+/// Receives `Upstream` sockets to be dismatched to an underlying endpoint.
+///
+/// `start_send` returns `Async::Ready` if there is a downstream endpoint available, and
+/// `Async::NotReady` otherwise.
+///
+/// `poll_complete` always returns `Async::NotReady`, since the load balancer may always
+/// receive more upstreams.
 impl<A> Sink for Balancer<A>
     where A: Stream<Item = Vec<WeightedAddr>, Error = io::Error>
 {
     type SinkItem = Upstream;
     type SinkError = io::Error;
 
+    /// Updates the list of endpoints before attempting to dispatch `upstream` to a
+    /// downstream endpoint.
     fn start_send(&mut self,
                   upstream: Self::SinkItem)
                   -> StartSend<Self::SinkItem, Self::SinkError> {
         trace!("sending {}", upstream.1);
         self.poll_addr()?;
         self.poll_endpoints()?;
-        self.start_proxying(upstream)
+        self.dispatch(upstream)
     }
 
+    /// Updates the list of endpoints as needed.
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
         trace!("polling");
         self.poll_addr()?;
@@ -233,19 +253,16 @@ impl<A> Sink for Balancer<A>
     }
 }
 
-/// A single endpoint
+/// A single possibly-available load balancing endpoint.
 struct Endpoint {
     addr: SocketAddr,
     weight: f32,
 
-    // Indicates that the node has been removed from service discovery
-    // and may not be available.
+    // Indicates that the node has been removed from service discovery and may not be
+    // available.  Nodes that are removed currently receive no new connections.
     removed: bool,
 
-    // The number of consecutive failures observed on this endpoint.
-    consecutive_failures: usize,
-
-    /// Pending connections.
+    /// Pending connection attempts.
     connecting: VecDeque<TcpStreamNew>,
 
     /// Connections that have been established but are not yet in
@@ -257,12 +274,11 @@ struct Endpoint {
 }
 
 impl Endpoint {
-    pub fn new(wa: WeightedAddr) -> Endpoint {
+    pub fn new(a: SocketAddr, w: f32) -> Endpoint {
         Endpoint {
-            addr: wa.0,
-            weight: wa.1,
+            addr: a,
+            weight: w,
             removed: false,
-            consecutive_failures: 0,
             connecting: VecDeque::new(),
             established: VecDeque::new(),
             active: VecDeque::new(),
@@ -287,7 +303,6 @@ impl Endpoint {
                 }
                 Err(e) => {
                     info!("{}: failed from {}: {}", self.addr, active.up_addr, e);
-                    self.consecutive_failures += 1;
                 }
             }
         }
@@ -305,23 +320,25 @@ impl Endpoint {
                 Ok(Async::Ready(c)) => {
                     trace!("{}: connection established", self.addr);
                     self.established.push_back(c);
-                    self.consecutive_failures = 0;
                 }
                 Err(e) => {
                     trace!("{}: cannot establish connection: {}", self.addr, e);
-                    self.consecutive_failures += 1;
                 }
             }
         }
     }
 
     fn start_connecting(&mut self, handle: &Handle) {
-        if !self.removed && (self.established.len() + self.connecting.len() == 0) {
+        if !self.removed && self.established.is_empty() && self.connecting.is_empty() {
             trace!("connecting to {}", self.addr);
             self.connecting.push_back(TcpStream::connect(&self.addr, handle));
         }
     }
 
+    // Checks the state of connections for this endpoint.
+    //
+    // When active streams have been completed, they are removed. When pending connections
+    // have been established, they are stored to be dispatched.
     fn poll_connections(&mut self) -> io::Result<()> {
         trace!("{}: {} connections established",
                self.addr,
@@ -331,25 +348,21 @@ impl Endpoint {
         Ok(())
     }
 
-    /// Score the endpoint.  Lower scores are healthier.
+    /// Scores the endpoint.
     ///
-    /// ## Todo ##
+    /// Uses the number of active connections, combined with the endpoint's weight, to
+    /// produce a load score. A lightly-loaded, heavily-weighted endpoint will receive a
+    /// score close to 0.0. An endpoint that cannot currently handle events produces a
+    /// score of `f32::INFINITY`.
     ///
-    /// This should be extracted into a configurable strategy, effectively implmenting
-    /// Fn(&Endpoint) -> f32.
+    /// TODO: Should this be extracted into a configurable strategy?
     fn load(&self) -> f32 {
-        if self.removed {
+        if self.removed || self.established.is_empty() {
+            // If the endpoint is not ready to serve requests, it should not be
+            // considered.
             f32::INFINITY
         } else {
-            let mut weight = self.weight;
-            if self.consecutive_failures > 0 {
-                weight /= 2u32.pow(self.consecutive_failures as u32) as f32;
-            } else if self.established.len() > 0 {
-                weight *= 1.2;
-            } else if self.connecting.len() > 0 {
-                weight *= 1.05;
-            }
-            self.active.len() as f32 / weight
+            (1.0 + self.active.len() as f32) / self.weight
         }
     }
 
@@ -366,7 +379,7 @@ impl Endpoint {
             Some(down_stream) => {
                 let (up_stream, up_addr) = up;
                 trace!("transmitting to {} from {}", self.addr, up_addr);
-                let tx = duplex::new(self.addr.clone(), down_stream, up_addr, up_stream, buf);
+                let tx = Duplex::new(self.addr, down_stream, up_addr, up_stream, buf);
                 self.active.push_front(tx);
                 AsyncSink::Ready
             }

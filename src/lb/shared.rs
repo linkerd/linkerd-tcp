@@ -16,7 +16,7 @@ impl Shared {
         let (tx, rx) = mpsc::channel(max_waiters);
         let driver = Driver::new(rx.fuse(), balancer);
         handle.spawn(driver);
-        return Shared(tx);
+        Shared(tx)
     }
 }
 
