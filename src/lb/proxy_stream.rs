@@ -1,12 +1,10 @@
 // !!! Code from here is verbatim from the tokio-socks5 example. !!!
 
+use futures::{Async, Future, Poll};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
-
-use futures::{Async, Future, Poll};
-
 use tokio_core::net::TcpStream;
 
 /// A future representing reading all data from one side of a proxy connection
@@ -17,7 +15,7 @@ use tokio_core::net::TcpStream;
 /// This is intended to show off how the combinators are not all that can be
 /// done with futures, but rather more custom (or optimized) implementations can
 /// be implemented with just a trait impl!
-pub struct BufferedTransfer {
+pub struct ProxyStream {
     // The two I/O objects we'll be reading.
     reader: Rc<TcpStream>,
     writer: Rc<TcpStream>,
@@ -29,12 +27,12 @@ pub struct BufferedTransfer {
     atm: u64,
 }
 
-impl BufferedTransfer {
+impl ProxyStream {
     pub fn new(reader: Rc<TcpStream>,
                writer: Rc<TcpStream>,
                buffer: Rc<RefCell<Vec<u8>>>)
-               -> BufferedTransfer {
-        BufferedTransfer {
+               -> ProxyStream {
+        ProxyStream {
             reader: reader,
             writer: writer,
             buf: buffer,
@@ -46,7 +44,7 @@ impl BufferedTransfer {
 // Here we implement the `Future` trait for `Transfer` directly. This does not
 // use any combinators, and shows how you might implement it in custom
 // situations if needed.
-impl Future for BufferedTransfer {
+impl Future for ProxyStream {
     // Our future resolves to the number of bytes transferred, or an I/O error
     // that happens during the connection, if any.
     type Item = u64;
@@ -74,10 +72,13 @@ impl Future for BufferedTransfer {
         // the write half are ready on the connection, allowing the buffer to
         // only be temporarily used in a small window for all connections.
         loop {
-            let read_ready = self.reader.poll_read().is_ready();
-            let write_ready = self.writer.poll_write().is_ready();
-            if !read_ready || !write_ready {
-                return Ok(Async::NotReady);
+            match (self.reader.poll_read(), self.writer.poll_write()) {
+                (Async::Ready(()), Async::Ready(())) =>
+                    debug!("reader and writer are ready"),
+                (r, w) => {
+                    debug!("reader={:?} and writer={:?}", r, w);
+                    return Ok(Async::NotReady);
+                }
             }
 
             // TODO: This exact logic for reading/writing amounts may need an
@@ -108,19 +109,22 @@ impl Future for BufferedTransfer {
             // This means that we may trip the assert below, but it should be
             // relatively easily fixable with the strategy above!
 
-            let n = try_nb!((&*self.reader).read(&mut buffer));
-            if n == 0 {
+            let rsz = try_nb!((&*self.reader).read(&mut buffer));
+            if rsz == 0 {
+                debug!("read end of stream");
                 try!(self.writer.shutdown(Shutdown::Write));
                 return Ok(self.atm.into());
             }
-            self.atm += n as u64;
+            debug!("read {} bytes", rsz);
+            self.atm += rsz as u64;
 
             // Unlike above, we don't handle `WouldBlock` specially, because
             // that would play into the logic mentioned above (tracking read
             // rates and write rates), so we just ferry along that error for
             // now.
-            let m = try!((&*self.writer).write(&buffer[..n]));
-            assert_eq!(n, m);
+            let wsz = try!((&*self.writer).write(&buffer[..rsz]));
+            debug!("wrote {} bytes", wsz);
+            assert_eq!(rsz, wsz);
         }
     }
 }

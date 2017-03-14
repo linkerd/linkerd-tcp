@@ -1,9 +1,15 @@
+//! A simple layer-4 load balancing library on tokio.
+//!
+//! Inspired by https://github.com/tailhook/tk-pool.
+//!
+//! Copyright 2016 The tk-pool Developers
+//! Copyright 2017 Buoyant, Inc.
+
+extern crate bytes;
 #[macro_use]
 extern crate log;
 extern crate env_logger;
-#[macro_use]
 extern crate futures;
-#[macro_use]
 extern crate hyper;
 extern crate rand;
 extern crate serde;
@@ -12,37 +18,14 @@ extern crate serde_derive;
 extern crate serde_json;
 #[macro_use]
 extern crate tokio_core;
+extern crate tokio_timer;
 extern crate url;
 
-// use futures::Future;
-use std::net::SocketAddr;
-// use tokio_core::net::TcpStream;
+use std::net;
 
-mod transfer;
-pub use transfer::BufferedTransfer;
-
+pub mod lb;
+pub use lb::Balancer;
 pub mod namerd;
 
-pub trait WithAddr {
-    fn addr(&self) -> SocketAddr;
-}
-
-pub trait Endpointer {
-    type Endpoint: WithAddr;
-    fn endpoint(&self) -> Option<Self::Endpoint>;
-}
-
-// WIP
-
-// pub trait Proxier {
-//     fn proxy<F>(&up_addr: SocketAddr, up_stream: TcpStream) -> F
-//         where F: Future,
-//               F::Item = () {
-//     }
-// }
-
-// pub trait ProxyServer {
-//     fn serve<F>(addr: &SocketAddr) -> F
-//         where F: Future<Item = ()>,
-//               F: 'static;
-// }
+#[derive(Clone, Debug)]
+pub struct WeightedAddr(pub net::SocketAddr, pub f32);
