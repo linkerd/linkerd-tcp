@@ -44,20 +44,24 @@ fn main() {
 
     let mut runner = Runner::new();
     for proxy in app.proxies.iter() {
-        let ref namerd = proxy.namerd;
-        let namerd_interval = namerd.interval
-            .unwrap_or(time::Duration::new(DEFAULT_NAMERD_SECONDS, 0));
-        let namerd_ns = namerd.namespace.clone().unwrap_or("default".into());
-        let namerd_path = namerd.path.clone();
         let addrs = {
+            let ref namerd = proxy.namerd;
+            let namerd_interval = namerd.interval
+                .unwrap_or(time::Duration::new(DEFAULT_NAMERD_SECONDS, 0));
+            let namerd_ns = namerd.namespace.clone().unwrap_or("default".into());
+            let namerd_path = namerd.path.clone();
+
             let client = Client::new(&handle.clone());
-            namerd::resolve(client, namerd.addr, namerd_interval, namerd_ns, namerd_path)
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, "namerd error"))
+            let addrs =
+                namerd::resolve(client, namerd.addr, namerd_interval, namerd_ns, namerd_path)
+                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "namerd error"));
+
+            info!("Updating {} from {} every {}s",
+                  namerd.path,
+                  namerd.addr,
+                  namerd_interval.as_secs());
+            addrs
         };
-        info!("Updating {} from {} every {}s",
-              namerd.path,
-              namerd.addr,
-              namerd_interval.as_secs());
 
         let balancer = {
             let handle = handle.clone();
