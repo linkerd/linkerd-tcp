@@ -35,28 +35,19 @@ Status: _experimental_
 
 ## Usage ##
 
-
-
 ```
 linkerd-tcp 0.0.1
 A native TCP proxy for the linkerd service mesh
 
 USAGE:
-    linkerd-tcp [OPTIONS] <TARGET>
+    linkerd-tcp <PATH>
 
 FLAGS:
     -h, --help       Prints help information
     -V, --version    Prints version information
 
-OPTIONS:
-    -l, --listen-addr <ADDR>        Accept connections on the given local address and port [default: 0.0.0.0:7575]
-    -n, --namerd-addr <ADDR>        The address of namerd's HTTP interface [default: 127.0.0.1:4180]
-    -i, --namerd-interval <SECS>    Namerd refresh interval in seconds [default: 60]
-    -N, --namerd-ns <NS>            Namerd namespace in which the target will be resolved [default: default]
-    -w, --window-size-kb <KB>        [default: 64]
-
 ARGS:
-    <TARGET>    Destination name (e.g. /svc/foo) to be resolved through namerd
+    <PATH>    Config file path
 ```
 
 

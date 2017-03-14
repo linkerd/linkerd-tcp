@@ -13,9 +13,10 @@ extern crate tokio_core;
 
 use clap::{Arg, App};
 use hyper::Client;
-use futures::Stream;
-use std::{io, time};
-use std::net::SocketAddr;
+use futures::{Async, Future, Poll, Stream};
+use std::{fs, time};
+use std::collections::VecDeque;
+use std::io::{self, Read};
 use tokio_core::reactor::Core;
 use tokio_core::net::*;
 
@@ -28,133 +29,106 @@ fn main() {
 
     // Parse and load command-line options.
     let opts = mk_app().get_matches();
-    let listen_addr = opts.value_of(LISTEN_ADDR_ARG)
-        .unwrap()
-        .parse()
-        .unwrap();
-    let window_size_kb = opts.value_of(WINDOW_SIZE_KB_ARG)
-        .unwrap()
-        .parse::<usize>()
-        .unwrap();
-    let namerd_addr = opts.value_of(NAMERD_ADDR_ARG)
-        .unwrap()
-        .parse()
-        .unwrap();
-    let namerd_ns = opts.value_of(NAMERD_NS_ARG).unwrap();
-    let namerd_interval = {
-        let i = opts.value_of(NAMERD_INTERVAL_ARG)
-            .unwrap()
-            .parse()
-            .unwrap();
-        time::Duration::from_secs(i)
+    let config_path = opts.value_of(CONFIG_PATH_ARG).unwrap();
+    let app = {
+        let mut f = fs::File::open(config_path).unwrap();
+        let mut s = String::new();
+        f.read_to_string(&mut s).unwrap();
+        config::from_str(&s).unwrap()
     };
-    let target_path = opts.value_of(TARGET_ARG).unwrap();
 
-    // TODO split this into two threads...
+    // TODO split this into more threads...
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
 
-    let listener = {
-        let handle = handle.clone();
-        info!("Listening on {}", listen_addr);
-        TcpListener::bind(&listen_addr, &handle).unwrap()
-    };
+    let mut runner = Runner::new();
+    for proxy in app.proxies.iter() {
+        let addrs = {
+            let ref namerd = proxy.namerd;
+            let namerd_interval = namerd.interval
+                .unwrap_or(time::Duration::new(DEFAULT_NAMERD_SECONDS, 0));
+            let namerd_ns = namerd.namespace.clone().unwrap_or("default".into());
+            let namerd_path = namerd.path.clone();
 
-    // Poll namerd to resolve a name.
-    let addrs = {
-        let client = Client::new(&handle.clone());
-        namerd::resolve(client,
-                        namerd_addr,
-                        namerd_interval,
-                        namerd_ns.to_string(),
-                        target_path.to_string())
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "namerd error"))
-    };
-    info!("Updating {} from {} every {}s",
-          target_path,
-          namerd_addr,
-          namerd_interval.as_secs());
+            let client = Client::new(&handle.clone());
+            let addrs =
+                namerd::resolve(client, namerd.addr, namerd_interval, namerd_ns, namerd_path)
+                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "namerd error"));
 
-    let balancer = {
-        let handle = handle.clone();
-        let bufsz = window_size_kb * 1024;
-        Balancer::new(addrs, bufsz, handle.clone())
-    };
+            info!("Updating {} from {} every {}s",
+                  namerd.path,
+                  namerd.addr,
+                  namerd_interval.as_secs());
+            addrs
+        };
 
-    let done = listener.incoming().forward(balancer);
-    core.run(done).unwrap();
+        let balancer = {
+            let handle = handle.clone();
+            let bufsz = proxy.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
+            let maxw = proxy.max_waiters.unwrap_or(DEFAULT_MAX_WAITERS);
+            Balancer::new(addrs, bufsz, handle.clone()).into_shared(maxw)
+        };
+
+        for server in proxy.servers.iter() {
+            info!("Listening on {}", server.addr);
+            let listener = TcpListener::bind(&server.addr, &handle.clone()).unwrap();
+            let f = listener.incoming().forward(balancer.clone());
+            runner.add(f)
+        }
+    }
+
+    core.run(runner).unwrap();
+    info!("Closing.")
 }
 
-static WINDOW_SIZE_KB_ARG: &'static str = "window-size-kb";
-static LISTEN_ADDR_ARG: &'static str = "listen-addr";
-static NAMERD_ADDR_ARG: &'static str = "namerd-addr";
-static NAMERD_NS_ARG: &'static str = "namerd-ns";
-static NAMERD_INTERVAL_ARG: &'static str = "namerd-interval";
-static TARGET_ARG: &'static str = "TARGET";
+const CONFIG_PATH_ARG: &'static str = "PATH";
+const DEFAULT_BUFFER_SIZE: usize = 65535;
+const DEFAULT_MAX_WAITERS: usize = 8;
+const DEFAULT_NAMERD_SECONDS: u64 = 60;
 
 fn mk_app() -> App<'static, 'static> {
     App::new(crate_name!())
         .version(crate_version!())
         .about(crate_description!())
-        .arg(Arg::with_name(LISTEN_ADDR_ARG)
-            .short("l")
-            .long(LISTEN_ADDR_ARG)
-            .default_value("0.0.0.0:7575")
-            .takes_value(true)
-            .value_name("ADDR")
-            .validator(is_socket_addr)
-            .help("Accept connections on the given local address and port"))
-        .arg(Arg::with_name(NAMERD_ADDR_ARG)
-            .short("n")
-            .long(NAMERD_ADDR_ARG)
-            .default_value("127.0.0.1:4180")
-            .takes_value(true)
-            .value_name("ADDR")
-            .validator(is_socket_addr)
-            .help("The address of namerd's HTTP interface"))
-        .arg(Arg::with_name(NAMERD_NS_ARG)
-            .short("N")
-            .long(NAMERD_NS_ARG)
-            .default_value("default")
-            .takes_value(true)
-            .value_name("NS")
-            .help("Namerd namespace in which the target will be resolved"))
-        .arg(Arg::with_name(NAMERD_INTERVAL_ARG)
-            .short("i")
-            .long(NAMERD_INTERVAL_ARG)
-            .default_value("60")
-            .takes_value(true)
-            .value_name("SECS")
-            .help("Namerd refresh interval in seconds"))
-        .arg(Arg::with_name(WINDOW_SIZE_KB_ARG)
-            .short("w")
-            .long(WINDOW_SIZE_KB_ARG)
-            .default_value("64")
-            .takes_value(true)
-            .value_name("KB")
-            .validator(is_usize))
-        .arg(Arg::with_name(TARGET_ARG)
+        .arg(Arg::with_name(CONFIG_PATH_ARG)
             .required(true)
             .index(1)
-            .validator(is_path_like)
-            .help("Destination name (e.g. /svc/foo) to be resolved through namerd"))
+            .help("Config file path."))
 }
 
-fn is_path_like(v: String) -> Result<(), String> {
-    if v.starts_with("/") {
-        Ok(())
-    } else {
-        Err("The value did not start with a /".to_string())
+struct Runner<F>(VecDeque<F>);
+
+impl<F: Future> Runner<F> {
+    fn new() -> Runner<F> {
+        Runner(VecDeque::new())
+    }
+
+    fn add(&mut self, f: F) {
+        self.0.push_back(f);
     }
 }
 
-fn is_socket_addr(v: String) -> Result<(), String> {
-    v.parse::<SocketAddr>()
-        .map(|_| ())
-        .map_err(|_| "The value must be an address in the form IP:PORT".to_string())
-}
-
-fn is_usize(v: String) -> Result<(), String> {
-    v.parse::<usize>().map(|_| ()).map_err(|_| "The value must be a number".to_string())
+impl<F> Future for Runner<F>
+    where F: Future<Error = io::Error>
+{
+    type Item = ();
+    type Error = io::Error;
+    fn poll(&mut self) -> Poll<(), io::Error> {
+        let sz = self.0.len();
+        for _ in 0..sz {
+            let mut f = self.0.pop_front().unwrap();
+            match f.poll()? {
+                Async::Ready(_) => {}
+                Async::NotReady => {
+                    self.0.push_back(f);
+                }
+            }
+        }
+        if self.0.len() == 0 {
+            Ok(Async::Ready(()))
+        } else {
+            Ok(Async::NotReady)
+        }
+    }
 }

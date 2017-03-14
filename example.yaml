@@ -1,0 +1,7 @@
+proxies:
+  - servers:
+      - addr: 0.0.0.0:7575
+      - addr: 127.0.0.1:7474
+    namerd:
+      addr: 127.0.0.1:4180
+      path: /svc/default
