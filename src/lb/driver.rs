@@ -29,17 +29,17 @@ impl<S, K> Driver<S, K>
         match self.ready.take() {
             None => Ok(true),
             Some(item) => {
-                debug!("offering an upstream connection downstream");
+                debug!("offering an src connection dst");
                 let send = self.sink
                     .start_send(item)
                     .map_err(|e| error!("Failed to send item to sink: {}", e));
                 match send? {
                     AsyncSink::Ready => {
-                        debug!("downstream is ready");
+                        debug!("dst is ready");
                         Ok(true)
                     }
                     AsyncSink::NotReady(item) => {
-                        debug!("downstream not ready");
+                        debug!("dst not ready");
                         self.ready = Some(item);
                         Ok(false)
                     }

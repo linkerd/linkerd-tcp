@@ -31,9 +31,16 @@ pub struct ServerConfig {
     pub tls: Option<TlsServerConfig>,
 }
 
-/// TODO
+// TODO support cypher suites
+// TODO support SNI
+// TODO support client auth
+// TODO supoprt persistence?
 #[derive(Serialize, Deserialize, Debug)]
-pub struct TlsServerConfig();
+pub struct TlsServerConfig {
+    pub alpn_protocols: Option<Vec<String>>,
+    pub cert_paths: Vec<String>,
+    pub private_key_path: String,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct NamerdConfig {
@@ -43,30 +50,38 @@ pub struct NamerdConfig {
     pub interval: Option<time::Duration>,
 }
 
-/// TODO
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ClientConfig();
+pub struct ClientConfig {
+    pub tls: Option<TlsClientConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct TlsClientConfig {
+    pub name: String,
+    pub trust_cert_paths: Option<Vec<String>>,
+}
 
 #[test]
 fn parse_simple_yaml() {
     let yaml = "
+buffer_size: 8192
 proxies:
   - servers:
       - addr: 0.0.0.0:4321
       - addr: 0.0.0.0:4322
-    namer:
+    namerd:
       addr: 127.0.0.1:4180
       path: /svc/default
-    ";
-    let app = AppConfig::parse(yaml).unwrap();
+";
+    let app = from_str(yaml).unwrap();
     assert!(app.proxies.len() == 1);
 }
 
 #[test]
 fn parse_simple_json() {
-    let json = "{\"proxies\": [{\"servers\": [{\"addr\": \"0.0.0.0:4321\"}, {\"addr\": \
-                \"0.0.0.0:4322\"}], \"namer\": {\"addr\": \"127.0.0.1:4180\", \"path\": \
-                \"/svc/default\"}}]}";
-    let app = AppConfig::parse(json).unwrap();
+    let json = "{\"buffer_size\": 8192, \"proxies\": [{\"servers\": [\
+                  {\"addr\": \"0.0.0.0:4321\"},{\"addr\": \"0.0.0.0:4322\"}],\
+                  \"namerd\": {\"addr\": \"127.0.0.1:4180\", \"path\": \"/svc/default\"}}]}";
+    let app = from_str(json).unwrap();
     assert!(app.proxies.len() == 1);
 }

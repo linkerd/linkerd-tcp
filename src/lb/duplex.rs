@@ -3,36 +3,32 @@ use std::cell::RefCell;
 use std::io;
 use std::rc::Rc;
 use std::net::SocketAddr;
-use tokio_core::net::TcpStream;
 
-use lb::ProxyStream;
+use lb::{ProxyStream, Socket, WithAddr};
 
-/// Joins upstream and downstream transfers into a single Future.
+/// Joins src and dst transfers into a single Future.
 pub struct Duplex {
-    pub down_addr: SocketAddr,
-    pub up_addr: SocketAddr,
-    down: Option<ProxyStream>,
-    up: Option<ProxyStream>,
-    down_size: u64,
-    up_size: u64,
+    pub src_addr: SocketAddr,
+    pub dst_addr: SocketAddr,
+    to_dst: Option<ProxyStream>,
+    to_src: Option<ProxyStream>,
+    to_dst_size: u64,
+    to_src_size: u64,
 }
 
 impl Duplex {
-    pub fn new(down_addr: SocketAddr,
-               down_stream: TcpStream,
-               up_addr: SocketAddr,
-               up_stream: TcpStream,
-               buf: Rc<RefCell<Vec<u8>>>)
-               -> Duplex {
-        let up = Rc::new(up_stream);
-        let down = Rc::new(down_stream);
+    pub fn new(src: Socket, dst: Socket, buf: Rc<RefCell<Vec<u8>>>) -> Duplex {
+        let src_addr = src.addr();
+        let dst_addr = dst.addr();
+        let src = Rc::new(RefCell::new(src));
+        let dst = Rc::new(RefCell::new(dst));
         Duplex {
-            down_addr: down_addr,
-            up_addr: up_addr,
-            down: Some(ProxyStream::new(up.clone(), down.clone(), buf.clone())),
-            up: Some(ProxyStream::new(down, up, buf)),
-            down_size: 0,
-            up_size: 0,
+            src_addr: src_addr,
+            dst_addr: dst_addr,
+            to_dst: Some(ProxyStream::new(src.clone(), dst.clone(), buf.clone())),
+            to_src: Some(ProxyStream::new(dst, src, buf)),
+            to_dst_size: 0,
+            to_src_size: 0,
         }
     }
 }
@@ -41,32 +37,42 @@ impl Future for Duplex {
     type Item = (u64, u64);
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Self::Item, io::Error> {
-        if let Some(mut down) = self.down.take() {
-            debug!("polling downward from {} to {}",
-                   self.up_addr,
-                   self.down_addr);
-            if let Async::Ready(sz) = down.poll()? {
-                debug!("downward complete from {} to {}",
-                       self.up_addr,
-                       self.down_addr);
-                self.down_size += sz;
-            } else {
-                self.down = Some(down)
+        if let Some(mut to_dst) = self.to_dst.take() {
+            trace!("polling dstward from {} to {}",
+                   self.src_addr,
+                   self.dst_addr);
+            match to_dst.poll()? {
+                Async::Ready(sz) => {
+                    trace!("dstward complete from {} to {}",
+                           self.src_addr,
+                           self.dst_addr);
+                    self.to_dst_size += sz;
+                }
+                Async::NotReady => {
+                    self.to_dst = Some(to_dst);
+                }
             }
         }
-        if let Some(mut up) = self.up.take() {
-            debug!("polling upward from {} to {}", self.down_addr, self.up_addr);
-            if let Async::Ready(sz) = up.poll()? {
-                debug!("upward complete from {} to {}",
-                       self.down_addr,
-                       self.up_addr);
-                self.up_size += sz;
-            } else {
-                self.up = Some(up)
+
+        if let Some(mut to_src) = self.to_src.take() {
+            trace!("polling srcward from {} to {}",
+                   self.dst_addr,
+                   self.src_addr);
+            match to_src.poll()? {
+                Async::Ready(sz) => {
+                    trace!("srcward complete from {} to {}",
+                           self.dst_addr,
+                           self.src_addr);
+                    self.to_src_size += sz;
+                }
+                Async::NotReady => {
+                    self.to_src = Some(to_src);
+                }
             }
         }
-        if self.down.is_none() && self.up.is_none() {
-            Ok(Async::Ready((self.down_size, self.up_size)))
+
+        if self.to_dst.is_none() && self.to_src.is_none() {
+            Ok(Async::Ready((self.to_dst_size, self.to_src_size)))
         } else {
             Ok(Async::NotReady)
         }

@@ -1,0 +1,21 @@
+proxies:
+  - namerd:
+      addr: 127.0.0.1:4180
+      path: /svc/default
+    
+    servers:
+      - addr: 127.0.0.1:7474
+      - addr: 0.0.0.0:7575
+        # tls:
+        #   private_key_path: ../eg-ca/localhost.tls/private.pem
+        #   cert_paths:
+        #     - ../eg-ca/localhost.tls/cert.pem
+        #     - ../eg-ca/localhost.tls/ca-chain.cert.pem
+
+    # client:
+    #   tls:
+    #     name: "www.google.com"
+    #     trust_cert_paths:
+    #       - ../eg-ca/www.google.com.tls/ca-chain.cert.pem
+    #       #-  /usr/local/etc/openssl/cert.pem
+    

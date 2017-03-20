@@ -10,27 +10,27 @@ Status: _experimental_
   discovery
 - Least-connection layer 4 load balancing
 - Supports endpoint weighting (i.e. for "red line" testing)
+- Modern, secure TLS support.
 
 ### TODO ###
 
 - [ ] Metrics (stevej)
 - [ ] Admin: export prom (stevej)
-- [ ] Native TLS upstream (ver)
-- [ ] Native TLS downstream (ver)
-
-#### Later ####
-
-- [ ] Configurable circuit breaking.
-- [ ] Configurable connection management.
-- [ ] TLS Key rotation
-- [ ] Use one of namerd's streaming/long-polling interfaces.
+- [ ] Configurable circuit breaking
+- [ ] Configurable connection management
+- TLS
+  - [ ] Key rotation
+  - [ ] Mutual authentication
+  - [ ] ALPN
+  - [ ] SNI
+- [ ] Use namerd's streaming/long-polling interfaces
+- [ ] Use `bytes`
 
 ## Quickstart ##
 
 1. Install [Rust and Cargo][install-rust].
 2. Configure and run [namerd][namerd] with the _io.l5d.httpController_ interface.
-3. From this repository, run: `cargo run -- -i 10 -n
-   namerd.example.com:4180 -N mynamespace /svc/targetsvc`
+3. From this repository, run: `cargo run -- example.yml`
 
 ## Usage ##
 
@@ -49,11 +49,40 @@ ARGS:
     <PATH>    Config file path
 ```
 
+### Example configuration ###
+
+```yaml
+proxies:
+  - servers:
+      # Listen on two ports, one using a self-signed TLS certificate.
+      - addr: 127.0.0.1:7474
+      - addr: 0.0.0.0:7575
+        tls:
+          private_key_path: private.pem
+          cert_paths:
+            - cert.pem
+            - ../eg-ca/ca/intermediate/certs/ca-chain.cert.pem
+
+    # Lookup /svc/google in namerd.
+    namerd:
+      addr: 127.0.0.1:4180
+      path: /svc/google
+
+    # Require that the downstream connection be TLS'd, with a `subjectAltName` including
+    # the DNS name _www.google.com_ using either our local CA or the host's default
+    # openssl certificate.
+    client:
+      tls:
+        name: "www.google.com"
+        trust_cert_paths:
+          - ../eg-ca/ca/intermediate/certs/ca-chain.cert.pem
+          - /usr/local/etc/openssl/cert.pem
+```
 
 ### Logging ###
 
-As in most rust applications, the `RUST_LOG` environment variable.
-
+Logging may be enabled by setting `RUST_LOG=linkerd_tcp=info` on the environment.  When
+debugging, set `RUST_LOG=trace`.
 
 ## License ##
 
@@ -63,7 +92,6 @@ Licensed under the Apache License, Version 2.0 (the "License"); you may not use 
 
 http://www.apache.org/licenses/LICENSE-2.0
 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
-
 
 <!-- references -->
 [install-rust]: https://www.rust-lang.org/en-US/install.html

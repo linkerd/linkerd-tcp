@@ -3,15 +3,17 @@ use futures::sync::mpsc;
 use std::io;
 use tokio_core::reactor::Handle;
 
-use lb::{Balancer, Driver, Upstream, WeightedAddr};
+use WeightedAddr;
+use lb::{Balancer, Connector, Driver, Src, WithAddr};
 
 /// Allows a balancer to be shared acorss threads.
-pub struct Shared(mpsc::Sender<Upstream>);
+pub struct Shared(mpsc::Sender<Src>);
 
 impl Shared {
     /// Spawn the `balancer` in the given `handle`.
-    pub fn new<A>(balancer: Balancer<A>, max_waiters: usize, handle: &Handle) -> Shared
-        where A: Stream<Item = Vec<WeightedAddr>, Error = io::Error> + 'static
+    pub fn new<A, C>(balancer: Balancer<A, C>, max_waiters: usize, handle: Handle) -> Shared
+        where A: Stream<Item = Vec<WeightedAddr>, Error = io::Error> + 'static,
+              C: Connector + 'static
     {
         let (tx, rx) = mpsc::channel(max_waiters);
         let driver = Driver::new(rx.fuse(), balancer);
@@ -27,12 +29,12 @@ impl Clone for Shared {
 }
 
 impl Sink for Shared {
-    type SinkItem = Upstream;
+    type SinkItem = Src;
     type SinkError = io::Error;
 
-    fn start_send(&mut self, up: Upstream) -> StartSend<Upstream, Self::SinkError> {
-        debug!("start_send {}", up.1);
-        self.0.start_send(up).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    fn start_send(&mut self, src: Src) -> StartSend<Src, Self::SinkError> {
+        debug!("start_send {}", src.addr());
+        self.0.start_send(src).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
     }
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
