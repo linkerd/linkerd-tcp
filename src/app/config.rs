@@ -1,6 +1,9 @@
 use serde_json;
 use serde_yaml;
 use std::{io, net, time};
+use std::collections::HashMap;
+
+use lb::WithAddr;
 
 pub fn from_str(mut txt: &str) -> io::Result<AppConfig> {
     txt = txt.trim_left();
@@ -13,6 +16,7 @@ pub fn from_str(mut txt: &str) -> io::Result<AppConfig> {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub proxies: Vec<ProxyConfig>,
     pub buffer_size: Option<usize>,
@@ -28,19 +32,35 @@ pub struct ProxyConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ServerConfig {
-    pub addr: net::SocketAddr,
-    pub tls: Option<TlsServerConfig>,
+#[serde(tag = "kind")]
+pub enum ServerConfig {
+    #[serde(rename = "io.l5d.tcp")]
+    Tcp { addr: net::SocketAddr },
+
+    // TODO support cypher suites
+    // TODO support client auth
+    // TODO supoprt persistence?
+    #[serde(rename = "io.l5d.tls")]
+    Tls {
+        addr: net::SocketAddr,
+        alpn_protocols: Option<Vec<String>>,
+        default_identity: Option<TlsServerIdentity>,
+        identities: Option<HashMap<String, TlsServerIdentity>>,
+    },
 }
 
-// TODO support cypher suites
-// TODO support SNI
-// TODO support client auth
-// TODO supoprt persistence?
+impl WithAddr for ServerConfig {
+    fn addr(&self) -> net::SocketAddr {
+        match *self {
+            ServerConfig::Tcp { ref addr } |
+            ServerConfig::Tls { ref addr, .. } => *addr,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct TlsServerConfig {
-    pub alpn_protocols: Option<Vec<String>>,
+pub struct TlsServerIdentity {
     pub cert_paths: Vec<String>,
     pub private_key_path: String,
 }
@@ -76,6 +96,7 @@ proxies:
     namerd:
       addr: 127.0.0.1:4180
       path: /svc/default
+    unknownField: false
 ";
     let app = from_str(yaml).unwrap();
     assert!(app.buffer_size == Some(1234));

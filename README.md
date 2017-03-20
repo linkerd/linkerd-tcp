@@ -10,7 +10,7 @@ Status: _experimental_
   discovery
 - Least-connection layer 4 load balancing
 - Supports endpoint weighting (i.e. for "red line" testing)
-- Modern, secure TLS support.
+- Modern, flexible, & secure Transport Layer Security.
 
 ### TODO ###
 
@@ -21,8 +21,7 @@ Status: _experimental_
 - TLS
   - [ ] Key rotation
   - [ ] Mutual authentication
-  - [ ] ALPN
-  - [ ] SNI
+  - [ ] ALPN pass-thru
 - [ ] Use namerd's streaming/long-polling interfaces
 - [ ] Use `bytes`
 
@@ -55,9 +54,11 @@ ARGS:
 proxies:
   - servers:
       # Listen on two ports, one using a self-signed TLS certificate.
-      - addr: 127.0.0.1:7474
-      - addr: 0.0.0.0:7575
-        tls:
+      - kind: io.l5d.tcp
+        addr: 127.0.0.1:7474
+      - kind: io.l5d.tls
+        addr: 0.0.0.0:7575
+        defaultIdentity:
           privateKeyPath: private.pem
           certPaths:
             - cert.pem

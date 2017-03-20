@@ -1,22 +1,25 @@
 use futures::{Async, Future, Poll, Stream};
 use hyper::Client;
 use rustls;
+use rustls::ResolvesServerCert;
 use std::boxed::Box;
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
 use std::fs::File;
 use std::io::{self, BufReader};
 use std::rc::Rc;
 use std::time;
 use tokio_core::reactor::Handle;
 
+mod sni;
 pub mod config;
 
 use WeightedAddr;
 use self::config::*;
-use namerd;
 use lb::{Balancer, Acceptor, Connector, PlainAcceptor, PlainConnector, SecureAcceptor,
-         SecureConnector};
+         SecureConnector, Shared, WithAddr};
+use namerd;
+use self::sni::Sni;
 
 const DEFAULT_BUFFER_SIZE: usize = 8 * 1024;
 const DEFAULT_MAX_WAITERS: usize = 8;
@@ -73,13 +76,13 @@ impl Runner {
         match p.client {
             None => {
                 let conn = PlainConnector::new(handle.clone());
-                self.configure_with_connector(p, handle, conn, buf);
+                self.configure_proxy_servers(p, handle, conn, buf);
             }
             Some(ref c) => {
                 match c.tls {
                     None => {
                         let conn = PlainConnector::new(handle.clone());
-                        self.configure_with_connector(p, handle, conn, buf);
+                        self.configure_proxy_servers(p, handle, conn, buf);
                     }
                     Some(ref c) => {
                         let mut tls = rustls::ClientConfig::new();
@@ -92,18 +95,18 @@ impl Runner {
                             }
                         };
                         let conn = SecureConnector::new(c.name.clone(), tls, handle.clone());
-                        self.configure_with_connector(p, handle, conn, buf);
+                        self.configure_proxy_servers(p, handle, conn, buf);
                     }
                 }
             }
         }
     }
 
-    fn configure_with_connector<C>(&mut self,
-                                   p: &ProxyConfig,
-                                   handle: Handle,
-                                   conn: C,
-                                   buf: Rc<RefCell<Vec<u8>>>)
+    fn configure_proxy_servers<C>(&mut self,
+                                  p: &ProxyConfig,
+                                  handle: Handle,
+                                  conn: C,
+                                  buf: Rc<RefCell<Vec<u8>>>)
         where C: Connector + 'static
     {
         let addrs = mk_addrs(p, &handle);
@@ -115,52 +118,51 @@ impl Runner {
         };
 
         for s in &p.servers {
-            info!("Listening on {}", s.addr);
-            match s.tls {
-                None => {
-                    let acceptor = PlainAcceptor::new(handle.clone());
-                    let f = acceptor.accept(&s.addr).forward(balancer.clone());
-                    self.0.push_back(Box::new(f.map(|_| {})));
-                }
-                Some(ref c) => {
-                    let mut tls = rustls::ServerConfig::new();
-                    if let Some(ref protos) = c.alpn_protocols {
-                        tls.set_protocols(protos);
-                    }
+            info!("Listening on {}", s.addr());
+            self.configure_server(s, handle.clone(), balancer.clone());
+        }
+    }
 
-                    let certs = {
-                        let mut certs = vec![];
-                        for p in &c.cert_paths {
-                            certs.append(&mut load_certs(p));
-                        }
-                        certs
-                    };
-                    let private_key = load_private_key(&c.private_key_path);
-                    tls.set_single_cert(certs, private_key);
+    fn configure_server(&mut self, s: &ServerConfig, handle: Handle, balancer: Shared) {
+        match *s {
+            ServerConfig::Tcp { ref addr } => {
+                let acceptor = PlainAcceptor::new(handle);
+                let f = acceptor.accept(addr).forward(balancer);
+                self.0.push_back(Box::new(f.map(|_| {})));
+            }
+            ServerConfig::Tls { ref addr,
+                                ref alpn_protocols,
+                                ref default_identity,
+                                ref identities,
+                                .. } => {
+                let mut tls = rustls::ServerConfig::new();
 
-                    let acceptor = SecureAcceptor::new(handle.clone(), tls);
-                    let f = acceptor.accept(&s.addr).forward(balancer.clone());
-                    self.0.push_back(Box::new(f.map(|_| {})));
+                if let Some(ref protos) = *alpn_protocols {
+                    tls.set_protocols(protos);
                 }
+
+                tls.cert_resolver = load_resolver(identities, default_identity);
+
+                let acceptor = SecureAcceptor::new(handle, tls);
+                let f = acceptor.accept(addr).forward(balancer);
+                self.0.push_back(Box::new(f.map(|_| {})));
             }
         }
     }
 }
 
-// from rustls example
-fn load_certs(filename: &str) -> Vec<rustls::Certificate> {
-    let certfile = File::open(filename).expect("cannot open certificate file");
-    let mut r = BufReader::new(certfile);
-    rustls::internal::pemfile::certs(&mut r).unwrap()
-}
+fn load_resolver(ids: &Option<HashMap<String, TlsServerIdentity>>,
+                 def: &Option<TlsServerIdentity>)
+                 -> Box<ResolvesServerCert> {
+    let mut is_empty = def.is_some();
+    if let Some(ref ids) = *ids {
+        is_empty = is_empty && ids.is_empty();
+    }
+    if is_empty {
+        panic!("No TLS server identities specified");
+    }
 
-// from rustls example
-fn load_private_key(filename: &str) -> rustls::PrivateKey {
-    let keyfile = File::open(filename).expect("cannot open private key file");
-    let mut r = BufReader::new(keyfile);
-    let keys = rustls::internal::pemfile::rsa_private_keys(&mut r).unwrap();
-    assert_eq!(keys.len(), 1);
-    keys[0].clone()
+    Box::new(Sni::new(ids, def))
 }
 
 impl Future for Runner {

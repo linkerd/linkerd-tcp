@@ -1,21 +1,24 @@
 proxies:
 
   - servers:
-      - addr: 127.0.0.1:7474
-      - addr: 0.0.0.0:7575
-        # tls:
-        #   privateKeyPath: ../eg-ca/localhost.tls/private.pem
-        #   certPaths:
-        #     - ../eg-ca/localhost.tls/cert.pem
-        #     - ../eg-ca/localhost.tls/ca-chain.cert.pem
+      - kind: io.l5d.tcp
+        addr: 127.0.0.1:7474
+      - kind: io.l5d.tls
+        addr: 0.0.0.0:7575
+        identities:
+          localhost:
+            privateKeyPath: ../eg-ca/localhost.tls/private.pem
+            certPaths:
+              - ../eg-ca/localhost.tls/cert.pem
+              - ../eg-ca/localhost.tls/ca-chain.cert.pem
 
     namerd:
       addr: 127.0.0.1:4180
       path: /svc/default
 
-    # client:
-    #   tls:
-    #     name: "www.google.com"
-    #     trustCertPaths:
-    #       - ../eg-ca/www.google.com.tls/ca-chain.cert.pem
-    #       #-  /usr/local/etc/openssl/cert.pem
+    client:
+      tls:
+        name: "www.google.com"
+        trustCertPaths:
+          - ../eg-ca/www.google.com.tls/ca-chain.cert.pem
+          #-  /usr/local/etc/openssl/cert.pem
