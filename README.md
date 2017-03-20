@@ -58,8 +58,8 @@ proxies:
       - addr: 127.0.0.1:7474
       - addr: 0.0.0.0:7575
         tls:
-          private_key_path: private.pem
-          cert_paths:
+          privateKeyPath: private.pem
+          certPaths:
             - cert.pem
             - ../eg-ca/ca/intermediate/certs/ca-chain.cert.pem
 
@@ -74,7 +74,7 @@ proxies:
     client:
       tls:
         name: "www.google.com"
-        trust_cert_paths:
+        trustCertPaths:
           - ../eg-ca/ca/intermediate/certs/ca-chain.cert.pem
           - /usr/local/etc/openssl/cert.pem
 ```

@@ -1,21 +1,21 @@
 proxies:
-  - namerd:
-      addr: 127.0.0.1:4180
-      path: /svc/default
-    
-    servers:
+
+  - servers:
       - addr: 127.0.0.1:7474
       - addr: 0.0.0.0:7575
         # tls:
-        #   private_key_path: ../eg-ca/localhost.tls/private.pem
-        #   cert_paths:
+        #   privateKeyPath: ../eg-ca/localhost.tls/private.pem
+        #   certPaths:
         #     - ../eg-ca/localhost.tls/cert.pem
         #     - ../eg-ca/localhost.tls/ca-chain.cert.pem
+
+    namerd:
+      addr: 127.0.0.1:4180
+      path: /svc/default
 
     # client:
     #   tls:
     #     name: "www.google.com"
-    #     trust_cert_paths:
+    #     trustCertPaths:
     #       - ../eg-ca/www.google.com.tls/ca-chain.cert.pem
     #       #-  /usr/local/etc/openssl/cert.pem
-    

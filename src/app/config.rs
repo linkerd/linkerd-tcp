@@ -12,12 +12,14 @@ pub fn from_str(mut txt: &str) -> io::Result<AppConfig> {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub proxies: Vec<ProxyConfig>,
     pub buffer_size: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ProxyConfig {
     pub servers: Vec<ServerConfig>,
     pub namerd: NamerdConfig,
@@ -36,6 +38,7 @@ pub struct ServerConfig {
 // TODO support client auth
 // TODO supoprt persistence?
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct TlsServerConfig {
     pub alpn_protocols: Option<Vec<String>>,
     pub cert_paths: Vec<String>,
@@ -56,6 +59,7 @@ pub struct ClientConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct TlsClientConfig {
     pub name: String,
     pub trust_cert_paths: Option<Vec<String>>,
@@ -64,7 +68,7 @@ pub struct TlsClientConfig {
 #[test]
 fn parse_simple_yaml() {
     let yaml = "
-buffer_size: 8192
+bufferSize: 1234
 proxies:
   - servers:
       - addr: 0.0.0.0:4321
@@ -74,14 +78,16 @@ proxies:
       path: /svc/default
 ";
     let app = from_str(yaml).unwrap();
+    assert!(app.buffer_size == Some(1234));
     assert!(app.proxies.len() == 1);
 }
 
 #[test]
 fn parse_simple_json() {
-    let json = "{\"buffer_size\": 8192, \"proxies\": [{\"servers\": [\
+    let json = "{\"bufferSize\": 1234, \"proxies\": [{\"servers\": [\
                   {\"addr\": \"0.0.0.0:4321\"},{\"addr\": \"0.0.0.0:4322\"}],\
                   \"namerd\": {\"addr\": \"127.0.0.1:4180\", \"path\": \"/svc/default\"}}]}";
     let app = from_str(json).unwrap();
+    assert!(app.buffer_size == Some(1234));
     assert!(app.proxies.len() == 1);
 }
