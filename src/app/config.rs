@@ -91,8 +91,10 @@ fn parse_simple_yaml() {
 bufferSize: 1234
 proxies:
   - servers:
-      - addr: 0.0.0.0:4321
-      - addr: 0.0.0.0:4322
+      - kind: io.l5d.tcp
+        addr: 0.0.0.0:4321
+      - kind: io.l5d.tcp
+        addr: 0.0.0.0:4322
     namerd:
       addr: 127.0.0.1:4180
       path: /svc/default
@@ -105,9 +107,10 @@ proxies:
 
 #[test]
 fn parse_simple_json() {
-    let json = "{\"bufferSize\": 1234, \"proxies\": [{\"servers\": [\
-                  {\"addr\": \"0.0.0.0:4321\"},{\"addr\": \"0.0.0.0:4322\"}],\
-                  \"namerd\": {\"addr\": \"127.0.0.1:4180\", \"path\": \"/svc/default\"}}]}";
+    let json = "{\"bufferSize\":1234, \"proxies\": [{\"servers\": [\
+               {\"kind\":\"io.l5d.tcp\", \"addr\":\"0.0.0.0:4321\"},\
+               {\"kind\":\"io.l5d.tcp\", \"addr\":\"0.0.0.0:4322\"}],\
+               \"namerd\": {\"addr\":\"127.0.0.1:4180\", \"path\":\"/svc/default\"}}]}";
     let app = from_str(json).unwrap();
     assert!(app.buffer_size == Some(1234));
     assert!(app.proxies.len() == 1);
