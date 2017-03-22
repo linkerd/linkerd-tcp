@@ -11,23 +11,32 @@ use std::fs;
 use std::io::Read;
 use std::thread;
 
+static CONFIG_PATH_ARG: &'static str = "PATH";
+
 fn main() {
     // Configure the logger from the RUST_LOG environment variable.
     drop(env_logger::init());
 
-    // Parse and load command-line options.
-    let opts = mk_app().get_matches();
-    let config_path = opts.value_of(CONFIG_PATH_ARG).unwrap();
-    let config_str: String = {
-        let mut s = String::new();
-        fs::File::open(config_path)
-            .unwrap()
-            .read_to_string(&mut s)
-            .unwrap();
-        s
-    };
+    // Load command-line options.
+    let opts = App::new(crate_name!())
+        .version(crate_version!())
+        .about(crate_description!())
+        .arg(Arg::with_name(CONFIG_PATH_ARG)
+            .required(true)
+            .index(1)
+            .help("Config file path."))
+        .get_matches();
 
-    let config = app::config::from_str(&config_str).expect("configuration error");
+    // Parse configuration file.
+    let config = {
+        let path = opts.value_of(CONFIG_PATH_ARG).unwrap();
+        let mut txt = String::new();
+        fs::File::open(path)
+            .unwrap()
+            .read_to_string(&mut txt)
+            .expect("failed to read config");
+        app::config::from_str(&txt).expect("configuration error")
+    };
 
     // Process the configuration, splitting it into two threads. These threads are
     // connected by synchronization primitives as needed, but no work is being done yet.
@@ -44,16 +53,4 @@ fn main() {
     proxies.run().expect("could not run proxies");
     admin_thread.join().expect("admin thread failed to join");
     info!("Closing.")
-}
-
-static CONFIG_PATH_ARG: &'static str = "PATH";
-
-fn mk_app() -> App<'static, 'static> {
-    App::new(crate_name!())
-        .version(crate_version!())
-        .about(crate_description!())
-        .arg(Arg::with_name(CONFIG_PATH_ARG)
-            .required(true)
-            .index(1)
-            .help("Config file path."))
 }
