@@ -14,11 +14,13 @@ use url::Url;
 #[derive(Debug)]
 pub struct NamerdError(String);
 
-type AddrsFuture = Box<Future<Item = Vec<::WeightedAddr>, Error = NamerdError>>;
-type AddrsStream = Box<Stream<Item = Vec<::WeightedAddr>, Error = NamerdError>>;
+type AddrsFuture = Box<Future<Item = Option<Vec<::WeightedAddr>>, Error = ()>>;
+type AddrsStream = Box<Stream<Item = Vec<::WeightedAddr>, Error = ()>>;
 
 /// Make a Resolver that periodically polls namerd to resolve a name
 /// to a set of addresses.
+///
+/// The returned stream never completes.
 pub fn resolve<C: Connect>(client: Client<C>,
                            addr: net::SocketAddr,
                            period: time::Duration,
@@ -32,37 +34,44 @@ pub fn resolve<C: Connect>(client: Client<C>,
                            namespace);
         Url::parse_with_params(&base, &[("path", &target)]).unwrap()
     };
-
     let init = request(&client, url.clone());
     let updates = Timer::default()
         .interval(period)
-        .map_err(|e| NamerdError(format!("timer error: {}", e)))
         .then(move |_| request(&client, url.clone()));
-
-    Box::new(init.into_stream().chain(updates))
+    let stream = init.into_stream().chain(updates).filter_map(|opt| opt);
+    Box::new(stream)
 }
 
 fn request<C: Connect>(client: &Client<C>, url: Url) -> AddrsFuture {
     debug!("Polling namerd at {}", url.to_string());
-    let rsp = client.get(url)
-        .map_err(|e| NamerdError(format!("request failed: {}", e)))
-        .and_then(|rsp| match *rsp.status() {
-            StatusCode::Ok => parse_body(rsp.body()),
-            status => invalid_rsp(status),
-        });
+    let rsp = client.get(url).then(|rsp| match rsp {
+        Ok(rsp) => {
+            match *rsp.status() {
+                StatusCode::Ok => parse_body(rsp.body()),
+                status => {
+                    trace!("namerd error: {}", status);
+                    future::ok(None).boxed()
+                }
+            }
+        }
+        Err(e) => {
+            error!("failed to read response: {}", e);
+            future::ok(None).boxed()
+        }
+    });
     Box::new(rsp)
-}
-
-fn invalid_rsp(status: StatusCode) -> AddrsFuture {
-    trace!("namerd error: {}", status);
-    future::err(NamerdError(format!("unexpected response status: {}", status))).boxed()
 }
 
 fn parse_body(body: Body) -> AddrsFuture {
     trace!("parsing namerd response");
     body.collect()
-        .map_err(|e| NamerdError(format!("failed to read response: {}", e)))
-        .and_then(|chunks| parse_chunks(&chunks))
+        .then(|res| match res {
+            Ok(ref chunks) => Ok(parse_chunks(chunks).ok()),
+            Err(e) => {
+                trace!("parse error: {}", e);
+                Ok(None)
+            }
+        })
         .boxed()
 }
 
