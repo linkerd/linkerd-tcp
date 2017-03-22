@@ -56,13 +56,11 @@ pub trait Connector {
 }
 
 pub struct PlainAcceptor(Handle);
-
 impl PlainAcceptor {
     pub fn new(h: Handle) -> PlainAcceptor {
         PlainAcceptor(h)
     }
 }
-
 impl Acceptor for PlainAcceptor {
     fn accept(&self, addr: &SocketAddr) -> Box<Stream<Item = Src, Error = io::Error>> {
         let s = TcpListener::bind(addr, &self.0)
@@ -75,13 +73,11 @@ impl Acceptor for PlainAcceptor {
 
 /// A `Connector` that builds `TcpStream`-typed connections on the provided `Handle`.
 pub struct PlainConnector(Handle);
-
 impl PlainConnector {
     pub fn new(h: Handle) -> PlainConnector {
         PlainConnector(h)
     }
 }
-
 impl Connector for PlainConnector {
     fn connect(&self, addr: &net::SocketAddr) -> Box<Future<Item = Dst, Error = io::Error>> {
         let addr = *addr;
@@ -94,7 +90,6 @@ pub struct SecureAcceptor {
     handle: Handle,
     config: Arc<rustls::ServerConfig>,
 }
-
 impl SecureAcceptor {
     pub fn new(h: Handle, c: rustls::ServerConfig) -> SecureAcceptor {
         SecureAcceptor {
@@ -103,7 +98,6 @@ impl SecureAcceptor {
         }
     }
 }
-
 impl Acceptor for SecureAcceptor {
     fn accept(&self, addr: &SocketAddr) -> Box<Stream<Item = Src, Error = io::Error>> {
         let tls = self.config.clone();
@@ -124,7 +118,6 @@ pub struct SecureConnector {
     handle: Handle,
     tls: Arc<rustls::ClientConfig>,
 }
-
 impl SecureConnector {
     pub fn new(n: String, c: rustls::ClientConfig, h: Handle) -> SecureConnector {
         SecureConnector {
@@ -134,7 +127,6 @@ impl SecureConnector {
         }
     }
 }
-
 impl Connector for SecureConnector {
     fn connect(&self, addr: &net::SocketAddr) -> Box<Future<Item = Dst, Error = io::Error>> {
         let tls = self.tls.clone();
