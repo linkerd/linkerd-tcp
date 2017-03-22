@@ -1,6 +1,6 @@
 use serde_json;
 use serde_yaml;
-use std::{io, net, time};
+use std::{io, net};
 use std::collections::HashMap;
 
 use lb::WithAddr;
@@ -15,15 +15,14 @@ pub fn from_str(mut txt: &str) -> io::Result<AppConfig> {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AppConfig {
     pub proxies: Vec<ProxyConfig>,
     pub buffer_size: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProxyConfig {
     pub servers: Vec<ServerConfig>,
     pub namerd: NamerdConfig,
@@ -32,7 +31,7 @@ pub struct ProxyConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "kind")]
+#[serde(deny_unknown_fields, tag = "kind")]
 pub enum ServerConfig {
     #[serde(rename = "io.l5d.tcp")]
     Tcp { addr: net::SocketAddr },
@@ -59,27 +58,29 @@ impl WithAddr for ServerConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TlsServerIdentity {
     pub cert_paths: Vec<String>,
     pub private_key_path: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NamerdConfig {
     pub addr: net::SocketAddr,
     pub path: String,
     pub namespace: Option<String>,
-    pub interval: Option<time::Duration>,
+    pub interval_secs: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ClientConfig {
     pub tls: Option<TlsClientConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TlsClientConfig {
     pub name: String,
     pub trust_cert_paths: Option<Vec<String>>,
@@ -98,7 +99,7 @@ proxies:
     namerd:
       addr: 127.0.0.1:4180
       path: /svc/default
-    unknownField: false
+      intervalSecs: 5
 ";
     let app = from_str(yaml).unwrap();
     assert!(app.buffer_size == Some(1234));
