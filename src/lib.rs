@@ -26,10 +26,12 @@ extern crate url;
 
 use std::net;
 
+mod driver;
 pub mod app;
 pub mod lb;
 pub mod namerd;
 
+use driver::Driver;
 pub use lb::Balancer;
 
 #[derive(Clone, Debug)]

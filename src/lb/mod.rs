@@ -17,14 +17,12 @@ use tokio_core::reactor::Handle;
 use tokio_core::net::{TcpListener, TcpStream};
 
 mod balancer;
-mod driver;
 mod duplex;
 mod endpoint;
 mod proxy_stream;
 mod shared;
 mod socket;
 
-use self::driver::Driver;
 use self::duplex::Duplex;
 use self::proxy_stream::ProxyStream;
 use self::socket::Socket;

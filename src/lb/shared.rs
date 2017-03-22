@@ -3,8 +3,8 @@ use futures::sync::mpsc;
 use std::io;
 use tokio_core::reactor::Handle;
 
-use WeightedAddr;
-use lb::{Balancer, Connector, Driver, Src, WithAddr};
+use {Driver, WeightedAddr};
+use lb::{Balancer, Connector, Src, WithAddr};
 
 /// Allows a balancer to be shared acorss threads.
 pub struct Shared(mpsc::Sender<Src>);
@@ -16,7 +16,7 @@ impl Shared {
               C: Connector + 'static
     {
         let (tx, rx) = mpsc::channel(max_waiters);
-        let driver = Driver::new(rx.fuse(), balancer);
+        let driver = Driver::new(rx.fuse(), balancer.sink_map_err(|_| {}));
         handle.spawn(driver);
         Shared(tx)
     }

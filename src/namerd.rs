@@ -57,10 +57,12 @@ fn request<C: Connect>(client: &Client<C>,
 }
 
 fn invalid_rsp(status: StatusCode) -> AddrsFuture {
+    trace!("namerd error: {}", status);
     future::err(NamerdError(format!("unexpected response status: {}", status))).boxed()
 }
 
 fn parse_body(body: Body) -> AddrsFuture {
+    trace!("parsing namerd response");
     body.collect()
         .map_err(|e| NamerdError(format!("failed to read response: {}", e)))
         .and_then(|chunks| parse_chunks(&chunks))
