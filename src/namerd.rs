@@ -2,7 +2,6 @@
 
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
 use futures::{Future, Stream, future};
-use futures::future::BoxFuture;
 use hyper::{Body, Chunk, Client};
 use hyper::client::Connect;
 use hyper::status::StatusCode;
@@ -15,7 +14,7 @@ use url::Url;
 #[derive(Debug)]
 pub struct NamerdError(String);
 
-type AddrsFuture = BoxFuture<Vec<::WeightedAddr>, NamerdError>;
+type AddrsFuture = Box<Future<Item = Vec<::WeightedAddr>, Error = NamerdError>>;
 type AddrsStream = Box<Stream<Item = Vec<::WeightedAddr>, Error = NamerdError>>;
 
 /// Make a Resolver that periodically polls namerd to resolve a name
@@ -43,9 +42,7 @@ pub fn resolve<C: Connect>(client: Client<C>,
     Box::new(init.into_stream().chain(updates))
 }
 
-fn request<C: Connect>(client: &Client<C>,
-                       url: Url)
-                       -> Box<Future<Item = Vec<::WeightedAddr>, Error = NamerdError>> {
+fn request<C: Connect>(client: &Client<C>, url: Url) -> AddrsFuture {
     debug!("Polling namerd at {}", url.to_string());
     let rsp = client.get(url)
         .map_err(|e| NamerdError(format!("request failed: {}", e)))
