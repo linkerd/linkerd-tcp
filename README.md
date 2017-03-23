@@ -1,40 +1,38 @@
 # linkerd-tcp #
 
-A native TCP proxy for the linkerd service mesh.
+A TCP load balancer for the [linkerd][linkerd] service mesh.
 
-Status: _experimental_
+Status: _beta_
+
+[![CircleCI](https://circleci.com/gh/BuoyantIO/linkerd-tcp/tree/master.svg?style=svg)](https://circleci.com/gh/BuoyantIO/linkerd-tcp/tree/master)
 
 ## Features ##
 
-- Resolves destinations through namerd for generic, dynamic service
-  discovery
-- Least-connection layer 4 load balancing
-- Supports endpoint weighting (i.e. for "red line" testing)
-- Modern, flexible, & secure Transport Layer Security.
-
-### TODO ###
-
-- [ ] Metrics (stevej)
-- [ ] Admin: export prom (stevej)
-- [ ] Configurable circuit breaking
-- [ ] Configurable connection management
-- TLS
-  - [ ] Key rotation
-  - [ ] Mutual authentication
-  - [ ] ALPN pass-thru
-- [ ] Use namerd's streaming/long-polling interfaces
-- [ ] Use `bytes`
+- Lightweight, native **TCP** and **TLS** load balancer built on [tokio].
+  - Weighted-least-loaded [P2C][p2c] load balancing.
+  - Minimal resource utilization: typically <.5 cores with ~2MB RSS.
+- Tightly integrated with the [linkerd service mesh][namerd].
+  - Supports endpoint weighting (i.e. for "red line" testing)
+- Modern Transport Layer Security via [rustls][rustls]:
+  - TLS1.2 and TLS1.3 (draft 18) only.
+  - ECDSA or RSA server authentication by clients.
+  - RSA server authentication by servers.
+  - Forward secrecy using ECDHE; with curve25519, nistp256 or nistp384 curves.
+  - AES128-GCM and AES256-GCM bulk encryption, with safe nonces.
+  - Chacha20Poly1305 bulk encryption.
+  - ALPN support.
+  - SNI support.
 
 ## Quickstart ##
 
 1. Install [Rust and Cargo][install-rust].
-2. Configure and run [namerd][namerd] with the _io.l5d.httpController_ interface.
+2. Configure and run [namerd][namerd].
 3. From this repository, run: `cargo run -- example.yml`
 
 ## Usage ##
 
 ```
-linkerd-tcp 0.0.1
+linkerd-tcp 0.1.0
 A native TCP proxy for the linkerd service mesh
 
 USAGE:
@@ -96,4 +94,8 @@ Unless required by applicable law or agreed to in writing, software distributed 
 
 <!-- references -->
 [install-rust]: https://www.rust-lang.org/en-US/install.html
+[linkerd]: https://linkerd.io
 [namerd]: https://github.com/linkerd/linkerd/tree/master/namerd
+[p2c]: https://www.eecs.harvard.edu/~michaelm/postscripts/mythesis.pdf
+[rustls]: https://github.com/ctz/rustls
+[tokio]: https://tokio.rs

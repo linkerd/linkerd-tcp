@@ -1,7 +1,7 @@
 [package]
 name = "linkerd-tcp"
 description = "A native TCP proxy for the linkerd service mesh"
-version = "0.0.1"
+version = "0.0.2"
 authors = [
   "Oliver Gould <ver@buoyant.io>",
   "Steve Jenson <stevej@buoyant.io>",
