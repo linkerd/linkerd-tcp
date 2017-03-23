@@ -1,4 +1,6 @@
 use futures::{Async, Future, Poll};
+
+use lb::WithAddr;
 use rustls::{Session, ClientConfig, ServerConfig, ClientSession, ServerSession};
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -6,8 +8,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio_core::net::TcpStream;
 use tokio_io::{AsyncRead, AsyncWrite};
-
-use lb::WithAddr;
 
 /// Hides the implementation details of socket I/O.
 ///

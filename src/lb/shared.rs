@@ -1,10 +1,11 @@
-use futures::{StartSend, Poll, Sink, Stream};
-use futures::sync::mpsc;
-use std::io;
-use tokio_core::reactor::Handle;
+
 
 use {Driver, WeightedAddr};
+use futures::{StartSend, Poll, Sink, Stream};
+use futures::sync::mpsc;
 use lb::{Balancer, Connector, Src, WithAddr};
+use std::io;
+use tokio_core::reactor::Handle;
 
 /// Allows a balancer to be shared acorss threads.
 pub struct Shared(mpsc::Sender<Src>);

@@ -2,7 +2,7 @@
 extern crate clap;
 #[macro_use]
 extern crate log;
-extern crate env_logger;
+extern crate pretty_env_logger;
 extern crate linkerd_tcp;
 
 use clap::{Arg, App};
@@ -15,7 +15,7 @@ static CONFIG_PATH_ARG: &'static str = "PATH";
 
 fn main() {
     // Configure the logger from the RUST_LOG environment variable.
-    drop(env_logger::init());
+    drop(pretty_env_logger::init());
 
     // Load command-line options.
     let opts = App::new(crate_name!())
@@ -44,7 +44,7 @@ fn main() {
     // both admin and serving work.
     let (admin, proxies) = app::configure(config);
 
-    // Run admin in a new thread.
+    // Run admin in a new thread.z
     let admin_thread = thread::Builder::new()
         .name("admin".into())
         .spawn(move || admin.run().expect("could not run admin"))

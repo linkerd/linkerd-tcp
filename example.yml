@@ -1,14 +1,19 @@
+admin:
+  addr: 127.0.0.1:9989
+  metricsIntervalSecs: 10
+
 proxies:
 
-  - servers:
+  - label: default
+    servers:
       - kind: io.l5d.tcp
         addr: 127.0.0.1:7474
       # - kind: io.l5d.tls
       #   addr: 0.0.0.0:7575
       #   identities:
       #     localhost:
-      #       privateKeyPath: ../eg-ca/localhost.tls/private.pem
-      #       certPaths:
+      #       privateKey: ../eg-ca/localhost.tls/private.pem
+      #       certs:
       #         - ../eg-ca/localhost.tls/cert.pem
       #         - ../eg-ca/localhost.tls/ca-chain.cert.pem
 
@@ -19,7 +24,7 @@ proxies:
 
     # client:
     #   tls:
-    #     name: "www.google.com"
-    #     trustCertPaths:
+    #     dnsName: "www.google.com"
+    #     trustCerts:
     #       - ../eg-ca/www.google.com.tls/ca-chain.cert.pem
     #       #-  /usr/local/etc/openssl/cert.pem

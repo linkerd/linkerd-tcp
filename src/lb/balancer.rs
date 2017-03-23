@@ -1,14 +1,16 @@
+
+
+use WeightedAddr;
 use futures::{StartSend, AsyncSink, Async, Poll, Sink, Stream};
+use lb::{Connector, Endpoint, Shared, Src, WithAddr};
 use rand::{self, Rng};
 use std::{f32, io};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::rc::Rc;
 use std::net::SocketAddr;
+use std::rc::Rc;
+use tacho::{self, Timing};
 use tokio_core::reactor::Handle;
-
-use WeightedAddr;
-use lb::{Connector, Endpoint, Shared, Src, WithAddr};
 
 /// Distributes TCP connections across a pool of dsts.
 ///
@@ -40,6 +42,8 @@ pub struct Balancer<A, C> {
     // We thank these endpoints for their service, but they have been deregistered and
     // should initiate new connections.
     retired: VecDeque<Endpoint>,
+
+    stats: Stats,
 }
 
 impl<A, C> Balancer<A, C>
@@ -47,7 +51,11 @@ impl<A, C> Balancer<A, C>
           C: Connector + 'static
 {
     /// Creates a new balancer with the given address stream
-    pub fn new(addrs: A, connector: C, buf: Rc<RefCell<Vec<u8>>>) -> Balancer<A, C> {
+    pub fn new(addrs: A,
+               connector: C,
+               buf: Rc<RefCell<Vec<u8>>>,
+               metrics: tacho::Metrics)
+               -> Balancer<A, C> {
         Balancer {
             addrs: addrs,
             connector: connector,
@@ -55,6 +63,7 @@ impl<A, C> Balancer<A, C>
             unready: VecDeque::new(),
             ready: VecDeque::new(),
             retired: VecDeque::new(),
+            stats: Stats::new(metrics),
         }
     }
 
@@ -69,12 +78,12 @@ impl<A, C> Balancer<A, C>
     }
 
     /// Drop retired endpoints that have no pending connections.
-    fn evict_retirees(&mut self) -> io::Result<()> {
+    fn evict_retirees(&mut self, rec: &mut tacho::Recorder) -> io::Result<()> {
         let sz = self.retired.len();
         trace!("checking {} retirees", sz);
         for _ in 0..sz {
             let mut ep = self.retired.pop_front().unwrap();
-            ep.poll_connections()?;
+            ep.poll_connections(rec)?;
             if ep.is_active() {
                 trace!("still active {}", ep.addr());
                 self.retired.push_back(ep);
@@ -86,12 +95,12 @@ impl<A, C> Balancer<A, C>
         Ok(())
     }
 
-    fn poll_ready(&mut self) -> io::Result<()> {
+    fn poll_ready(&mut self, rec: &mut tacho::Recorder) -> io::Result<()> {
         let sz = self.ready.len();
         trace!("checking {} ready", sz);
         for _ in 0..sz {
             let mut ep = self.ready.pop_front().unwrap();
-            ep.poll_connections()?;
+            ep.poll_connections(rec)?;
             if ep.is_ready() {
                 trace!("ready {}", ep.addr());
                 self.ready.push_back(ep);
@@ -103,12 +112,12 @@ impl<A, C> Balancer<A, C>
         Ok(())
     }
 
-    fn promote_unready(&mut self) -> io::Result<()> {
+    fn promote_unready(&mut self, rec: &mut tacho::Recorder) -> io::Result<()> {
         let sz = self.unready.len();
         trace!("checking {} unready", sz);
         for _ in 0..sz {
             let mut ep = self.unready.pop_front().unwrap();
-            ep.poll_connections()?;
+            ep.poll_connections(rec)?;
             if ep.is_ready() {
                 trace!("ready {}", ep.addr());
                 self.ready.push_back(ep);
@@ -217,7 +226,8 @@ impl<A, C> Balancer<A, C>
         for (addr, weight) in new_addrs {
             if !ep_addrs.contains(addr) {
                 trace!("adding {} *{}", addr, weight);
-                self.connect(Endpoint::new(*addr, *weight));
+                let metrics = self.stats.metrics.clone();
+                self.connect(Endpoint::new(*addr, *weight, metrics));
             }
         }
     }
@@ -226,7 +236,7 @@ impl<A, C> Balancer<A, C>
     ///
     /// Chooses two endpoints at random and uses the lesser-loaded of the two.
     // TODO pluggable strategy
-    fn dispatch(&mut self, src: Src) -> StartSend<Src, io::Error> {
+    fn dispatch(&mut self, src: Src, rec: &mut tacho::Recorder) -> StartSend<Src, io::Error> {
         trace!("dispatching {}", src.addr());
         // Choose an endpoint.
         match self.ready.len() {
@@ -237,7 +247,7 @@ impl<A, C> Balancer<A, C>
             1 => {
                 // One endpoint, use it.
                 let mut ep = self.ready.pop_front().unwrap();
-                let tx = ep.transmit(src, self.buffer.clone());
+                let tx = ep.transmit(src, self.buffer.clone(), rec);
                 // Replace the connection preemptively.
                 self.connect(ep);
                 Ok(tx)
@@ -282,7 +292,7 @@ impl<A, C> Balancer<A, C>
                     // Once we know the index of the endpoint we want to use, obtain a mutable
                     // reference to begin proxying.
                     let mut ep = self.ready.swap_remove_front(idx).unwrap();
-                    let tx = ep.transmit(src, self.buffer.clone());
+                    let tx = ep.transmit(src, self.buffer.clone(), rec);
                     // Replace the connection preemptively.
                     self.connect(ep);
                     tx
@@ -300,6 +310,10 @@ impl<A, C> Balancer<A, C>
         } else {
             self.unready.push_back(ep);
         }
+    }
+
+    fn record_balanacer_stats(&mut self, rec: &mut tacho::Recorder) {
+        self.stats.measure(rec, &self.unready, &self.ready, &self.retired);
     }
 }
 
@@ -329,27 +343,30 @@ impl<A, C> Sink for Balancer<A, C>
     /// dst endpoint.
     fn start_send(&mut self, src: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
         let src_addr = src.addr();
+        let mut rec = self.stats.recorder();
+        let poll_t = tacho::Timing::start();
         trace!("start_send {}: unready={} ready={} retired={}",
                src_addr,
                self.unready.len(),
                self.ready.len(),
                self.retired.len());
-        let ret = match self.dispatch(src) {
+        let ret = match self.dispatch(src, &mut rec) {
             Err(e) => Err(e),
             Ok(AsyncSink::Ready) => Ok(AsyncSink::Ready),
             Ok(AsyncSink::NotReady(src)) => {
-                self.evict_retirees()?;
-                self.promote_unready()?;
+                self.evict_retirees(&mut rec)?;
+                self.promote_unready(&mut rec)?;
                 self.discover_and_retire()?;
                 trace!("retrying {} unready={} ready={} retired={}",
                        src_addr,
                        self.unready.len(),
                        self.ready.len(),
                        self.retired.len());
-                self.dispatch(src)
+                self.dispatch(src, &mut rec)
             }
         };
 
+        self.record_balanacer_stats(&mut rec);
         trace!("start_sent {}: {} unready={} ready={} retired={}",
                src_addr,
                match &ret {
@@ -360,23 +377,89 @@ impl<A, C> Sink for Balancer<A, C>
                self.unready.len(),
                self.ready.len(),
                self.retired.len());
+
+        rec.add(&self.stats.poll_time_us, poll_t.elapsed_us());
         ret
     }
 
     /// Updates the list of endpoints as needed.
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
+        let mut rec = self.stats.recorder();
+        let poll_t = tacho::Timing::start();
         trace!("poll_complete unready={} ready={} retired={}",
                self.unready.len(),
                self.ready.len(),
                self.retired.len());
-        self.evict_retirees()?;
-        self.poll_ready()?;
-        self.promote_unready()?;
+        self.evict_retirees(&mut rec)?;
+        self.poll_ready(&mut rec)?;
+        self.promote_unready(&mut rec)?;
         self.discover_and_retire()?;
+        self.record_balanacer_stats(&mut rec);
         trace!("poll_completed unready={} ready={} retired={}",
                self.unready.len(),
                self.ready.len(),
                self.retired.len());
+        rec.add(&self.stats.poll_time_us, poll_t.elapsed_us());
         Ok(Async::NotReady)
+    }
+}
+
+struct Stats {
+    metrics: tacho::Metrics,
+    conns_established: tacho::GaugeKey,
+    conns_active: tacho::GaugeKey,
+    conns_pending: tacho::GaugeKey,
+    endpoints_ready: tacho::GaugeKey,
+    endpoints_unready: tacho::GaugeKey,
+    endpoints_retired: tacho::GaugeKey,
+    poll_time_us: tacho::StatKey,
+}
+
+impl Stats {
+    fn new(m: tacho::Metrics) -> Stats {
+        Stats {
+            conns_established: m.scope().gauge("conns_established".into()),
+            conns_active: m.scope().gauge("conns_active".into()),
+            conns_pending: m.scope().gauge("conns_pending".into()),
+            endpoints_ready: m.scope().gauge("endpoints_ready".into()),
+            endpoints_unready: m.scope().gauge("endpoints_unready".into()),
+            endpoints_retired: m.scope().gauge("endpoints_retired".into()),
+            poll_time_us: m.scope().stat("poll_time_us".into()),
+            metrics: m,
+        }
+    }
+
+    fn recorder(&self) -> tacho::Recorder {
+        self.metrics.recorder()
+    }
+
+    fn measure(&self,
+               rec: &mut tacho::Recorder,
+               unready: &VecDeque<Endpoint>,
+               ready: &VecDeque<Endpoint>,
+               retired: &VecDeque<Endpoint>) {
+        let mut established = 0u64;
+        let mut active = 0u64;
+        let mut pending = 0u64;
+        for e in unready {
+            established += e.conns_established() as u64;
+            active += e.conns_active() as u64;
+            pending += e.conns_pending() as u64;
+        }
+        for e in ready {
+            established += e.conns_established() as u64;
+            active += e.conns_active() as u64;
+            pending += e.conns_pending() as u64;
+        }
+        for e in retired {
+            active += e.conns_active() as u64;
+        }
+
+        rec.set(&self.conns_established, established);
+        rec.set(&self.conns_active, active);
+        rec.set(&self.conns_pending, pending);
+        rec.set(&self.endpoints_ready, ready.len() as u64);
+        rec.set(&self.endpoints_unready, unready.len() as u64);
+        rec.set(&self.endpoints_retired, retired.len() as u64);
     }
 }

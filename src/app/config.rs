@@ -1,9 +1,10 @@
+
+
+use lb::WithAddr;
 use serde_json;
 use serde_yaml;
 use std::{io, net};
 use std::collections::HashMap;
-
-use lb::WithAddr;
 
 pub fn from_str(mut txt: &str) -> io::Result<AppConfig> {
     txt = txt.trim_left();
@@ -17,13 +18,23 @@ pub fn from_str(mut txt: &str) -> io::Result<AppConfig> {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AppConfig {
+    pub admin: Option<AdminConfig>,
+    pub metrics_interval_secs: Option<u64>,
     pub proxies: Vec<ProxyConfig>,
     pub buffer_size: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AdminConfig {
+    pub addr: Option<net::SocketAddr>,
+    pub metrics_interval_secs: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProxyConfig {
+    pub label: String,
     pub servers: Vec<ServerConfig>,
     pub namerd: NamerdConfig,
     pub client: Option<ClientConfig>,
@@ -60,8 +71,8 @@ impl WithAddr for ServerConfig {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TlsServerIdentity {
-    pub cert_paths: Vec<String>,
-    pub private_key_path: String,
+    pub certs: Vec<String>,
+    pub private_key: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -82,8 +93,8 @@ pub struct ClientConfig {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TlsClientConfig {
-    pub name: String,
-    pub trust_cert_paths: Option<Vec<String>>,
+    pub dns_name: String,
+    pub trust_certs: Option<Vec<String>>,
 }
 
 #[test]
@@ -91,7 +102,8 @@ fn parse_simple_yaml() {
     let yaml = "
 bufferSize: 1234
 proxies:
-  - servers:
+  - label: default
+    servers:
       - kind: io.l5d.tcp
         addr: 0.0.0.0:4321
       - kind: io.l5d.tcp
@@ -108,10 +120,10 @@ proxies:
 
 #[test]
 fn parse_simple_json() {
-    let json = "{\"bufferSize\":1234, \"proxies\": [{\"servers\": [\
-               {\"kind\":\"io.l5d.tcp\", \"addr\":\"0.0.0.0:4321\"},\
-               {\"kind\":\"io.l5d.tcp\", \"addr\":\"0.0.0.0:4322\"}],\
-               \"namerd\": {\"addr\":\"127.0.0.1:4180\", \"path\":\"/svc/default\"}}]}";
+    let json = "{\"bufferSize\":1234, \"proxies\": [{\"label\": \"default\",\
+                 \"servers\": [{\"kind\":\"io.l5d.tcp\", \"addr\":\"0.0.0.0:4321\"},\
+                 {\"kind\":\"io.l5d.tcp\", \"addr\":\"0.0.0.0:4322\"}],\
+                 \"namerd\": {\"addr\":\"127.0.0.1:4180\", \"path\":\"/svc/default\"}}]}";
     let app = from_str(json).unwrap();
     assert!(app.buffer_size == Some(1234));
     assert!(app.proxies.len() == 1);

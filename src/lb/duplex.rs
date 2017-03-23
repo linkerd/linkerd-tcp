@@ -1,78 +1,102 @@
 use futures::{Async, Future, Poll};
-use std::cell::RefCell;
-use std::io;
-use std::rc::Rc;
-use std::net::SocketAddr;
 
 use lb::{ProxyStream, Socket, WithAddr};
+use std::cell::RefCell;
+use std::io;
+use std::net::SocketAddr;
+use std::rc::Rc;
+use tacho;
 
 /// Joins src and dst transfers into a single Future.
 pub struct Duplex {
     pub src_addr: SocketAddr,
     pub dst_addr: SocketAddr,
-    to_dst: Option<ProxyStream>,
-    to_src: Option<ProxyStream>,
-    to_dst_size: u64,
-    to_src_size: u64,
+    tx: Option<ProxyStream>,
+    rx: Option<ProxyStream>,
+
+    tx_bytes: u64,
+    tx_bytes_stat: tacho::StatKey,
+    rx_bytes: u64,
+    rx_bytes_stat: tacho::StatKey,
+    metrics: tacho::Metrics, // only used for obtaining a recorder.
 }
 
 impl Duplex {
-    pub fn new(src: Socket, dst: Socket, buf: Rc<RefCell<Vec<u8>>>) -> Duplex {
+    pub fn new(src: Socket,
+               dst: Socket,
+               buf: Rc<RefCell<Vec<u8>>>,
+               tx_metrics: tacho::Metrics,
+               rx_metrics: tacho::Metrics)
+               -> Duplex {
         let src_addr = src.addr();
         let dst_addr = dst.addr();
         let src = Rc::new(RefCell::new(src));
         let dst = Rc::new(RefCell::new(dst));
+        let tx_bytes_stat = tx_metrics.scope().stat("bytes".into());
+        let rx_byte_stat = rx_metrics.scope().stat("bytes".into());
+        let metrics = rx_metrics.clone(); // doesn't matter which one,
+        let tx = ProxyStream::new(src.clone(), dst.clone(), buf.clone(), tx_metrics);
+        let rx = ProxyStream::new(dst, src, buf, rx_metrics);
         Duplex {
             src_addr: src_addr,
             dst_addr: dst_addr,
-            to_dst: Some(ProxyStream::new(src.clone(), dst.clone(), buf.clone())),
-            to_src: Some(ProxyStream::new(dst, src, buf)),
-            to_dst_size: 0,
-            to_src_size: 0,
+            tx: Some(tx),
+            rx: Some(rx),
+
+            tx_bytes: 0,
+            tx_bytes_stat: tx_bytes_stat,
+
+            rx_bytes: 0,
+            rx_bytes_stat: rx_byte_stat,
+
+            metrics: metrics,
         }
     }
 }
 
 impl Future for Duplex {
-    type Item = (u64, u64);
+    type Item = ();
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<Self::Item, io::Error> {
-        if let Some(mut to_dst) = self.to_dst.take() {
+    fn poll(&mut self) -> Poll<(), io::Error> {
+        if let Some(mut tx) = self.tx.take() {
             trace!("polling dstward from {} to {}",
                    self.src_addr,
                    self.dst_addr);
-            match to_dst.poll()? {
+            match tx.poll()? {
                 Async::Ready(sz) => {
                     trace!("dstward complete from {} to {}",
                            self.src_addr,
                            self.dst_addr);
-                    self.to_dst_size += sz;
+                    self.tx_bytes += sz;
                 }
                 Async::NotReady => {
-                    self.to_dst = Some(to_dst);
+                    self.tx = Some(tx);
                 }
             }
         }
 
-        if let Some(mut to_src) = self.to_src.take() {
+        if let Some(mut rx) = self.rx.take() {
             trace!("polling srcward from {} to {}",
                    self.dst_addr,
                    self.src_addr);
-            match to_src.poll()? {
+            match rx.poll()? {
                 Async::Ready(sz) => {
                     trace!("srcward complete from {} to {}",
                            self.dst_addr,
                            self.src_addr);
-                    self.to_src_size += sz;
+                    self.rx_bytes += sz;
                 }
                 Async::NotReady => {
-                    self.to_src = Some(to_src);
+                    self.rx = Some(rx);
                 }
             }
         }
 
-        if self.to_dst.is_none() && self.to_src.is_none() {
-            Ok(Async::Ready((self.to_dst_size, self.to_src_size)))
+        if self.tx.is_none() && self.rx.is_none() {
+            let mut rec = self.metrics.recorder();
+            rec.add(&self.tx_bytes_stat, self.tx_bytes);
+            rec.add(&self.rx_bytes_stat, self.rx_bytes);
+            Ok(Async::Ready(()))
         } else {
             Ok(Async::NotReady)
         }

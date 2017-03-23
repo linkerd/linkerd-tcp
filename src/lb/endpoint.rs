@@ -1,11 +1,53 @@
 use futures::{Async, AsyncSink, Future};
+
+use lb::{Connector, Duplex, Src, Dst, WithAddr};
 use std::{f32, io};
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::rc::Rc;
 use std::net::SocketAddr;
+use std::rc::Rc;
+use std::time::Instant;
+use tacho::{self, Timing};
 
-use lb::{Connector, Duplex, Src, Dst, WithAddr};
+struct Pending {
+    connect: Box<Future<Item = Dst, Error = io::Error>>,
+    start_t: Instant,
+}
+
+struct Established {
+    dst: Dst,
+    start_t: Instant,
+}
+
+struct Active {
+    duplex: Duplex,
+    start_t: Instant,
+}
+
+struct Stats {
+    failures: tacho::CounterKey,
+    successes: tacho::CounterKey,
+    connect_latency_us: tacho::StatKey,
+    connection_ready_ms: tacho::StatKey,
+    connection_active_ms: tacho::StatKey,
+    tx_metrics: tacho::Metrics,
+    rx_metrics: tacho::Metrics,
+}
+impl Stats {
+    fn new(metrics: tacho::Metrics) -> Stats {
+        let tx_metrics = metrics.clone().labeled("direction".into(), "tx".into());
+        let rx_metrics = metrics.clone().labeled("direction".into(), "tx".into());
+        Stats {
+            connect_latency_us: metrics.scope().timing_us("connect_latency_us".into()),
+            connection_ready_ms: metrics.scope().timing_ms("connection_ready_ms".into()),
+            connection_active_ms: metrics.scope().timing_ms("connection_active_ms".into()),
+            failures: metrics.scope().counter("failure_count".into()),
+            successes: metrics.scope().counter("success_count".into()),
+            tx_metrics: tx_metrics,
+            rx_metrics: rx_metrics,
+        }
+    }
+}
 
 /// A single possibly-available load balancing endpoint.
 pub struct Endpoint {
@@ -14,18 +56,20 @@ pub struct Endpoint {
     retired: bool,
 
     /// Pending connection attempts.
-    pending: VecDeque<Box<Future<Item = Dst, Error = io::Error>>>,
+    pending: VecDeque<Pending>,
 
     /// Connections that have been established but are not yet in
     /// active use.
-    established: VecDeque<Dst>,
+    established: VecDeque<Established>,
 
     /// Active TCP streams. The stream completed
-    active: VecDeque<Duplex>,
+    active: VecDeque<Active>,
+
+    stats: Stats,
 }
 
 impl Endpoint {
-    pub fn new(a: SocketAddr, w: f32) -> Endpoint {
+    pub fn new(a: SocketAddr, w: f32, metrics: tacho::Metrics) -> Endpoint {
         Endpoint {
             addr: a,
             weight: w,
@@ -33,6 +77,7 @@ impl Endpoint {
             pending: VecDeque::new(),
             established: VecDeque::new(),
             active: VecDeque::new(),
+            stats: Stats::new(metrics),
         }
     }
 
@@ -107,24 +152,26 @@ impl Endpoint {
     /// Initiate a new connection
     pub fn init_connection<C: Connector>(&mut self, c: &C) {
         debug!("initiating connection to {}", self.addr);
-        let f = c.connect(&self.addr);
-        self.pending.push_back(f);
+        self.pending.push_back(Pending {
+            start_t: tacho::Timing::start(),
+            connect: c.connect(&self.addr),
+        });
     }
 
     /// Checks the state of connections for this endpoint.
     ///
     /// When active streams have been completed, they are removed. When pending
     /// connections have been established, they are stored to be dispatched.
-    pub fn poll_connections(&mut self) -> io::Result<()> {
+    pub fn poll_connections(&mut self, rec: &mut tacho::Recorder) -> io::Result<()> {
         trace!("{}: {} connections established",
                self.addr,
                self.established.len());
-        self.poll_active();
-        self.poll_pending();
+        self.poll_active(rec);
+        self.poll_pending(rec);
         Ok(())
     }
 
-    fn poll_active(&mut self) {
+    fn poll_active(&mut self, rec: &mut tacho::Recorder) {
         let sz = self.active.len();
         trace!("{}: checking {} active streams", self.addr, sz);
         for i in 0..sz {
@@ -133,40 +180,50 @@ impl Endpoint {
                    self.addr,
                    i + 1,
                    sz,
-                   active.src_addr);
-            match active.poll() {
+                   active.duplex.src_addr);
+            match active.duplex.poll() {
                 Ok(Async::NotReady) => {
-                    trace!("{}: still active from {}", self.addr, active.src_addr);
+                    trace!("{}: still active from {}",
+                           self.addr,
+                           active.duplex.src_addr);
                     self.active.push_back(active);
                 }
-                Ok(Async::Ready((dst_bytes, src_bytes))) => {
-                    trace!("{}: completed from {}: {}B dst / {}B src",
-                           self.addr,
-                           active.src_addr,
-                           dst_bytes,
-                           src_bytes);
+                Ok(Async::Ready(())) => {
+                    trace!("{}: completed from {}", self.addr, active.duplex.src_addr);
+                    rec.incr(&self.stats.successes, 1);
+                    rec.add(&self.stats.connection_active_ms, active.start_t.elapsed_ms());
                     drop(active);
                 }
                 Err(e) => {
-                    info!("{}: failed from {}: {}", self.addr, active.src_addr, e);
+                    info!("{}: failed from {}: {}",
+                          self.addr,
+                          active.duplex.src_addr,
+                          e);
+                    rec.incr(&self.stats.failures, 1);
+                    rec.add(&self.stats.connection_active_ms,
+                            active.start_t.elapsed_ms());
                     drop(active);
                 }
             }
         }
     }
 
-    fn poll_pending(&mut self) {
+    fn poll_pending(&mut self, rec: &mut tacho::Recorder) {
         let sz = self.pending.len();
         trace!("{}: polling {} pending streams", self.addr, sz);
         for _ in 0..sz {
-            let mut c = self.pending.pop_front().unwrap();
-            match c.poll() {
+            let mut pending = self.pending.pop_front().unwrap();
+            match pending.connect.poll() {
                 Ok(Async::NotReady) => {
-                    self.pending.push_back(c);
+                    self.pending.push_back(pending);
                 }
-                Ok(Async::Ready(c)) => {
+                Ok(Async::Ready(dst)) => {
                     trace!("{}: connection established", self.addr);
-                    self.established.push_back(c);
+                    rec.add(&self.stats.connect_latency_us, pending.start_t.elapsed_us());
+                    self.established.push_back(Established {
+                        dst: dst,
+                        start_t: tacho::Timing::start(),
+                    });
                 }
                 Err(e) => {
                     info!("{}: cannot establish connection: {}", self.addr, e);
@@ -180,7 +237,11 @@ impl Endpoint {
     ///
     /// If no connections have been established, the Upstrea is returned in an
     /// `Async::NotReady` so that the caller may try another endpoint.
-    pub fn transmit(&mut self, src: Src, buf: Rc<RefCell<Vec<u8>>>) -> AsyncSink<Src> {
+    pub fn transmit(&mut self,
+                    src: Src,
+                    buf: Rc<RefCell<Vec<u8>>>,
+                    rec: &mut tacho::Recorder)
+                    -> AsyncSink<Src> {
         match self.established.pop_front() {
             None => {
                 {
@@ -189,11 +250,18 @@ impl Endpoint {
                 }
                 AsyncSink::NotReady(src)
             }
-            Some(Dst(dst)) => {
+            Some(established) => {
                 let Src(src) = src;
+                let Dst(dst) = established.dst;
+                rec.add(&self.stats.connection_ready_ms,
+                        established.start_t.elapsed_ms());
                 trace!("transmitting to {} from {}", self.addr, src.addr());
-                let tx = Duplex::new(src, dst, buf);
-                self.active.push_front(tx);
+                let tx_metrics = self.stats.tx_metrics.clone();
+                let rx_metrics = self.stats.rx_metrics.clone();
+                self.active.push_front(Active {
+                    duplex: Duplex::new(src, dst, buf, tx_metrics, rx_metrics),
+                    start_t: tacho::Timing::start(),
+                });
                 AsyncSink::Ready
             }
         }

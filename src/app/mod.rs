@@ -1,6 +1,7 @@
 use futures::{Async, Future, Poll, Sink, Stream};
-use futures::sync::mpsc;
+use futures::sync::{BiLock, mpsc};
 use hyper::Client;
+use hyper::server::Http;
 use rustls;
 use rustls::ResolvesServerCert;
 use std::boxed::Box;
@@ -8,23 +9,33 @@ use std::cell::RefCell;
 use std::collections::{VecDeque, HashMap};
 use std::fs::File;
 use std::io::{self, BufReader};
+use std::net;
 use std::rc::Rc;
-use std::time;
+use std::time::Duration;
+use tacho::{self, Tacho};
+use tokio_core::net::TcpListener;
 use tokio_core::reactor::{Core, Handle};
+use tokio_timer::Timer as TokioTimer;
 
+mod admin_http;
 mod sni;
 pub mod config;
 
-use WeightedAddr;
 use self::config::*;
+use self::sni::Sni;
+use WeightedAddr;
 use lb::{Balancer, Acceptor, Connector, PlainAcceptor, PlainConnector, SecureAcceptor,
          SecureConnector};
 use namerd;
-use self::sni::Sni;
 
 const DEFAULT_BUFFER_SIZE: usize = 8 * 1024;
 const DEFAULT_MAX_WAITERS: usize = 8;
 const DEFAULT_NAMERD_SECONDS: u64 = 60;
+const DEFAULT_METRICS_SECONDS: u64 = 10;
+
+fn default_admin_addr() -> net::SocketAddr {
+    "0.0.0.0:9989".parse().unwrap()
+}
 
 /// Creates two reactor-aware runners from a configuration.
 ///
@@ -36,33 +47,55 @@ pub fn configure(app: AppConfig) -> (Admin, Proxies) {
         Rc::new(RefCell::new(vec![0;sz]))
     };
 
+    let Tacho { metrics, aggregator, report } = Tacho::default();
+
     let mut namerds = VecDeque::new();
     let mut proxies = VecDeque::new();
     let mut proxy_configs = app.proxies;
     for _ in 0..proxy_configs.len() {
-        let ProxyConfig { namerd, servers, client, max_waiters, .. } = proxy_configs.pop().unwrap();
-        let (tx, rx) = mpsc::channel(1);
+        let ProxyConfig { label, namerd, servers, client, max_waiters, .. } = proxy_configs.pop()
+            .unwrap();
+        let (addrs_tx, addrs_rx) = mpsc::channel(1);
         namerds.push_back(Namerd {
             config: namerd,
-            sender: tx,
+            sender: addrs_tx,
+            metrics: metrics.clone(),
         });
         proxies.push_back(Proxy {
-            addrs: Box::new(rx.fuse()),
-            servers: servers,
             client: client,
-            buf: transfer_buf.clone(),
-            max_waiters: max_waiters.unwrap_or(DEFAULT_MAX_WAITERS),
+            server: ProxyServer {
+                label: label,
+                addrs: Box::new(addrs_rx.fuse()),
+                servers: servers,
+                buf: transfer_buf.clone(),
+                max_waiters: max_waiters.unwrap_or(DEFAULT_MAX_WAITERS),
+                metrics: metrics.clone(),
+            },
         });
     }
 
-    let admin = Admin { namerds: namerds };
+    let addr = app.admin
+        .as_ref()
+        .and_then(|a| a.addr)
+        .unwrap_or_else(default_admin_addr);
+    let interval_s = app.admin
+        .as_ref()
+        .and_then(|a| a.metrics_interval_secs)
+        .unwrap_or(DEFAULT_METRICS_SECONDS);
+    let admin = Admin {
+        addr: addr,
+        metrics_interval: Duration::from_secs(interval_s),
+        namerds: namerds,
+        aggregator: aggregator,
+        report: report,
+    };
     let proxies = Proxies { proxies: proxies };
     (admin, proxies)
 }
 
 pub trait Loader: Sized {
-    type Future: Future<Item = (), Error = io::Error>;
-    fn load(self, handle: Handle) -> io::Result<Self::Future>;
+    type Run: Future<Item = (), Error = io::Error>;
+    fn load(self, handle: Handle) -> io::Result<Self::Run>;
 }
 pub trait Runner: Sized {
     fn run(self) -> io::Result<()>;
@@ -77,45 +110,90 @@ impl<L: Loader> Runner for L {
 }
 
 pub struct Admin {
+    addr: net::SocketAddr,
+    metrics_interval: Duration,
     namerds: VecDeque<Namerd>,
+    aggregator: tacho::Aggregator,
+    report: BiLock<tacho::Report>,
 }
 impl Loader for Admin {
-    type Future = Running;
+    type Run = Running;
     fn load(self, handle: Handle) -> io::Result<Running> {
         let mut running = Running::new();
-        let mut namerds = self.namerds;
-        for _ in 0..namerds.len() {
-            let f = namerds.pop_front().unwrap().load(handle.clone())?;
-            running.register(f.map_err(|_| io::ErrorKind::Other.into()));
+        {
+            let mut namerds = self.namerds;
+            for _ in 0..namerds.len() {
+                let f = namerds.pop_front().unwrap().load(handle.clone())?;
+                running.register(f.map_err(|_| io::ErrorKind::Other.into()));
+            }
+        }
+        let metrics_export = Rc::new(RefCell::new(String::new()));
+        {
+            let metrics_export = metrics_export.clone();
+            running.register(self.aggregator.map_err(|_| io::ErrorKind::Other.into()));
+
+            let reporting = TokioTimer::default()
+                .interval(self.metrics_interval)
+                .map_err(|_| {})
+                .fold(self.report, move |m, _| {
+                    let metrics_export = metrics_export.clone();
+                    m.lock().map(move |mut m| {
+                        let mut export = metrics_export.borrow_mut();
+                        *export = tacho::prometheus::format(&m);
+                        m.reset();
+                        m.unlock()
+                    })
+                })
+                .map(|_| {})
+                .map_err(|_| io::ErrorKind::Other.into());
+            running.register(reporting);
+        }
+        {
+            // TODO make this addr configurable.
+            let listener = {
+                println!("Listening on http://{}.", self.addr);
+                TcpListener::bind(&self.addr, &handle).expect("unable to listen")
+            };
+
+            let http = Http::new();
+            let srv = listener.incoming().for_each(move |(socket, addr)| {
+                let server = admin_http::Server::new(metrics_export.clone());
+                http.bind_connection(&handle, socket, addr, server);
+                Ok(())
+            });
+            running.register(srv);
         }
         Ok(running)
     }
 }
 
+
 struct Namerd {
     config: NamerdConfig,
     sender: mpsc::Sender<Vec<WeightedAddr>>,
+    metrics: tacho::Metrics,
 }
 impl Loader for Namerd {
-    type Future = Box<Future<Item = (), Error = io::Error>>;
-    fn load(self, handle: Handle) -> io::Result<Self::Future> {
+    type Run = Box<Future<Item = (), Error = io::Error>>;
+    fn load(self, handle: Handle) -> io::Result<Self::Run> {
         let path = self.config.path;
         let addr = self.config.addr;
         let interval_secs = self.config.interval_secs.unwrap_or(DEFAULT_NAMERD_SECONDS);
+        let interval = Duration::from_secs(interval_secs);
         let ns = self.config.namespace.clone().unwrap_or_else(|| "default".into());
         info!("Updating {} in {} from {} every {}s",
               path,
               ns,
               addr,
               interval_secs);
-        let interval = time::Duration::from_secs(interval_secs);
-
-        let client = Client::new(&handle);
-        let addrs = namerd::resolve(client, self.config.addr, interval, &ns, &path);
-        let sink = self.sender.sink_map_err(|_| error!("sink error"));
-        let driver = addrs.forward(sink)
-            .map(|_| {})
-            .map_err(|_| io::ErrorKind::Other.into());
+        let addrs = {
+            let client = Client::new(&handle);
+            namerd::resolve(self.config.addr, client, interval, &ns, &path, self.metrics)
+        };
+        let driver = {
+            let sink = self.sender.sink_map_err(|_| error!("sink error"));
+            addrs.forward(sink).map_err(|_| io::ErrorKind::Other.into()).map(|_| {})
+        };
         Ok(Box::new(driver))
     }
 }
@@ -124,7 +202,7 @@ pub struct Proxies {
     proxies: VecDeque<Proxy>,
 }
 impl Loader for Proxies {
-    type Future = Running;
+    type Run = Running;
     fn load(self, handle: Handle) -> io::Result<Running> {
         let mut running = Running::new();
         let mut proxies = self.proxies;
@@ -138,28 +216,20 @@ impl Loader for Proxies {
 }
 
 struct Proxy {
-    servers: Vec<ServerConfig>,
     client: Option<ClientConfig>,
-    addrs: Box<Stream<Item = Vec<WeightedAddr>, Error = ()>>,
-    buf: Rc<RefCell<Vec<u8>>>,
-    max_waiters: usize,
+    server: ProxyServer,
 }
 impl Loader for Proxy {
-    type Future = Running;
+    type Run = Running;
     fn load(self, handle: Handle) -> io::Result<Running> {
-        let client = self.client.and_then(|c| c.tls);
-        match client {
+        match self.client.and_then(|c| c.tls) {
             None => {
-                run_balancer(&handle,
-                             &self.servers,
-                             self.addrs,
-                             PlainConnector::new(handle.clone()),
-                             self.buf,
-                             self.max_waiters)
+                let conn = PlainConnector::new(handle.clone());
+                self.server.load(&handle, conn)
             }
             Some(ref c) => {
                 let mut tls = rustls::ClientConfig::new();
-                if let Some(ref certs) = c.trust_cert_paths {
+                if let Some(ref certs) = c.trust_certs {
                     for p in certs {
                         let f = File::open(p).expect("cannot open certificate file");
                         tls.root_store
@@ -167,58 +237,63 @@ impl Loader for Proxy {
                             .expect("certificate error");
                     }
                 };
-                run_balancer(&handle,
-                             &self.servers,
-                             self.addrs,
-                             SecureConnector::new(c.name.clone(), tls, handle.clone()),
-                             self.buf,
-                             self.max_waiters)
+                let conn = SecureConnector::new(c.dns_name.clone(), tls, handle.clone());
+                self.server.load(&handle, conn)
             }
         }
     }
 }
 
-fn run_balancer<A, C>(handle: &Handle,
-                      servers: &[ServerConfig],
-                      addrs: A,
-                      conn: C,
-                      buf: Rc<RefCell<Vec<u8>>>,
-                      max_waiters: usize)
-                      -> io::Result<Running>
-    where A: Stream<Item = Vec<WeightedAddr>, Error = ()> + 'static,
-          C: Connector + 'static
-{
-    let addrs = addrs.map_err(|_| io::ErrorKind::Other.into());
-    let bal = Balancer::new(addrs, conn, buf.clone()).into_shared(max_waiters, handle.clone());
+struct ProxyServer {
+    label: String,
+    servers: Vec<ServerConfig>,
+    addrs: Box<Stream<Item = Vec<WeightedAddr>, Error = ()>>,
+    buf: Rc<RefCell<Vec<u8>>>,
+    max_waiters: usize,
+    metrics: tacho::Metrics,
+}
+impl ProxyServer {
+    fn load<C>(self, handle: &Handle, conn: C) -> io::Result<Running>
+        where C: Connector + 'static
+    {
+        let addrs = self.addrs.map_err(|_| io::ErrorKind::Other.into());
+        let metrics = self.metrics.clone().labeled("proxy".into(), self.label.into());
+        let bal = Balancer::new(addrs, conn, self.buf.clone(), metrics.clone())
+            .into_shared(self.max_waiters, handle.clone());
 
-    let mut running = Running::new();
-    for s in servers {
-        let handle = handle.clone();
-        let bal = bal.clone();
-        match *s {
-            ServerConfig::Tcp { ref addr } => {
-                let acceptor = PlainAcceptor::new(handle);
-                let f = acceptor.accept(addr).forward(bal).map(|_| {});
-                running.register(f);
-            }
-            ServerConfig::Tls { ref addr,
-                                ref alpn_protocols,
-                                ref default_identity,
-                                ref identities,
-                                .. } => {
-                let mut tls = rustls::ServerConfig::new();
-                tls.cert_resolver = load_cert_resolver(identities, default_identity);
-                if let Some(ref protos) = *alpn_protocols {
-                    tls.set_protocols(protos);
+        // TODO scope/tag stats for servers.
+
+        let mut running = Running::new();
+        for s in &self.servers {
+            let handle = handle.clone();
+            let bal = bal.clone();
+            match *s {
+                ServerConfig::Tcp { ref addr } => {
+                    let metrics = metrics.clone().labeled("srv".into(), format!("{}", addr));
+                    let acceptor = PlainAcceptor::new(handle, metrics);
+                    let f = acceptor.accept(addr).forward(bal).map(|_| {});
+                    running.register(f);
                 }
+                ServerConfig::Tls { ref addr,
+                                    ref alpn_protocols,
+                                    ref default_identity,
+                                    ref identities,
+                                    .. } => {
+                    let mut tls = rustls::ServerConfig::new();
+                    tls.cert_resolver = load_cert_resolver(identities, default_identity);
+                    if let Some(ref protos) = *alpn_protocols {
+                        tls.set_protocols(protos);
+                    }
 
-                let acceptor = SecureAcceptor::new(handle, tls);
-                let f = acceptor.accept(addr).forward(bal).map(|_| {});
-                running.register(f);
+                    let metrics = metrics.clone().labeled("srv".into(), format!("{}", addr));
+                    let acceptor = SecureAcceptor::new(handle, tls, metrics);
+                    let f = acceptor.accept(addr).forward(bal).map(|_| {});
+                    running.register(f);
+                }
             }
         }
+        Ok(running)
     }
-    Ok(running)
 }
 
 fn load_cert_resolver(ids: &Option<HashMap<String, TlsServerIdentity>>,

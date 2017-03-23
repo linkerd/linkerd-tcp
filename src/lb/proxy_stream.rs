@@ -1,12 +1,13 @@
 //! Inspired by tokio-socks5 example.
 
 use futures::{Async, Future, Poll};
-use std::io::{self, Read, Write};
-use std::cell::RefCell;
-use std::rc::Rc;
-use tokio_io::AsyncWrite;
 
 use lb::Socket;
+use std::cell::RefCell;
+use std::io::{self, Read, Write};
+use std::rc::Rc;
+use tacho;
+use tokio_io::AsyncWrite;
 
 /// A future representing reading all data from one side of a proxy connection and writing
 /// it to another.
@@ -24,23 +25,31 @@ pub struct ProxyStream {
     pending: Option<Vec<u8>>,
 
     // The number of bytes we've written so far.
-    bytes_written: u64,
+    bytes_total: u64,
 
     completed: bool,
+
+    metrics: tacho::Metrics,
+    bytes_total_count: tacho::CounterKey,
+    allocs_count: tacho::CounterKey,
 }
 
 impl ProxyStream {
     pub fn new(r: Rc<RefCell<Socket>>,
                w: Rc<RefCell<Socket>>,
-               b: Rc<RefCell<Vec<u8>>>)
+               b: Rc<RefCell<Vec<u8>>>,
+               metrics: tacho::Metrics)
                -> ProxyStream {
         ProxyStream {
             reader: r,
             writer: w,
             buf: b,
             pending: None,
-            bytes_written: 0,
+            bytes_total: 0,
             completed: false,
+            bytes_total_count: metrics.scope().counter("bytes_total".into()),
+            allocs_count: metrics.scope().counter("allocs_count".into()),
+            metrics: metrics,
         }
     }
 }
@@ -61,9 +70,10 @@ impl Future for ProxyStream {
     fn poll(&mut self) -> Poll<u64, io::Error> {
         trace!("poll");
         if self.completed {
-            return Ok(self.bytes_written.into());
+            return Ok(self.bytes_total.into());
         }
 
+        let mut rec = self.metrics.recorder();
         let mut writer = self.writer.borrow_mut();
         let mut reader = self.reader.borrow_mut();
         loop {
@@ -72,10 +82,14 @@ impl Future for ProxyStream {
                 let psz = pending.len();
                 trace!("writing {} pending bytes", psz);
 
-                let wsz = try!(writer.write(&pending));
+                let wsz = writer.write(&pending)?;
                 trace!("wrote {} bytes", wsz);
 
-                self.bytes_written += wsz as u64;
+                {
+                    let wsz = wsz as u64;
+                    self.bytes_total += wsz;
+                    rec.incr(&self.bytes_total_count, wsz);
+                }
                 if wsz < psz {
                     trace!("saving {} bytes", psz - wsz);
                     // If all of the pending bytes couldn't be complete, save the
@@ -92,14 +106,14 @@ impl Future for ProxyStream {
             let rsz = try_nb!(reader.read(&mut buf));
             if rsz == 0 {
                 // Nothing left to read, return the total number of bytes transferred.
-                trace!("completed: {}B", self.bytes_written);
+                trace!("completed: {}B", self.bytes_total);
                 self.completed = true;
                 match writer.shutdown()? {
                     Async::NotReady => {
                         return Ok(Async::NotReady);
                     }
                     Async::Ready(_) => {
-                        return Ok(self.bytes_written.into());
+                        return Ok(self.bytes_total.into());
                     }
                 }
             }
@@ -109,11 +123,16 @@ impl Future for ProxyStream {
             match writer.write(&buf[..rsz]) {
                 Ok(wsz) => {
                     trace!("wrote {} bytes", wsz);
-                    self.bytes_written += wsz as u64;
+                    {
+                        let wsz = wsz as u64;
+                        self.bytes_total += wsz;
+                        rec.incr(&self.bytes_total_count, wsz);
+                    }
                     if wsz < rsz {
                         trace!("saving {} bytes", rsz - wsz);
                         // Allocate a temporary buffer to the unwritten remainder for next
                         // time.
+                        rec.incr(&self.allocs_count, 1);
                         let mut p = Vec::with_capacity(rsz - wsz);
                         p.copy_from_slice(&buf[wsz..rsz]);
                         self.pending = Some(p);
@@ -121,6 +140,7 @@ impl Future for ProxyStream {
                     }
                 }
                 Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => {
+                    rec.incr(&self.allocs_count, 1);
                     let mut p = Vec::with_capacity(rsz);
                     p.copy_from_slice(&buf);
                     self.pending = Some(p);

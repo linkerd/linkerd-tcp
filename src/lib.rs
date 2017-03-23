@@ -8,7 +8,6 @@
 extern crate bytes;
 #[macro_use]
 extern crate log;
-extern crate env_logger;
 extern crate futures;
 extern crate hyper;
 extern crate rand;
@@ -18,6 +17,7 @@ extern crate serde;
 extern crate serde_derive;
 extern crate serde_json;
 extern crate serde_yaml;
+extern crate tacho;
 extern crate tokio_core;
 #[macro_use]
 extern crate tokio_io;

@@ -1,11 +1,12 @@
+
+
+use app::config::TlsServerIdentity as IdentityConfig;
 use rustls::{Certificate, ResolvesServerCert, SignatureScheme, sign};
 use rustls::internal::pemfile;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
-
-use app::config::TlsServerIdentity as IdentityConfig;
 
 pub struct Sni {
     default: Option<ServerIdentity>,
@@ -17,10 +18,7 @@ impl Sni {
                default: &Option<IdentityConfig>)
                -> Sni {
         Sni {
-            default: match *default {
-                None => None,
-                Some(ref c) => Some(ServerIdentity::load(c)),
-            },
+            default: default.as_ref().map(|c| ServerIdentity::load(c)),
             identities: {
                 let mut ids = HashMap::new();
                 if let Some(ref identities) = *identities {
@@ -65,12 +63,12 @@ struct ServerIdentity {
 impl ServerIdentity {
     fn load(c: &IdentityConfig) -> ServerIdentity {
         let mut certs = vec![];
-        for p in &c.cert_paths {
+        for p in &c.certs {
             certs.append(&mut load_certs(p));
         }
         ServerIdentity {
             certs: certs,
-            key: Arc::new(load_private_key(&c.private_key_path)),
+            key: Arc::new(load_private_key(&c.private_key)),
         }
     }
 }
