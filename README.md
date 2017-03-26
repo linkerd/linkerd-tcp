@@ -83,7 +83,7 @@ proxies:
 Logging may be enabled by setting `RUST_LOG=linkerd_tcp=info` on the environment.  When
 debugging, set `RUST_LOG=trace`.
 
-## Packaing ##
+## Packaging ##
 
 To build the linkerd/linkerd-tcp docker image, run:
 
