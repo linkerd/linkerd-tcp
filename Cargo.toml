@@ -28,7 +28,7 @@ serde = "0.9"
 serde_derive = "0.9"
 serde_json = "0.9"
 serde_yaml = "0.6"
-tacho = { git = "https://github.com/buoyantio/tacho", branch = "ver/prom-labels" }
+tacho = "0.2"
 tokio-core = "0.1"
 tokio-io = "0.1"
 tokio-service = "0.1"

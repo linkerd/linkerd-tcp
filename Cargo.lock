@@ -14,7 +14,7 @@ dependencies = [
  "serde_derive 0.9.11 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 0.9.9 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_yaml 0.6.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "tacho 0.2.0 (git+https://github.com/buoyantio/tacho?branch=ver/prom-labels)",
+ "tacho 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-core 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-io 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-service 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -563,7 +563,7 @@ dependencies = [
 [[package]]
 name = "tacho"
 version = "0.2.0"
-source = "git+https://github.com/buoyantio/tacho?branch=ver/prom-labels#3ca842d8ef42eb9cd74c7a7f5ee909c0a9c1bf57"
+source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "futures 0.1.11 (registry+https://github.com/rust-lang/crates.io-index)",
  "hdrsample 3.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -848,7 +848,7 @@ dependencies = [
 "checksum strsim 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)" = "b4d15c810519a91cf877e7e36e63fe068815c678181439f2f29e2562147c3694"
 "checksum syn 0.11.9 (registry+https://github.com/rust-lang/crates.io-index)" = "480c834701caba3548aa991e54677281be3a5414a9d09ddbdf4ed74a569a9d19"
 "checksum synom 0.11.3 (registry+https://github.com/rust-lang/crates.io-index)" = "a393066ed9010ebaed60b9eafa373d4b1baac186dd7e008555b0f702b51945b6"
-"checksum tacho 0.2.0 (git+https://github.com/buoyantio/tacho?branch=ver/prom-labels)" = "<none>"
+"checksum tacho 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)" = "4d21bd6a90c520d111c4d04e8127bcd51d6004a14e8cf26946fad1112d6cf87e"
 "checksum take 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "b157868d8ac1f56b64604539990685fa7611d8fa9e5476cf0c02cf34d32917c5"
 "checksum term_size 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)" = "07b6c1ac5b3fffd75073276bca1ceed01f67a28537097a2a9539e116e50fb21a"
 "checksum thread-id 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)" = "a9539db560102d1cef46b8b78ce737ff0bb64e7e18d35b2a5688f7d097d0ff03"
