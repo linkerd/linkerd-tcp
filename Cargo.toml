@@ -17,18 +17,18 @@ doc = false
 [dependencies]
 bytes = "0.4"
 clap = "2.20"
-env_logger = "0.3"
 futures = "0.1"
 # We use not-yet-released tokio integration on master:
 hyper = { git = "https://github.com/hyperium/hyper", rev = "5a3743c1" }
-#hyper-tls = { git = "https://github.com/hyperium/hyper-tls", rev = "7425bd8d" }
 log = "0.3"
 rand = "0.3"
+pretty_env_logger = "0.1"
 rustls = "0.5"
 serde = "0.9"
 serde_derive = "0.9"
 serde_json = "0.9"
 serde_yaml = "0.6"
+tacho = "0.2"
 tokio-core = "0.1"
 tokio-io = "0.1"
 tokio-service = "0.1"

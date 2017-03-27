@@ -13,8 +13,9 @@ use rustls;
 use std::io;
 use std::net::{self, SocketAddr};
 use std::sync::Arc;
-use tokio_core::reactor::Handle;
+use tacho;
 use tokio_core::net::{TcpListener, TcpStream};
+use tokio_core::reactor::Handle;
 
 mod balancer;
 mod duplex;
@@ -23,13 +24,13 @@ mod proxy_stream;
 mod shared;
 mod socket;
 
-use self::duplex::Duplex;
-use self::proxy_stream::ProxyStream;
-use self::socket::Socket;
 
 pub use self::balancer::Balancer;
+use self::duplex::Duplex;
 pub use self::endpoint::Endpoint;
+use self::proxy_stream::ProxyStream;
 pub use self::shared::Shared;
+use self::socket::Socket;
 
 pub struct Src(Socket);
 pub struct Dst(Socket);
@@ -55,19 +56,32 @@ pub trait Connector {
     fn connect(&self, addr: &SocketAddr) -> Box<Future<Item = Dst, Error = io::Error>>;
 }
 
-pub struct PlainAcceptor(Handle);
+pub struct PlainAcceptor {
+    handle: Handle,
+    metrics: tacho::Metrics,
+    connects_key: tacho::CounterKey,
+}
 impl PlainAcceptor {
-    pub fn new(h: Handle) -> PlainAcceptor {
-        PlainAcceptor(h)
+    pub fn new(h: Handle, m: tacho::Metrics) -> PlainAcceptor {
+        PlainAcceptor {
+            handle: h,
+            connects_key: m.scope().counter("connects".into()),
+            metrics: m,
+        }
     }
 }
 impl Acceptor for PlainAcceptor {
     fn accept(&self, addr: &SocketAddr) -> Box<Stream<Item = Src, Error = io::Error>> {
-        let s = TcpListener::bind(addr, &self.0)
+        let metrics = self.metrics.clone();
+        let connects_key = self.connects_key.clone();
+        TcpListener::bind(addr, &self.handle)
             .unwrap()
             .incoming()
-            .map(|(s, a)| Src(Socket::plain(a, s)));
-        Box::new(s)
+            .map(move |(s, a)| {
+                metrics.recorder().incr(&connects_key, 1);
+                Src(Socket::plain(a, s))
+            })
+            .boxed()
     }
 }
 
@@ -89,12 +103,18 @@ impl Connector for PlainConnector {
 pub struct SecureAcceptor {
     handle: Handle,
     config: Arc<rustls::ServerConfig>,
+    metrics: tacho::Metrics,
+    connects_key: tacho::CounterKey,
+    fails_key: tacho::CounterKey,
 }
 impl SecureAcceptor {
-    pub fn new(h: Handle, c: rustls::ServerConfig) -> SecureAcceptor {
+    pub fn new(h: Handle, c: rustls::ServerConfig, m: tacho::Metrics) -> SecureAcceptor {
         SecureAcceptor {
             handle: h,
             config: Arc::new(c),
+            connects_key: m.scope().counter("connects".into()),
+            fails_key: m.scope().counter("handshake_failures".into()),
+            metrics: m,
         }
     }
 }
@@ -102,12 +122,26 @@ impl Acceptor for SecureAcceptor {
     fn accept(&self, addr: &SocketAddr) -> Box<Stream<Item = Src, Error = io::Error>> {
         let tls = self.config.clone();
         let l = TcpListener::bind(addr, &self.handle).unwrap();
+
+        let metrics = self.metrics.clone();
+        let connects_key = self.connects_key.clone();
+        let fails_key = self.fails_key.clone();
+
+        // Lift handshake errors so those connections are ignored.
         let sockets = l.incoming()
             .and_then(move |(tcp, addr)| Socket::secure_server_handshake(addr, tcp, &tls));
-        // Lift handshake errors so those connections are ignored.
-        let srcs = sockets.then(Ok).filter_map(|result| match result {
-            Err(_) => None,
-            Ok(s) => Some(Src(s)),
+        let srcs = sockets.then(Ok).filter_map(move |result| {
+            let mut rec = metrics.recorder();
+            match result {
+                Err(_) => {
+                    rec.incr(&fails_key, 1);
+                    None
+                }
+                Ok(s) => {
+                    rec.incr(&connects_key, 1);
+                    Some(Src(s))
+                }
+            }
         });
         Box::new(srcs)
     }

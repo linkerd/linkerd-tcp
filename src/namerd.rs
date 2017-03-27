@@ -5,9 +5,11 @@ use futures::{Future, Stream, future};
 use hyper::{Body, Chunk, Client};
 use hyper::client::Connect;
 use hyper::status::StatusCode;
+use serde_json as json;
 use std::{f32, net, time};
 use std::collections::HashMap;
-use serde_json as json;
+use std::rc::Rc;
+use tacho::{self, Timing};
 use tokio_timer::Timer;
 use url::Url;
 
@@ -17,16 +19,38 @@ pub struct NamerdError(String);
 type AddrsFuture = Box<Future<Item = Option<Vec<::WeightedAddr>>, Error = ()>>;
 type AddrsStream = Box<Stream<Item = Vec<::WeightedAddr>, Error = ()>>;
 
+#[derive(Clone)]
+struct Stats {
+    metrics: tacho::Metrics,
+    request_latency_ms: tacho::StatKey,
+    success_count: tacho::CounterKey,
+    failure_count: tacho::CounterKey,
+}
+impl Stats {
+    fn new(metrics: tacho::Metrics) -> Stats {
+        let metrics = metrics.labeled("service".into(), "namerd".into());
+        Stats {
+            request_latency_ms: metrics.scope().timing_ms("namerd_request_latency_ms".into()),
+            success_count: metrics.scope().counter("namerd_success_count".into()),
+            failure_count: metrics.scope().counter("namerd_failure_count".into()),
+            metrics: metrics,
+        }
+    }
+}
+
 /// Make a Resolver that periodically polls namerd to resolve a name
 /// to a set of addresses.
 ///
 /// The returned stream never completes.
-pub fn resolve<C: Connect>(client: Client<C>,
-                           addr: net::SocketAddr,
-                           period: time::Duration,
-                           namespace: &str,
-                           target: &str)
-                           -> AddrsStream {
+pub fn resolve<C>(addr: net::SocketAddr,
+                  client: Client<C>,
+                  period: time::Duration,
+                  namespace: &str,
+                  target: &str,
+                  metrics: tacho::Metrics)
+                  -> AddrsStream
+    where C: Connect
+{
     let url = {
         let base = format!("http://{}:{}/api/1/resolve/{}",
                            addr.ip(),
@@ -34,33 +58,49 @@ pub fn resolve<C: Connect>(client: Client<C>,
                            namespace);
         Url::parse_with_params(&base, &[("path", &target)]).unwrap()
     };
-    let init = request(&client, url.clone());
+    let stats = Stats::new(metrics);
+    let client = Rc::new(client);
+    let init = request(client.clone(), url.clone(), stats.clone());
     let updates = Timer::default()
         .interval(period)
-        .then(move |_| request(&client, url.clone()));
-    let stream = init.into_stream().chain(updates).filter_map(|opt| opt);
-    Box::new(stream)
+        .then(move |_| request(client.clone(), url.clone(), stats.clone()));
+    Box::new(init.into_stream().chain(updates).filter_map(|opt| opt))
 }
 
-fn request<C: Connect>(client: &Client<C>, url: Url) -> AddrsFuture {
+
+fn request<C: Connect>(client: Rc<Client<C>>, url: Url, stats: Stats) -> AddrsFuture {
     debug!("Polling namerd at {}", url.to_string());
-    let rsp = client.get(url).then(|rsp| match rsp {
-        Ok(rsp) => {
-            match *rsp.status() {
-                StatusCode::Ok => parse_body(rsp.body()),
-                status => {
-                    info!("error: bad response: {}", status);
+    let rsp = future::lazy(|| Ok(tacho::Timing::start())).and_then(move |start_t| {
+        client.get(url)
+            .then(|rsp| match rsp {
+                Ok(rsp) => {
+                    match *rsp.status() {
+                        StatusCode::Ok => parse_body(rsp.body()),
+                        status => {
+                            info!("error: bad response: {}", status);
+                            future::ok(None).boxed()
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("failed to read response: {}", e);
                     future::ok(None).boxed()
                 }
-            }
-        }
-        Err(e) => {
-            error!("failed to read response: {}", e);
-            future::ok(None).boxed()
-        }
+            })
+            .then(move |rsp| {
+                let mut rec = stats.metrics.recorder();
+                rec.add(&stats.request_latency_ms, start_t.elapsed_ms());
+                if rsp.as_ref().ok().and_then(|r| r.as_ref()).is_some() {
+                    rec.incr(&stats.success_count, 1);
+                } else {
+                    rec.incr(&stats.failure_count, 1);
+                }
+                rsp
+            })
     });
     Box::new(rsp)
 }
+
 
 fn parse_body(body: Body) -> AddrsFuture {
     trace!("parsing namerd response");
