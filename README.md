@@ -12,7 +12,7 @@ Status: _beta_
   - Weighted-least-loaded [P2C][p2c] load balancing.
   - Minimal resource utilization: typically <.5 cores with ~2MB RSS.
 - Tightly integrated with the [linkerd service mesh][namerd].
-  - Supports endpoint weighting (i.e. for "red line" testing)
+  - Supports endpoint weighting (i.e. for "red line" testing).
 - Modern Transport Layer Security via [rustls][rustls]:
   - TLS1.2 and TLS1.3 (draft 18) only.
   - ECDSA or RSA server authentication by clients.
