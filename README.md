@@ -4,7 +4,7 @@ A TCP load balancer for the [linkerd][linkerd] service mesh.
 
 Status: _beta_
 
-[![CircleCI](https://circleci.com/gh/linkerd/linkerd-tcp/tree/master.svg?style=svg)](https://circleci.com/gh/BuoyantIO/linkerd-tcp/tree/master)
+[![CircleCI](https://circleci.com/gh/linkerd/linkerd-tcp/tree/master.svg?style=svg)](https://circleci.com/gh/linkerd/linkerd-tcp/tree/master)
 
 ## Features ##
 
