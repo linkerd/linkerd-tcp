@@ -88,10 +88,10 @@ debugging, set `RUST_LOG=trace`.
 To build the linkerd/linkerd-tcp docker image, run:
 
 ```bash
-docker build -t linkerd/linkerd-tcp:latest .
+./dockerize latest
 ```
 
-Replace the `latest` tag with the version that you want to build.
+Replace `latest` with the version that you want to build.
 
 Try running the image with:
 
