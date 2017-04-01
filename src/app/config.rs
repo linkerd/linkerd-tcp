@@ -50,7 +50,7 @@ pub enum ServerConfig {
     // TODO support cypher suites
     // TODO support client auth
     // TODO supoprt persistence?
-    #[serde(rename = "io.l5d.tls")]
+    #[serde(rename = "io.l5d.tls", rename_all = "camelCase")]
     Tls {
         addr: net::SocketAddr,
         alpn_protocols: Option<Vec<String>>,

@@ -50,15 +50,16 @@ ARGS:
 
 ```yaml
 proxies:
-  - servers:
+  - label: default
+    servers:
       # Listen on two ports, one using a self-signed TLS certificate.
       - kind: io.l5d.tcp
         addr: 127.0.0.1:7474
       - kind: io.l5d.tls
         addr: 0.0.0.0:7575
         defaultIdentity:
-          privateKeyPath: private.pem
-          certPaths:
+          privateKey: private.pem
+          certs:
             - cert.pem
             - ../eg-ca/ca/intermediate/certs/ca-chain.cert.pem
 
@@ -72,8 +73,8 @@ proxies:
     # openssl certificate.
     client:
       tls:
-        name: "www.google.com"
-        trustCertPaths:
+        dnsName: "www.google.com"
+        trustCerts:
           - ../eg-ca/ca/intermediate/certs/ca-chain.cert.pem
           - /usr/local/etc/openssl/cert.pem
 ```
