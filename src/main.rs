@@ -32,8 +32,7 @@ fn main() {
         let path = opts.value_of(CONFIG_PATH_ARG).unwrap();
         let mut txt = String::new();
         fs::File::open(path)
-            .unwrap()
-            .read_to_string(&mut txt)
+            .and_then(|mut f| f.read_to_string(&mut txt))
             .expect("failed to read config");
         app::config::from_str(&txt).expect("configuration error")
     };
