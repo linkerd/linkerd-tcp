@@ -42,7 +42,8 @@ impl Stats {
 /// to a set of addresses.
 ///
 /// The returned stream never completes.
-pub fn resolve<C>(addr: net::SocketAddr,
+pub fn resolve<C>(host: String,
+                  port: i16,
                   client: Client<C>,
                   period: time::Duration,
                   namespace: &str,
@@ -53,8 +54,8 @@ pub fn resolve<C>(addr: net::SocketAddr,
 {
     let url = {
         let base = format!("http://{}:{}/api/1/resolve/{}",
-                           addr.ip(),
-                           addr.port().to_string(),
+                           host,
+                           port,
                            namespace);
         Url::parse_with_params(&base, &[("path", &target)]).unwrap()
     };

@@ -65,7 +65,8 @@ proxies:
 
     # Lookup /svc/google in namerd.
     namerd:
-      addr: 127.0.0.1:4180
+      host: 127.0.0.1
+      port: 4180
       path: /svc/google
 
     # Require that the downstream connection be TLS'd, with a `subjectAltName` including
