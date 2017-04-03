@@ -53,7 +53,8 @@ pub fn resolve<C>(base_url: String,
 {
     let url = {
         let base = format!("{}/api/1/resolve/{}", base_url, namespace);
-        Url::parse_with_params(&base, &[("path", &target)]).unwrap()
+        Url::parse_with_params(&base, &[("path", &target)])
+            .expect("invalid namerd url")
     };
     let stats = Stats::new(metrics);
     let client = Rc::new(client);
