@@ -42,8 +42,7 @@ impl Stats {
 /// to a set of addresses.
 ///
 /// The returned stream never completes.
-pub fn resolve<C>(host: String,
-                  port: i16,
+pub fn resolve<C>(base_url: String,
                   client: Client<C>,
                   period: time::Duration,
                   namespace: &str,
@@ -53,10 +52,7 @@ pub fn resolve<C>(host: String,
     where C: Connect
 {
     let url = {
-        let base = format!("http://{}:{}/api/1/resolve/{}",
-                           host,
-                           port,
-                           namespace);
+        let base = format!("{}/api/1/resolve/{}", base_url, namespace);
         Url::parse_with_params(&base, &[("path", &target)]).unwrap()
     };
     let stats = Stats::new(metrics);
