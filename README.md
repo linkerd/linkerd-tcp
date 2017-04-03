@@ -84,7 +84,7 @@ proxies:
 Logging may be enabled by setting `RUST_LOG=linkerd_tcp=info` on the environment.  When
 debugging, set `RUST_LOG=trace`.
 
-## Packaging ##
+## Docker ##
 
 To build the linkerd/linkerd-tcp docker image, run:
 
@@ -100,6 +100,11 @@ Try running the image with:
 docker run -v `pwd`/example.yml:/example.yml linkerd/linkerd-tcp:latest /example.yml
 ```
 
+## Code of Conduct ##
+
+This project is for everyone. We ask that our users and contributors take a few minutes to
+review our [code of conduct][coc].
+
 ## License ##
 
 Copyright 2017, Buoyant Inc. All rights reserved.
@@ -110,8 +115,9 @@ http://www.apache.org/licenses/LICENSE-2.0
 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
 
 <!-- references -->
+[coc]: https://github.com/linkerd/linkerd/wiki/Linkerd-code-of-conduct
 [install-rust]: https://www.rust-lang.org/en-US/install.html
-[linkerd]: https://linkerd.io
+[linkerd]: https://github.com/linkerd/linkerd
 [namerd]: https://github.com/linkerd/linkerd/tree/master/namerd
 [p2c]: https://www.eecs.harvard.edu/~michaelm/postscripts/mythesis.pdf
 [rustls]: https://github.com/ctz/rustls
