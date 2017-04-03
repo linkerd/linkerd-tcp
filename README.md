@@ -54,7 +54,7 @@ proxies:
     servers:
       # Listen on two ports, one using a self-signed TLS certificate.
       - kind: io.l5d.tcp
-        addr: 127.0.0.1:7474
+        addr: 0.0.0.0:7474
       - kind: io.l5d.tls
         addr: 0.0.0.0:7575
         defaultIdentity:
