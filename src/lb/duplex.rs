@@ -34,7 +34,7 @@ impl Duplex {
         let dst = Rc::new(RefCell::new(dst));
         let tx_bytes_stat = tx_metrics.scope().stat("bytes".into());
         let rx_byte_stat = rx_metrics.scope().stat("bytes".into());
-        let metrics = rx_metrics.clone(); // doesn't matter which one,
+        let metrics = rx_metrics.clone(); // doesn't matter which one.
         let tx = ProxyStream::new(src.clone(), dst.clone(), buf.clone(), tx_metrics);
         let rx = ProxyStream::new(dst, src, buf, rx_metrics);
         Duplex {
@@ -70,6 +70,7 @@ impl Future for Duplex {
                     self.tx_bytes += sz;
                 }
                 Async::NotReady => {
+                    trace!("dstward not ready");
                     self.tx = Some(tx);
                 }
             }
@@ -87,17 +88,20 @@ impl Future for Duplex {
                     self.rx_bytes += sz;
                 }
                 Async::NotReady => {
+                    trace!("srcward not ready");
                     self.rx = Some(rx);
                 }
             }
         }
 
         if self.tx.is_none() && self.rx.is_none() {
+            trace!("complete");
             let mut rec = self.metrics.recorder();
             rec.add(&self.tx_bytes_stat, self.tx_bytes);
             rec.add(&self.rx_bytes_stat, self.rx_bytes);
             Ok(Async::Ready(()))
         } else {
+            trace!("not ready");
             Ok(Async::NotReady)
         }
     }

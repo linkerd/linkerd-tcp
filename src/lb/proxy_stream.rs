@@ -5,6 +5,7 @@ use futures::{Async, Future, Poll};
 use lb::Socket;
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
+use std::net::Shutdown;
 use std::rc::Rc;
 use tacho;
 use tokio_io::AsyncWrite;
@@ -69,14 +70,17 @@ impl Future for ProxyStream {
     /// all pending data before reading any more.
     fn poll(&mut self) -> Poll<u64, io::Error> {
         trace!("poll");
-        if self.completed {
-            return Ok(self.bytes_total.into());
-        }
-
         let mut rec = self.metrics.recorder();
         let mut writer = self.writer.borrow_mut();
         let mut reader = self.reader.borrow_mut();
         loop {
+            if self.completed {
+                try_nb!(writer.shutdown());
+                writer.tcp_shutdown(Shutdown::Write)?;
+                trace!("completed");
+                return Ok(self.bytes_total.into());
+            }
+
             // Try to flush pending bytes to the writer.
             if let Some(mut pending) = self.pending.take() {
                 let psz = pending.len();
@@ -106,16 +110,12 @@ impl Future for ProxyStream {
             let rsz = try_nb!(reader.read(&mut buf));
             if rsz == 0 {
                 // Nothing left to read, return the total number of bytes transferred.
-                trace!("completed: {}B", self.bytes_total);
+                trace!("completing: {}B", self.bytes_total);
                 self.completed = true;
-                match writer.shutdown()? {
-                    Async::NotReady => {
-                        return Ok(Async::NotReady);
-                    }
-                    Async::Ready(_) => {
-                        return Ok(self.bytes_total.into());
-                    }
-                }
+                try_nb!(writer.shutdown());
+                writer.tcp_shutdown(Shutdown::Write)?;
+                trace!("completed: {}B", self.bytes_total);
+                return Ok(self.bytes_total.into());
             }
             trace!("read {} bytes", rsz);
 
