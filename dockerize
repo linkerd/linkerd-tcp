@@ -7,7 +7,7 @@ if [ -z "$1" ]; then
   exit 1
 fi
 
-docker run --rm -v `pwd`:/rust/app -w /rust/app jimmycuadra/rust:1.16.0 cargo build --release --target=x86_64-unknown-linux-gnu
+docker run --rm -v "`pwd`":/rust/app -w /rust/app jimmycuadra/rust:1.16.0 cargo build --release --target=x86_64-unknown-linux-gnu
 docker build -t linkerd/linkerd-tcp:$1 .
 
 echo "Created linkerd/linkerd-tcp:$1"
