@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::{VecDeque, HashMap};
 use std::fs::File;
 use std::io::{self, BufReader};
-use std::net;
+use std::net::{self, SocketAddr};
 use std::rc::Rc;
 use std::time::Duration;
 use tacho::{self, Tacho};
@@ -21,12 +21,12 @@ mod admin_http;
 mod sni;
 pub mod config;
 
-use self::config::*;
-use self::sni::Sni;
 use WeightedAddr;
 use lb::{Balancer, Acceptor, Connector, PlainAcceptor, PlainConnector, SecureAcceptor,
          SecureConnector};
 use namerd;
+use self::config::*;
+use self::sni::Sni;
 
 const DEFAULT_BUFFER_SIZE: usize = 8 * 1024;
 const DEFAULT_MAX_WAITERS: usize = 8;
@@ -95,7 +95,7 @@ pub fn configure(app: AppConfig) -> (Admin, Proxies) {
 
 pub trait Loader: Sized {
     type Run: Future<Item = (), Error = io::Error>;
-    fn load(self, handle: Handle) -> io::Result<Self::Run>;
+    fn load(self, handle: Handle) -> io::Result<(SocketAddr, Self::Run)>;
 }
 pub trait Runner: Sized {
     fn run(self) -> io::Result<()>;
@@ -104,7 +104,7 @@ pub trait Runner: Sized {
 impl<L: Loader> Runner for L {
     fn run(self) -> io::Result<()> {
         let mut core = Core::new()?;
-        let fut = self.load(core.handle())?;
+        let (_, fut) = self.load(core.handle())?;
         core.run(fut)
     }
 }
@@ -118,12 +118,12 @@ pub struct Admin {
 }
 impl Loader for Admin {
     type Run = Running;
-    fn load(self, handle: Handle) -> io::Result<Running> {
+    fn load(self, handle: Handle) -> io::Result<(SocketAddr, Running)> {
         let mut running = Running::new();
         {
             let mut namerds = self.namerds;
             for _ in 0..namerds.len() {
-                let f = namerds.pop_front().unwrap().load(handle.clone())?;
+                let (_, f) = namerds.pop_front().unwrap().load(handle.clone())?;
                 running.register(f.map_err(|_| io::ErrorKind::Other.into()));
             }
         }
@@ -163,19 +163,19 @@ impl Loader for Admin {
             });
             running.register(srv);
         }
-        Ok(running)
+        Ok((self.addr, running))
     }
 }
 
 
-struct Namerd {
-    config: NamerdConfig,
-    sender: mpsc::Sender<Vec<WeightedAddr>>,
-    metrics: tacho::Metrics,
+pub struct Namerd {
+    pub config: NamerdConfig,
+    pub sender: mpsc::Sender<Vec<WeightedAddr>>,
+    pub metrics: tacho::Metrics,
 }
 impl Loader for Namerd {
     type Run = Box<Future<Item = (), Error = io::Error>>;
-    fn load(self, handle: Handle) -> io::Result<Self::Run> {
+    fn load(self, handle: Handle) -> io::Result<(SocketAddr, Self::Run)> {
         let path = self.config.path;
         let url = self.config.url;
         let interval_secs = self.config.interval_secs.unwrap_or(DEFAULT_NAMERD_SECONDS);
@@ -194,7 +194,8 @@ impl Loader for Namerd {
             let sink = self.sender.sink_map_err(|_| error!("sink error"));
             addrs.forward(sink).map_err(|_| io::ErrorKind::Other.into()).map(|_| {})
         };
-        Ok(Box::new(driver))
+        // FIXME: 127.0.0.1:0 is a hideous hack but I lost the ability to get a SocketAddr.
+        Ok(("127.0.0.1:0".parse().unwrap(), Box::new(driver)))
     }
 }
 
@@ -203,29 +204,32 @@ pub struct Proxies {
 }
 impl Loader for Proxies {
     type Run = Running;
-    fn load(self, handle: Handle) -> io::Result<Running> {
+    fn load(self, handle: Handle) -> io::Result<(SocketAddr, Running)> {
         let mut running = Running::new();
         let mut proxies = self.proxies;
+        let mut addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         for _ in 0..proxies.len() {
             let p = proxies.pop_front().unwrap();
-            let f = p.load(handle.clone())?;
+            let (_addr, f) = p.load(handle.clone())?;
+            addr = _addr;
             running.register(f);
         }
-        Ok(running)
+        Ok((addr, running))
     }
 }
 
-struct Proxy {
-    client: Option<ClientConfig>,
-    server: ProxyServer,
+pub struct Proxy {
+    pub client: Option<ClientConfig>,
+    pub server: ProxyServer,
 }
 impl Loader for Proxy {
     type Run = Running;
-    fn load(self, handle: Handle) -> io::Result<Running> {
+    fn load(self, handle: Handle) -> io::Result<(SocketAddr, Running)> {
         match self.client.and_then(|c| c.tls) {
             None => {
                 let conn = PlainConnector::new(handle.clone());
-                self.server.load(&handle, conn)
+                let f = self.server.load(&handle, conn).expect("b");
+                Ok(f)
             }
             Some(ref c) => {
                 let mut tls = rustls::ClientConfig::new();
@@ -238,28 +242,32 @@ impl Loader for Proxy {
                     }
                 };
                 let conn = SecureConnector::new(c.dns_name.clone(), tls, handle.clone());
-                self.server.load(&handle, conn)
+                let f = self.server.load(&handle, conn).expect("a");
+                Ok(f)
             }
         }
     }
 }
 
-struct ProxyServer {
-    label: String,
-    servers: Vec<ServerConfig>,
-    addrs: Box<Stream<Item = Vec<WeightedAddr>, Error = ()>>,
-    buf: Rc<RefCell<Vec<u8>>>,
-    max_waiters: usize,
-    metrics: tacho::Metrics,
+pub struct ProxyServer {
+    pub label: String,
+    pub servers: Vec<ServerConfig>,
+    pub addrs: Box<Stream<Item = Vec<WeightedAddr>, Error = ()>>,
+    pub buf: Rc<RefCell<Vec<u8>>>,
+    pub max_waiters: usize,
+    pub metrics: tacho::Metrics,
 }
 impl ProxyServer {
-    fn load<C>(self, handle: &Handle, conn: C) -> io::Result<Running>
+    fn load<C>(self, handle: &Handle, conn: C) -> io::Result<(SocketAddr, Running)>
         where C: Connector + 'static
     {
         let addrs = self.addrs.map_err(|_| io::ErrorKind::Other.into());
         let metrics = self.metrics.clone().labeled("proxy".into(), self.label.into());
         let bal = Balancer::new(addrs, conn, self.buf.clone(), metrics.clone())
             .into_shared(self.max_waiters, handle.clone());
+
+        // Placeholder for our local listening SocketAddr.
+        let mut local_addr: SocketAddr = "127.0.0.1:0".parse().expect("unable to parse addr");
 
         // TODO scope/tag stats for servers.
 
@@ -271,7 +279,9 @@ impl ProxyServer {
                 ServerConfig::Tcp { ref addr } => {
                     let metrics = metrics.clone().labeled("srv".into(), format!("{}", addr));
                     let acceptor = PlainAcceptor::new(handle, metrics);
-                    let f = acceptor.accept(addr).forward(bal).map(|_| {});
+                    let (bound_addr, forwarder) = acceptor.accept(addr);
+                    local_addr = bound_addr;
+                    let f = forwarder.forward(bal).map(|_| {});
                     running.register(f);
                 }
                 ServerConfig::Tls { ref addr,
@@ -287,12 +297,14 @@ impl ProxyServer {
 
                     let metrics = metrics.clone().labeled("srv".into(), format!("{}", addr));
                     let acceptor = SecureAcceptor::new(handle, tls, metrics);
-                    let f = acceptor.accept(addr).forward(bal).map(|_| {});
+                    let (bound_addr, forwarder) = acceptor.accept(addr);
+                    local_addr = bound_addr;
+                    let f = forwarder.forward(bal).map(|_| {});
                     running.register(f);
                 }
             }
         }
-        Ok(running)
+        Ok((local_addr, running))
     }
 }
 

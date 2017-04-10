@@ -13,8 +13,8 @@ use tokio_io::AsyncWrite;
 /// A future representing reading all data from one side of a proxy connection and writing
 /// it to another.
 ///
-/// In the typical case, nothing allocations are required.  If the write side exhibits
-/// backpressure, however, a buffer is allocated to
+/// In the typical case, no allocations are required.  If the write side exhibits
+/// backpressure, however, a buffer is allocated.
 pub struct ProxyStream {
     reader: Rc<RefCell<Socket>>,
     writer: Rc<RefCell<Socket>>,

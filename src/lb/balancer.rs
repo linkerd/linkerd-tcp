@@ -44,6 +44,8 @@ pub struct Balancer<A, C> {
     retired: VecDeque<Endpoint>,
 
     stats: Stats,
+
+    fail_fast_mode: bool,
 }
 
 impl<A, C> Balancer<A, C>
@@ -64,6 +66,7 @@ impl<A, C> Balancer<A, C>
             ready: VecDeque::new(),
             retired: VecDeque::new(),
             stats: Stats::new(metrics),
+            fail_fast_mode: false,
         }
     }
 
@@ -140,6 +143,9 @@ impl<A, C> Balancer<A, C>
         if let Async::Ready(addrs) = self.addrs.poll()? {
             trace!("addr update");
             let addrs = addrs.expect("addr stream must be infinite");
+            // If there are no addrs to route to, drop requests quickly.
+            // TODO: validate that fail_fast_mode is being disabled once addrs exist.
+            self.fail_fast_mode = addrs.is_empty();
             let new = addr_weight_map(&addrs);
             self.update_endpoints(&new);
         }
@@ -357,12 +363,18 @@ impl<A, C> Sink for Balancer<A, C>
                 self.evict_retirees(&mut rec)?;
                 self.promote_unready(&mut rec)?;
                 self.discover_and_retire()?;
-                trace!("retrying {} unready={} ready={} retired={}",
+                trace!("retrying {} unready={} ready={} retired={} failfast={}",
                        src_addr,
                        self.unready.len(),
                        self.ready.len(),
-                       self.retired.len());
-                self.dispatch(src, &mut rec)
+                       self.retired.len(),
+                       self.fail_fast_mode);
+                if self.fail_fast_mode {
+                    trace!("in fail fast mode, dropping traffic");
+                    Err(io::ErrorKind::Other.into())
+                } else {
+                    self.dispatch(src, &mut rec)
+                }
             }
         };
 

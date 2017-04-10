@@ -81,7 +81,7 @@ fn request<C: Connect>(client: Rc<Client<C>>, url: Url, stats: Stats) -> AddrsFu
                     }
                 }
                 Err(e) => {
-                    error!("failed to read response: {}", e);
+                    error!("failed to read response from remote namerd: {}", e);
                     future::ok(None).boxed()
                 }
             })
@@ -134,9 +134,10 @@ fn parse_chunks(chunks: &[Chunk]) -> Option<Vec<::WeightedAddr>> {
     let result: json::Result<NamerdResponse> = json::from_reader(r);
     match result {
         Ok(ref nrsp) if nrsp.kind == "bound" => Some(to_weighted_addrs(&nrsp.addrs)),
+        Ok(ref nrsp) if nrsp.kind == "neg" => Some(vec![]),
         Ok(_) => Some(vec![]),
         Err(e) => {
-            info!("error parsing response: {}", e);
+            error!("error parsing response: {}", e);
             None
         }
     }
@@ -157,7 +158,9 @@ fn to_weighted_addrs(namerd_addrs: &[NamerdAddr]) -> Vec<::WeightedAddr> {
 struct NamerdResponse {
     #[serde(rename = "type")]
     kind: String,
+    #[serde(default)]
     addrs: Vec<NamerdAddr>,
+    #[serde(default)]
     meta: HashMap<String, String>,
 }
 
