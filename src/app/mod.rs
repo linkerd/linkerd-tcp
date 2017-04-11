@@ -177,18 +177,18 @@ impl Loader for Namerd {
     type Run = Box<Future<Item = (), Error = io::Error>>;
     fn load(self, handle: Handle) -> io::Result<Self::Run> {
         let path = self.config.path;
-        let addr = self.config.addr;
+        let url = self.config.url;
         let interval_secs = self.config.interval_secs.unwrap_or(DEFAULT_NAMERD_SECONDS);
         let interval = Duration::from_secs(interval_secs);
         let ns = self.config.namespace.clone().unwrap_or_else(|| "default".into());
         info!("Updating {} in {} from {} every {}s",
               path,
               ns,
-              addr,
+              url,
               interval_secs);
         let addrs = {
             let client = Client::new(&handle);
-            namerd::resolve(self.config.addr, client, interval, &ns, &path, self.metrics)
+            namerd::resolve(url, client, interval, &ns, &path, self.metrics)
         };
         let driver = {
             let sink = self.sender.sink_map_err(|_| error!("sink error"));

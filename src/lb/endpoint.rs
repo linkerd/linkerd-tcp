@@ -36,7 +36,7 @@ struct Stats {
 impl Stats {
     fn new(metrics: tacho::Metrics) -> Stats {
         let tx_metrics = metrics.clone().labeled("direction".into(), "tx".into());
-        let rx_metrics = metrics.clone().labeled("direction".into(), "tx".into());
+        let rx_metrics = metrics.clone().labeled("direction".into(), "rx".into());
         Stats {
             connect_latency_us: metrics.scope().timing_us("connect_latency_us".into()),
             connection_ready_ms: metrics.scope().timing_ms("connection_ready_ms".into()),

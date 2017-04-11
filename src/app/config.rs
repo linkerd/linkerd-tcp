@@ -78,7 +78,7 @@ pub struct TlsServerIdentity {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NamerdConfig {
-    pub addr: net::SocketAddr,
+    pub url: String,
     pub path: String,
     pub namespace: Option<String>,
     pub interval_secs: Option<u64>,
@@ -109,7 +109,7 @@ proxies:
       - kind: io.l5d.tcp
         addr: 0.0.0.0:4322
     namerd:
-      addr: 127.0.0.1:4180
+      url: http://127.0.0.1:4180
       path: /svc/default
       intervalSecs: 5
 ";
@@ -123,7 +123,7 @@ fn parse_simple_json() {
     let json = "{\"bufferSize\":1234, \"proxies\": [{\"label\": \"default\",\
                  \"servers\": [{\"kind\":\"io.l5d.tcp\", \"addr\":\"0.0.0.0:4321\"},\
                  {\"kind\":\"io.l5d.tcp\", \"addr\":\"0.0.0.0:4322\"}],\
-                 \"namerd\": {\"addr\":\"127.0.0.1:4180\", \"path\":\"/svc/default\"}}]}";
+                 \"namerd\": {\"url\":\"http://127.0.0.1:4180\", \"path\":\"/svc/default\"}}]}";
     let app = from_str(json).unwrap();
     assert!(app.buffer_size == Some(1234));
     assert!(app.proxies.len() == 1);
