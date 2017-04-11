@@ -18,7 +18,7 @@ proxies:
       #         - ../eg-ca/localhost.tls/ca-chain.cert.pem
 
     namerd:
-      addr: 127.0.0.1:4180
+      url: http://127.0.0.1:4180
       path: /svc/default
       intervalSecs: 5
 
