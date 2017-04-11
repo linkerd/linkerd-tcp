@@ -29,6 +29,9 @@ Status: _beta_
 2. Configure and run [namerd][namerd].
 3. From this repository, run: `cargo run -- example.yml`
 
+We :heart: pull requests! See [CONTRIBUTING.md](CONTRIBUTING.md) for info on
+contributing changes.
+
 ## Usage ##
 
 ```
