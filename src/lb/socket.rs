@@ -4,10 +4,10 @@ use lb::WithAddr;
 use rustls::{Session, ClientConfig, ServerConfig, ClientSession, ServerSession};
 use std::fmt;
 use std::io::{self, Read, Write};
-use std::net::SocketAddr;
+use std::net::{Shutdown, SocketAddr};
 use std::sync::Arc;
 use tokio_core::net::TcpStream;
-use tokio_io::{AsyncRead, AsyncWrite};
+use tokio_io::AsyncWrite;
 
 /// Hides the implementation details of socket I/O.
 ///
@@ -21,8 +21,8 @@ pub struct Socket(Inner);
 // clippy says so.
 enum Inner {
     Plain(SocketAddr, TcpStream),
-    SecureClient(SocketAddr, Box<SecureSocket<TcpStream, ClientSession>>),
-    SecureServer(SocketAddr, Box<SecureSocket<TcpStream, ServerSession>>),
+    SecureClient(SocketAddr, Box<SecureSocket<ClientSession>>),
+    SecureServer(SocketAddr, Box<SecureSocket<ServerSession>>),
 }
 
 impl fmt::Debug for Inner {
@@ -57,6 +57,15 @@ impl Socket {
         trace!("initializing server handshake");
         let s = SecureSocket::new(addr, tcp, ServerSession::new(tls));
         SecureServerHandshake(Some(s))
+    }
+
+    pub fn tcp_shutdown(&mut self, how: Shutdown) -> io::Result<()> {
+        trace!("{:?}.tcp_shutdown({:?})", self, how);
+        match self.0 {
+            Inner::Plain(_, ref mut s) => TcpStream::shutdown(s, how),
+            Inner::SecureClient(_, ref mut s) => s.tcp_shutdown(how),
+            Inner::SecureServer(_, ref mut s) => s.tcp_shutdown(how),
+        }
     }
 }
 
@@ -116,59 +125,63 @@ impl AsyncWrite for Socket {
 }
 
 /// Securely transmits data.
-struct SecureSocket<E, I> {
+struct SecureSocket<I> {
     addr: SocketAddr,
     /// The external encrypted side of the socket.
-    ext: E,
+    tcp: TcpStream,
     /// The internal decrypted side of the socket.
-    int: I,
+    session: I,
 }
 
-impl<E, I> fmt::Debug for SecureSocket<E, I> {
+impl<S> fmt::Debug for SecureSocket<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_tuple("SecureSocket").field(&self.addr).finish()
     }
 }
 
-impl<E, I> SecureSocket<E, I>
-    where E: AsyncRead + AsyncWrite,
-          I: Session
+impl<S> SecureSocket<S>
+    where S: Session
 {
-    pub fn new(a: SocketAddr, e: E, i: I) -> SecureSocket<E, I> {
+    pub fn new(a: SocketAddr, t: TcpStream, s: S) -> SecureSocket<S> {
         SecureSocket {
             addr: a,
-            ext: e,
-            int: i,
+            tcp: t,
+            session: s,
         }
     }
 
-    fn read_ext_to_int(&mut self) -> Option<io::Result<usize>> {
-        if !self.int.wants_read() {
-            trace!("read_ext_to_int: no read needed: {}", self.addr);
+    pub fn tcp_shutdown(&mut self, how: Shutdown) -> io::Result<()> {
+        trace!("tcp_shutdown: {:?}", self);
+        self.tcp.shutdown(how)
+    }
+
+    fn read_tcp_to_session(&mut self) -> Option<io::Result<usize>> {
+        if !self.session.wants_read() {
+            trace!("read_tcp_to_session: no read needed: {}", self.addr);
             return None;
         }
 
-        trace!("read_ext_to_int: read_tls: {}", self.addr);
-        match self.int.read_tls(&mut self.ext) {
+        trace!("read_tcp_to_session: read_tls: {}", self.addr);
+        match self.session.read_tls(&mut self.tcp) {
             Err(e) => {
                 if e.kind() == io::ErrorKind::WouldBlock {
-                    trace!("read_ext_to_int: read_tls: {}: {}", self.addr, e);
+                    trace!("read_tcp_to_session: read_tls: {}: {}", self.addr, e);
                     None
                 } else {
-                    error!("read_ext_to_int: read_tls: {}: {}", self.addr, e);
+                    error!("read_tcp_to_session: read_tls: {}: {}", self.addr, e);
                     Some(Err(e))
                 }
             }
             Ok(sz) => {
-                trace!("read_ext_to_int: read_tls: {} {}B", self.addr, sz);
+                trace!("read_tcp_to_session: read_tls: {} {}B", self.addr, sz);
                 if sz == 0 {
                     Some(Ok(sz))
                 } else {
-                    trace!("read_ext_to_int: process_new_packets: {}", self.addr);
-                    match self.int.process_new_packets() {
+                    trace!("read_tcp_to_session: process_new_packets: {}", self.addr);
+                    match self.session.process_new_packets() {
                         Ok(_) => Some(Ok(sz)),
                         Err(e) => {
-                            trace!("read_ext_to_int: process_new_packets error: {:?}", self);
+                            trace!("read_tcp_to_session: process_new_packets error: {:?}", self);
                             Some(Err(io::Error::new(io::ErrorKind::Other, e)))
                         }
                     }
@@ -177,27 +190,26 @@ impl<E, I> SecureSocket<E, I>
         }
     }
 
-    fn write_int_to_ext(&mut self) -> io::Result<usize> {
-        trace!("write_int_to_ext: write_tls: {}", self.addr);
-        let sz = self.int.write_tls(&mut self.ext)?;
-        trace!("write_int_to_ext: write_tls: {}: {}B", self.addr, sz);
+    fn write_session_to_tcp(&mut self) -> io::Result<usize> {
+        trace!("write_session_to_tcp: write_tls: {}", self.addr);
+        let sz = self.session.write_tls(&mut self.tcp)?;
+        trace!("write_session_to_tcp: write_tls: {}: {}B", self.addr, sz);
         Ok(sz)
     }
 }
 
-impl<E, D> WithAddr for SecureSocket<E, D> {
+impl<S> WithAddr for SecureSocket<S> {
     fn addr(&self) -> SocketAddr {
         self.addr
     }
 }
 
-impl<E, D> Read for SecureSocket<E, D>
-    where E: AsyncRead + AsyncWrite,
-          D: Session
+impl<S> Read for SecureSocket<S>
+    where S: Session
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         trace!("read: {}", self.addr);
-        let read_ok = match self.read_ext_to_int() {
+        let read_ok = match self.read_tcp_to_session() {
             None => false,
             Some(Ok(_)) => true,
             Some(Err(e)) => {
@@ -206,7 +218,7 @@ impl<E, D> Read for SecureSocket<E, D>
             }
         };
 
-        let sz = self.int.read(buf)?;
+        let sz = self.session.read(buf)?;
         trace!("read: {}: {}B", self.addr, sz);
         if !read_ok && sz == 0 {
             Err(io::ErrorKind::WouldBlock.into())
@@ -216,19 +228,18 @@ impl<E, D> Read for SecureSocket<E, D>
     }
 }
 
-impl<E, D> Write for SecureSocket<E, D>
-    where E: AsyncRead + AsyncWrite,
-          D: Session
+impl<S> Write for SecureSocket<S>
+    where S: Session
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         trace!("write: {}", self.addr);
-        let sz = self.int.write(buf)?;
+        let sz = self.session.write(buf)?;
         trace!("write: {}: {}B", self.addr, sz);
 
         {
             let mut write_ok = true;
-            while self.int.wants_write() && write_ok {
-                write_ok = match self.write_int_to_ext() {
+            while self.session.wants_write() && write_ok {
+                write_ok = match self.write_session_to_tcp() {
                     Ok(sz) => sz > 0,
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => false,
                     e @ Err(_) => return e,
@@ -241,27 +252,25 @@ impl<E, D> Write for SecureSocket<E, D>
 
     fn flush(&mut self) -> io::Result<()> {
         trace!("flush: {:?}", self);
-        self.int.flush()?;
-        self.ext.flush()
+        self.session.flush()?;
+        self.tcp.flush()
     }
 }
 
-impl<E, D> AsyncWrite for SecureSocket<E, D>
-    where E: AsyncRead + AsyncWrite,
-          D: Session
+impl<S> AsyncWrite for SecureSocket<S>
+    where S: Session
 {
     fn shutdown(&mut self) -> Poll<(), io::Error> {
-        trace!("shutdown: {:?}", self);
-        self.int.send_close_notify();
-        self.int.write_tls(&mut self.ext)?;
-        self.ext.shutdown()?;
+        self.session.send_close_notify();
+        self.session.write_tls(&mut self.tcp)?;
+        self.tcp.flush()?;
         Ok(Async::Ready(()))
     }
 }
 
 /// A future that completes when a server's TLS handshake is complete.
 #[derive(Debug)]
-pub struct SecureServerHandshake(Option<SecureSocket<TcpStream, ServerSession>>);
+pub struct SecureServerHandshake(Option<SecureSocket<ServerSession>>);
 impl Future for SecureServerHandshake {
     type Item = Socket;
     type Error = io::Error;
@@ -272,22 +281,22 @@ impl Future for SecureServerHandshake {
         // Read and write the handshake.
         {
             let mut wrote = true;
-            while ss.int.is_handshaking() && wrote {
-                if let Some(Err(e)) = ss.read_ext_to_int() {
+            while ss.session.is_handshaking() && wrote {
+                if let Some(Err(e)) = ss.read_tcp_to_session() {
                     trace!("server handshake: {}: error: {}", ss.addr, e);
                     return Err(e);
                 };
-                trace!("server handshake: write_int_to_ext: {}", ss.addr);
-                wrote = ss.int.wants_write() &&
-                        match ss.write_int_to_ext() {
+                trace!("server handshake: write_session_to_tcp: {}", ss.addr);
+                wrote = ss.session.wants_write() &&
+                        match ss.write_session_to_tcp() {
                     Ok(sz) => {
-                        trace!("server handshake: write_int_to_ext: {}: wrote {}",
+                        trace!("server handshake: write_session_to_tcp: {}: wrote {}",
                                ss.addr,
                                sz);
                         sz > 0
                     }
                     Err(e) => {
-                        trace!("server handshake: write_int_to_ext: {}: {}", ss.addr, e);
+                        trace!("server handshake: write_session_to_tcp: {}: {}", ss.addr, e);
                         if e.kind() != io::ErrorKind::WouldBlock {
                             return Err(e);
                         }
@@ -298,23 +307,23 @@ impl Future for SecureServerHandshake {
         }
 
         // If the remote hasn't read everything yet, resume later.
-        if ss.int.is_handshaking() {
+        if ss.session.is_handshaking() {
             trace!("server handshake: {}: not complete", ss.addr);
             self.0 = Some(ss);
             return Ok(Async::NotReady);
         }
 
         // Finally, acknowledge the handshake is complete.
-        if ss.int.wants_write() {
-            trace!("server handshake: write_int_to_ext: {}: final", ss.addr);
-            match ss.write_int_to_ext() {
+        if ss.session.wants_write() {
+            trace!("server handshake: write_session_to_tcp: {}: final", ss.addr);
+            match ss.write_session_to_tcp() {
                 Ok(sz) => {
-                    trace!("server handshake: write_int_to_ext: {}: final: wrote {}B",
+                    trace!("server handshake: write_session_to_tcp: {}: final: wrote {}B",
                            ss.addr,
                            sz);
                 }
                 Err(e) => {
-                    trace!("server handshake: write_int_to_ext: {}: final: {}",
+                    trace!("server handshake: write_session_to_tcp: {}: final: {}",
                            ss.addr,
                            e);
                     if e.kind() != io::ErrorKind::WouldBlock {
@@ -331,7 +340,7 @@ impl Future for SecureServerHandshake {
 
 /// A future that completes when a client's TLS handshake is complete.
 #[derive(Debug)]
-pub struct SecureClientHandshake(Option<SecureSocket<TcpStream, ClientSession>>);
+pub struct SecureClientHandshake(Option<SecureSocket<ClientSession>>);
 impl Future for SecureClientHandshake {
     type Item = Socket;
     type Error = io::Error;
@@ -343,36 +352,39 @@ impl Future for SecureClientHandshake {
         {
             let mut read_ok = true;
             let mut write_ok = true;
-            while ss.int.is_handshaking() && (read_ok || write_ok) {
-                trace!("client handshake: read_ext_to_int: {}", ss.addr);
-                read_ok = match ss.read_ext_to_int() {
+            while ss.session.is_handshaking() && (read_ok || write_ok) {
+                trace!("client handshake: read_tcp_to_session: {}", ss.addr);
+                read_ok = match ss.read_tcp_to_session() {
                     None => {
-                        trace!("client handshake: read_ext_to_int: {}: not ready", ss.addr);
+                        trace!("client handshake: read_tcp_to_session: {}: not ready",
+                               ss.addr);
                         false
                     }
                     Some(Ok(sz)) => {
-                        trace!("client handshake: read_ext_to_int: {}: {}B", ss.addr, sz);
+                        trace!("client handshake: read_tcp_to_session: {}: {}B",
+                               ss.addr,
+                               sz);
                         sz > 0
                     }
                     Some(Err(e)) => {
-                        trace!("client handshake: read_ext_to_int: {}: error: {}",
+                        trace!("client handshake: read_tcp_to_session: {}: error: {}",
                                ss.addr,
                                e);
                         return Err(e);
                     }
                 };
 
-                trace!("client handshake: write_int_to_ext: {}", ss.addr);
-                write_ok = ss.int.wants_write() &&
-                           match ss.write_int_to_ext() {
+                trace!("client handshake: write_session_to_tcp: {}", ss.addr);
+                write_ok = ss.session.wants_write() &&
+                           match ss.write_session_to_tcp() {
                     Ok(sz) => {
-                        trace!("client handshake: write_int_to_ext: {}: wrote {}",
+                        trace!("client handshake: write_session_to_tcp: {}: wrote {}",
                                ss.addr,
                                sz);
                         sz > 0
                     }
                     Err(e) => {
-                        trace!("client handshake: write_int_to_ext: {}: {}", ss.addr, e);
+                        trace!("client handshake: write_session_to_tcp: {}: {}", ss.addr, e);
                         if e.kind() != io::ErrorKind::WouldBlock {
                             return Err(e);
                         }
@@ -383,7 +395,7 @@ impl Future for SecureClientHandshake {
         }
 
         // If the remote hasn't read everything yet, resume later.
-        if ss.int.is_handshaking() {
+        if ss.session.is_handshaking() {
             trace!("handshake: {}: not complete", ss.addr);
             self.0 = Some(ss);
             return Ok(Async::NotReady);
