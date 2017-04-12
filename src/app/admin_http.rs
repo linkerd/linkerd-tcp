@@ -1,9 +1,10 @@
 use futures::{Future, future};
-use hyper::{self, Get, StatusCode};
+use hyper::{self, Get, Post, StatusCode};
 use hyper::header::ContentLength;
 use hyper::server::{Service, Request, Response};
 use std::boxed::Box;
 use std::cell::RefCell;
+use std::process;
 use std::rc::Rc;
 
 pub struct Server {
@@ -42,6 +43,9 @@ impl Service for Server {
                         }
                     })
                     .boxed()
+            }
+            (&Post, "/shutdown") => {
+                process::exit(0);
             }
             _ => future::ok(Response::new().with_status(StatusCode::NotFound)).boxed(),
         }
