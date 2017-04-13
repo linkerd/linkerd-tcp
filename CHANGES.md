@@ -3,7 +3,7 @@
 ## 0.0.3
 
 * New admin endpoint! POST to `/shutdown` to tell the process to exit.
-* Ensure that remote streams are shutdown properly.
+* Fix connection leak when one peer disconnected.
 * Fix stat reporting issue for the rx bytes metric.
 * Improve error message when config file cannot be read.
 * Update examples to bind to all available sockets by default.
