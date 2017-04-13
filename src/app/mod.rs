@@ -188,7 +188,7 @@ impl Loader for Namerd {
               interval_secs);
         let addrs = {
             let client = Client::new(&handle);
-            namerd::resolve(url, client, interval, &ns, &path, self.metrics)
+            namerd::resolve(&url, client, interval, &ns, &path, self.metrics)
         };
         let driver = {
             let sink = self.sender.sink_map_err(|_| error!("sink error"));

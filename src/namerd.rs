@@ -42,7 +42,7 @@ impl Stats {
 /// to a set of addresses.
 ///
 /// The returned stream never completes.
-pub fn resolve<C>(base_url: String,
+pub fn resolve<C>(base_url: &str,
                   client: Client<C>,
                   period: time::Duration,
                   namespace: &str,
@@ -53,8 +53,7 @@ pub fn resolve<C>(base_url: String,
 {
     let url = {
         let base = format!("{}/api/1/resolve/{}", base_url, namespace);
-        Url::parse_with_params(&base, &[("path", &target)])
-            .expect("invalid namerd url")
+        Url::parse_with_params(&base, &[("path", &target)]).expect("invalid namerd url")
     };
     let stats = Stats::new(metrics);
     let client = Rc::new(client);
