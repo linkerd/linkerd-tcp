@@ -21,19 +21,17 @@ type AddrsStream = Box<Stream<Item = Vec<::WeightedAddr>, Error = ()>>;
 
 #[derive(Clone)]
 struct Stats {
-    metrics: tacho::Metrics,
-    request_latency_ms: tacho::StatKey,
-    success_count: tacho::CounterKey,
-    failure_count: tacho::CounterKey,
+    request_latency_ms: tacho::Stat,
+    success_count: tacho::Counter,
+    failure_count: tacho::Counter,
 }
 impl Stats {
-    fn new(metrics: tacho::Metrics) -> Stats {
+    fn new(metrics: tacho::Scope) -> Stats {
         let metrics = metrics.labeled("service".into(), "namerd".into());
         Stats {
-            request_latency_ms: metrics.scope().timing_ms("namerd_request_latency_ms".into()),
-            success_count: metrics.scope().counter("namerd_success_count".into()),
-            failure_count: metrics.scope().counter("namerd_failure_count".into()),
-            metrics: metrics,
+            request_latency_ms: metrics.stat("namerd_request_latency_ms".into()),
+            success_count: metrics.counter("namerd_success_count".into()),
+            failure_count: metrics.counter("namerd_failure_count".into()),
         }
     }
 }
@@ -47,7 +45,7 @@ pub fn resolve<C>(base_url: &str,
                   period: time::Duration,
                   namespace: &str,
                   target: &str,
-                  metrics: tacho::Metrics)
+                  metrics: tacho::Scope)
                   -> AddrsStream
     where C: Connect
 {
@@ -67,6 +65,7 @@ pub fn resolve<C>(base_url: &str,
 
 fn request<C: Connect>(client: Rc<Client<C>>, url: Url, stats: Stats) -> AddrsFuture {
     debug!("Polling namerd at {}", url.to_string());
+    let mut stats = stats;
     let rsp = future::lazy(|| Ok(tacho::Timing::start())).and_then(move |start_t| {
         client.get(url)
             .then(|rsp| match rsp {
@@ -85,12 +84,11 @@ fn request<C: Connect>(client: Rc<Client<C>>, url: Url, stats: Stats) -> AddrsFu
                 }
             })
             .then(move |rsp| {
-                let mut rec = stats.metrics.recorder();
-                rec.add(&stats.request_latency_ms, start_t.elapsed_ms());
+                stats.request_latency_ms.add(start_t.elapsed_ms());
                 if rsp.as_ref().ok().and_then(|r| r.as_ref()).is_some() {
-                    rec.incr(&stats.success_count, 1);
+                    stats.success_count.incr(1);
                 } else {
-                    rec.incr(&stats.failure_count, 1);
+                    stats.failure_count.incr(1);
                 }
                 rsp
             })

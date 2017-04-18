@@ -54,7 +54,7 @@ impl<A, C> Balancer<A, C>
     pub fn new(addrs: A,
                connector: C,
                buf: Rc<RefCell<Vec<u8>>>,
-               metrics: tacho::Metrics)
+               metrics: tacho::Scope)
                -> Balancer<A, C> {
         Balancer {
             addrs: addrs,
@@ -78,12 +78,12 @@ impl<A, C> Balancer<A, C>
     }
 
     /// Drop retired endpoints that have no pending connections.
-    fn evict_retirees(&mut self, rec: &mut tacho::Recorder) -> io::Result<()> {
+    fn evict_retirees(&mut self) -> io::Result<()> {
         let sz = self.retired.len();
         trace!("checking {} retirees", sz);
         for _ in 0..sz {
             let mut ep = self.retired.pop_front().unwrap();
-            ep.poll_connections(rec)?;
+            ep.poll_connections()?;
             if ep.is_active() {
                 trace!("still active {}", ep.addr());
                 self.retired.push_back(ep);
@@ -95,12 +95,12 @@ impl<A, C> Balancer<A, C>
         Ok(())
     }
 
-    fn poll_ready(&mut self, rec: &mut tacho::Recorder) -> io::Result<()> {
+    fn poll_ready(&mut self) -> io::Result<()> {
         let sz = self.ready.len();
         trace!("checking {} ready", sz);
         for _ in 0..sz {
             let mut ep = self.ready.pop_front().unwrap();
-            ep.poll_connections(rec)?;
+            ep.poll_connections()?;
             if ep.is_ready() {
                 trace!("ready {}", ep.addr());
                 self.ready.push_back(ep);
@@ -112,12 +112,12 @@ impl<A, C> Balancer<A, C>
         Ok(())
     }
 
-    fn promote_unready(&mut self, rec: &mut tacho::Recorder) -> io::Result<()> {
+    fn promote_unready(&mut self) -> io::Result<()> {
         let sz = self.unready.len();
         trace!("checking {} unready", sz);
         for _ in 0..sz {
             let mut ep = self.unready.pop_front().unwrap();
-            ep.poll_connections(rec)?;
+            ep.poll_connections()?;
             if ep.is_ready() {
                 trace!("ready {}", ep.addr());
                 self.ready.push_back(ep);
@@ -236,7 +236,7 @@ impl<A, C> Balancer<A, C>
     ///
     /// Chooses two endpoints at random and uses the lesser-loaded of the two.
     // TODO pluggable strategy
-    fn dispatch(&mut self, src: Src, rec: &mut tacho::Recorder) -> StartSend<Src, io::Error> {
+    fn dispatch(&mut self, src: Src) -> StartSend<Src, io::Error> {
         trace!("dispatching {}", src.addr());
         // Choose an endpoint.
         match self.ready.len() {
@@ -247,7 +247,7 @@ impl<A, C> Balancer<A, C>
             1 => {
                 // One endpoint, use it.
                 let mut ep = self.ready.pop_front().unwrap();
-                let tx = ep.transmit(src, self.buffer.clone(), rec);
+                let tx = ep.transmit(src, self.buffer.clone());
                 // Replace the connection preemptively.
                 self.connect(ep);
                 Ok(tx)
@@ -292,7 +292,7 @@ impl<A, C> Balancer<A, C>
                     // Once we know the index of the endpoint we want to use, obtain a mutable
                     // reference to begin proxying.
                     let mut ep = self.ready.swap_remove_front(idx).unwrap();
-                    let tx = ep.transmit(src, self.buffer.clone(), rec);
+                    let tx = ep.transmit(src, self.buffer.clone());
                     // Replace the connection preemptively.
                     self.connect(ep);
                     tx
@@ -312,8 +312,8 @@ impl<A, C> Balancer<A, C>
         }
     }
 
-    fn record_balanacer_stats(&mut self, rec: &mut tacho::Recorder) {
-        self.stats.measure(rec, &self.unready, &self.ready, &self.retired);
+    fn record_balanacer_stats(&mut self) {
+        self.stats.measure(&self.unready, &self.ready, &self.retired);
     }
 }
 
@@ -343,30 +343,29 @@ impl<A, C> Sink for Balancer<A, C>
     /// dst endpoint.
     fn start_send(&mut self, src: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
         let src_addr = src.addr();
-        let mut rec = self.stats.recorder();
         let poll_t = tacho::Timing::start();
         trace!("start_send {}: unready={} ready={} retired={}",
                src_addr,
                self.unready.len(),
                self.ready.len(),
                self.retired.len());
-        let ret = match self.dispatch(src, &mut rec) {
+        let ret = match self.dispatch(src) {
             Err(e) => Err(e),
             Ok(AsyncSink::Ready) => Ok(AsyncSink::Ready),
             Ok(AsyncSink::NotReady(src)) => {
-                self.evict_retirees(&mut rec)?;
-                self.promote_unready(&mut rec)?;
+                self.evict_retirees()?;
+                self.promote_unready()?;
                 self.discover_and_retire()?;
                 trace!("retrying {} unready={} ready={} retired={}",
                        src_addr,
                        self.unready.len(),
                        self.ready.len(),
                        self.retired.len());
-                self.dispatch(src, &mut rec)
+                self.dispatch(src)
             }
         };
 
-        self.record_balanacer_stats(&mut rec);
+        self.record_balanacer_stats();
         trace!("start_sent {}: {} unready={} ready={} retired={}",
                src_addr,
                match &ret {
@@ -378,63 +377,57 @@ impl<A, C> Sink for Balancer<A, C>
                self.ready.len(),
                self.retired.len());
 
-        rec.add(&self.stats.poll_time_us, poll_t.elapsed_us());
+        self.stats.poll_time_us.add(poll_t.elapsed_us());
         ret
     }
 
     /// Updates the list of endpoints as needed.
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        let mut rec = self.stats.recorder();
         let poll_t = tacho::Timing::start();
         trace!("poll_complete unready={} ready={} retired={}",
                self.unready.len(),
                self.ready.len(),
                self.retired.len());
-        self.evict_retirees(&mut rec)?;
-        self.poll_ready(&mut rec)?;
-        self.promote_unready(&mut rec)?;
+        self.evict_retirees()?;
+        self.poll_ready()?;
+        self.promote_unready()?;
         self.discover_and_retire()?;
-        self.record_balanacer_stats(&mut rec);
+        self.record_balanacer_stats();
         trace!("poll_completed unready={} ready={} retired={}",
                self.unready.len(),
                self.ready.len(),
                self.retired.len());
-        rec.add(&self.stats.poll_time_us, poll_t.elapsed_us());
+        self.stats.poll_time_us.add(poll_t.elapsed_us());
         Ok(Async::NotReady)
     }
 }
 
 struct Stats {
-    metrics: tacho::Metrics,
-    conns_established: tacho::GaugeKey,
-    conns_active: tacho::GaugeKey,
-    conns_pending: tacho::GaugeKey,
-    endpoints_ready: tacho::GaugeKey,
-    endpoints_unready: tacho::GaugeKey,
-    endpoints_retired: tacho::GaugeKey,
-    poll_time_us: tacho::StatKey,
+    metrics: tacho::Scope,
+    conns_established: tacho::Gauge,
+    conns_active: tacho::Gauge,
+    conns_pending: tacho::Gauge,
+    endpoints_ready: tacho::Gauge,
+    endpoints_unready: tacho::Gauge,
+    endpoints_retired: tacho::Gauge,
+    poll_time_us: tacho::Stat,
 }
 
 impl Stats {
-    fn new(m: tacho::Metrics) -> Stats {
+    fn new(m: tacho::Scope) -> Stats {
         Stats {
-            conns_established: m.scope().gauge("conns_established".into()),
-            conns_active: m.scope().gauge("conns_active".into()),
-            conns_pending: m.scope().gauge("conns_pending".into()),
-            endpoints_ready: m.scope().gauge("endpoints_ready".into()),
-            endpoints_unready: m.scope().gauge("endpoints_unready".into()),
-            endpoints_retired: m.scope().gauge("endpoints_retired".into()),
-            poll_time_us: m.scope().stat("poll_time_us".into()),
+            conns_established: m.gauge("conns_established".into()),
+            conns_active: m.gauge("conns_active".into()),
+            conns_pending: m.gauge("conns_pending".into()),
+            endpoints_ready: m.gauge("endpoints_ready".into()),
+            endpoints_unready: m.gauge("endpoints_unready".into()),
+            endpoints_retired: m.gauge("endpoints_retired".into()),
+            poll_time_us: m.stat("poll_time_us".into()),
             metrics: m,
         }
     }
 
-    fn recorder(&self) -> tacho::Recorder {
-        self.metrics.recorder()
-    }
-
-    fn measure(&self,
-               rec: &mut tacho::Recorder,
+    fn measure(&mut self,
                unready: &VecDeque<Endpoint>,
                ready: &VecDeque<Endpoint>,
                retired: &VecDeque<Endpoint>) {
@@ -455,11 +448,11 @@ impl Stats {
             active += e.conns_active() as u64;
         }
 
-        rec.set(&self.conns_established, established);
-        rec.set(&self.conns_active, active);
-        rec.set(&self.conns_pending, pending);
-        rec.set(&self.endpoints_ready, ready.len() as u64);
-        rec.set(&self.endpoints_unready, unready.len() as u64);
-        rec.set(&self.endpoints_retired, retired.len() as u64);
+        self.conns_established.set(established);
+        self.conns_active.set(active);
+        self.conns_pending.set(pending);
+        self.endpoints_ready.set(ready.len() as u64);
+        self.endpoints_unready.set(unready.len() as u64);
+        self.endpoints_retired.set(retired.len() as u64);
     }
 }

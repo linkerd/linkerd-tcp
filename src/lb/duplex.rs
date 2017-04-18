@@ -15,26 +15,24 @@ pub struct Duplex {
     rx: Option<ProxyStream>,
 
     tx_bytes: u64,
-    tx_bytes_stat: tacho::StatKey,
+    tx_bytes_stat: tacho::Stat,
     rx_bytes: u64,
-    rx_bytes_stat: tacho::StatKey,
-    metrics: tacho::Metrics, // only used for obtaining a recorder.
+    rx_bytes_stat: tacho::Stat,
 }
 
 impl Duplex {
     pub fn new(src: Socket,
                dst: Socket,
                buf: Rc<RefCell<Vec<u8>>>,
-               tx_metrics: tacho::Metrics,
-               rx_metrics: tacho::Metrics)
+               tx_metrics: tacho::Scope,
+               rx_metrics: tacho::Scope)
                -> Duplex {
         let src_addr = src.addr();
         let dst_addr = dst.addr();
         let src = Rc::new(RefCell::new(src));
         let dst = Rc::new(RefCell::new(dst));
-        let tx_bytes_stat = tx_metrics.scope().stat("bytes".into());
-        let rx_byte_stat = rx_metrics.scope().stat("bytes".into());
-        let metrics = rx_metrics.clone(); // doesn't matter which one.
+        let tx_bytes_stat = tx_metrics.stat("bytes".into());
+        let rx_byte_stat = rx_metrics.stat("bytes".into());
         let tx = ProxyStream::new(src.clone(), dst.clone(), buf.clone(), tx_metrics);
         let rx = ProxyStream::new(dst, src, buf, rx_metrics);
         Duplex {
@@ -48,8 +46,6 @@ impl Duplex {
 
             rx_bytes: 0,
             rx_bytes_stat: rx_byte_stat,
-
-            metrics: metrics,
         }
     }
 }
@@ -96,9 +92,8 @@ impl Future for Duplex {
 
         if self.tx.is_none() && self.rx.is_none() {
             trace!("complete");
-            let mut rec = self.metrics.recorder();
-            rec.add(&self.tx_bytes_stat, self.tx_bytes);
-            rec.add(&self.rx_bytes_stat, self.rx_bytes);
+            self.tx_bytes_stat.add(self.tx_bytes);
+            self.rx_bytes_stat.add(self.rx_bytes);
             Ok(Async::Ready(()))
         } else {
             trace!("not ready");

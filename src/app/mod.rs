@@ -1,5 +1,5 @@
 use futures::{Async, Future, Poll, Sink, Stream};
-use futures::sync::{BiLock, mpsc};
+use futures::sync::mpsc;
 use hyper::Client;
 use hyper::server::Http;
 use rustls;
@@ -12,7 +12,7 @@ use std::io::{self, BufReader};
 use std::net;
 use std::rc::Rc;
 use std::time::Duration;
-use tacho::{self, Tacho};
+use tacho;
 use tokio_core::net::TcpListener;
 use tokio_core::reactor::{Core, Handle};
 use tokio_timer::Timer as TokioTimer;
@@ -47,7 +47,7 @@ pub fn configure(app: AppConfig) -> (Admin, Proxies) {
         Rc::new(RefCell::new(vec![0;sz]))
     };
 
-    let Tacho { metrics, aggregator, report } = Tacho::default();
+    let (metrics, reporter) = tacho::new();
 
     let mut namerds = VecDeque::new();
     let mut proxies = VecDeque::new();
@@ -86,8 +86,7 @@ pub fn configure(app: AppConfig) -> (Admin, Proxies) {
         addr: addr,
         metrics_interval: Duration::from_secs(interval_s),
         namerds: namerds,
-        aggregator: aggregator,
-        report: report,
+        metrics: reporter,
     };
     let proxies = Proxies { proxies: proxies };
     (admin, proxies)
@@ -113,8 +112,7 @@ pub struct Admin {
     addr: net::SocketAddr,
     metrics_interval: Duration,
     namerds: VecDeque<Namerd>,
-    aggregator: tacho::Aggregator,
-    report: BiLock<tacho::Report>,
+    metrics: tacho::Reporter,
 }
 impl Loader for Admin {
     type Run = Running;
@@ -130,19 +128,16 @@ impl Loader for Admin {
         let metrics_export = Rc::new(RefCell::new(String::new()));
         {
             let metrics_export = metrics_export.clone();
-            running.register(self.aggregator.map_err(|_| io::ErrorKind::Other.into()));
-
+            let mut metrics = self.metrics;
             let reporting = TokioTimer::default()
                 .interval(self.metrics_interval)
                 .map_err(|_| {})
-                .fold(self.report, move |m, _| {
+                .for_each(move |_| {
                     let metrics_export = metrics_export.clone();
-                    m.lock().map(move |mut m| {
-                        let mut export = metrics_export.borrow_mut();
-                        *export = tacho::prometheus::format(&m);
-                        m.reset();
-                        m.unlock()
-                    })
+                    let report = metrics.take();
+                    let mut export = metrics_export.borrow_mut();
+                    *export = tacho::prometheus::format(&report);
+                    Ok(())
                 })
                 .map(|_| {})
                 .map_err(|_| io::ErrorKind::Other.into());
@@ -171,7 +166,7 @@ impl Loader for Admin {
 struct Namerd {
     config: NamerdConfig,
     sender: mpsc::Sender<Vec<WeightedAddr>>,
-    metrics: tacho::Metrics,
+    metrics: tacho::Scope,
 }
 impl Loader for Namerd {
     type Run = Box<Future<Item = (), Error = io::Error>>;
@@ -250,7 +245,7 @@ struct ProxyServer {
     addrs: Box<Stream<Item = Vec<WeightedAddr>, Error = ()>>,
     buf: Rc<RefCell<Vec<u8>>>,
     max_waiters: usize,
-    metrics: tacho::Metrics,
+    metrics: tacho::Scope,
 }
 impl ProxyServer {
     fn load<C>(self, handle: &Handle, conn: C) -> io::Result<Running>

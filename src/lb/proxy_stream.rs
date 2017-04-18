@@ -30,16 +30,15 @@ pub struct ProxyStream {
 
     completed: bool,
 
-    metrics: tacho::Metrics,
-    bytes_total_count: tacho::CounterKey,
-    allocs_count: tacho::CounterKey,
+    bytes_total_count: tacho::Counter,
+    allocs_count: tacho::Counter,
 }
 
 impl ProxyStream {
     pub fn new(r: Rc<RefCell<Socket>>,
                w: Rc<RefCell<Socket>>,
                b: Rc<RefCell<Vec<u8>>>,
-               metrics: tacho::Metrics)
+               metrics: tacho::Scope)
                -> ProxyStream {
         ProxyStream {
             reader: r,
@@ -48,9 +47,8 @@ impl ProxyStream {
             pending: None,
             bytes_total: 0,
             completed: false,
-            bytes_total_count: metrics.scope().counter("bytes_total".into()),
-            allocs_count: metrics.scope().counter("allocs_count".into()),
-            metrics: metrics,
+            bytes_total_count: metrics.counter("bytes_total".into()),
+            allocs_count: metrics.counter("allocs_count".into()),
         }
     }
 }
@@ -70,7 +68,6 @@ impl Future for ProxyStream {
     /// all pending data before reading any more.
     fn poll(&mut self) -> Poll<u64, io::Error> {
         trace!("poll");
-        let mut rec = self.metrics.recorder();
         let mut writer = self.writer.borrow_mut();
         let mut reader = self.reader.borrow_mut();
         loop {
@@ -92,7 +89,7 @@ impl Future for ProxyStream {
                 {
                     let wsz = wsz as u64;
                     self.bytes_total += wsz;
-                    rec.incr(&self.bytes_total_count, wsz);
+                    self.bytes_total_count.incr(wsz);
                 }
                 if wsz < psz {
                     trace!("saving {} bytes", psz - wsz);
@@ -126,13 +123,13 @@ impl Future for ProxyStream {
                     {
                         let wsz = wsz as u64;
                         self.bytes_total += wsz;
-                        rec.incr(&self.bytes_total_count, wsz);
+                        self.bytes_total_count.incr(wsz);
                     }
                     if wsz < rsz {
                         trace!("saving {} bytes", rsz - wsz);
                         // Allocate a temporary buffer to the unwritten remainder for next
                         // time.
-                        rec.incr(&self.allocs_count, 1);
+                        self.allocs_count.incr(1);
                         let mut p = Vec::with_capacity(rsz - wsz);
                         p.copy_from_slice(&buf[wsz..rsz]);
                         self.pending = Some(p);
@@ -140,7 +137,7 @@ impl Future for ProxyStream {
                     }
                 }
                 Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => {
-                    rec.incr(&self.allocs_count, 1);
+                    self.allocs_count.incr(1);
                     let mut p = Vec::with_capacity(rsz);
                     p.copy_from_slice(&buf);
                     self.pending = Some(p);

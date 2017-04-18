@@ -58,27 +58,24 @@ pub trait Connector {
 
 pub struct PlainAcceptor {
     handle: Handle,
-    metrics: tacho::Metrics,
-    connects_key: tacho::CounterKey,
+    connects: tacho::Counter,
 }
 impl PlainAcceptor {
-    pub fn new(h: Handle, m: tacho::Metrics) -> PlainAcceptor {
+    pub fn new(h: Handle, m: tacho::Scope) -> PlainAcceptor {
         PlainAcceptor {
             handle: h,
-            connects_key: m.scope().counter("connects".into()),
-            metrics: m,
+            connects: m.counter("connects".into()),
         }
     }
 }
 impl Acceptor for PlainAcceptor {
     fn accept(&self, addr: &SocketAddr) -> Box<Stream<Item = Src, Error = io::Error>> {
-        let metrics = self.metrics.clone();
-        let connects_key = self.connects_key.clone();
+        let mut connects = self.connects.clone();
         TcpListener::bind(addr, &self.handle)
             .unwrap()
             .incoming()
             .map(move |(s, a)| {
-                metrics.recorder().incr(&connects_key, 1);
+                connects.incr(1);
                 Src(Socket::plain(a, s))
             })
             .boxed()
@@ -103,18 +100,16 @@ impl Connector for PlainConnector {
 pub struct SecureAcceptor {
     handle: Handle,
     config: Arc<rustls::ServerConfig>,
-    metrics: tacho::Metrics,
-    connects_key: tacho::CounterKey,
-    fails_key: tacho::CounterKey,
+    connects: tacho::Counter,
+    fails: tacho::Counter,
 }
 impl SecureAcceptor {
-    pub fn new(h: Handle, c: rustls::ServerConfig, m: tacho::Metrics) -> SecureAcceptor {
+    pub fn new(h: Handle, c: rustls::ServerConfig, m: tacho::Scope) -> SecureAcceptor {
         SecureAcceptor {
             handle: h,
             config: Arc::new(c),
-            connects_key: m.scope().counter("connects".into()),
-            fails_key: m.scope().counter("handshake_failures".into()),
-            metrics: m,
+            connects: m.counter("connects".into()),
+            fails: m.counter("handshake_failures".into()),
         }
     }
 }
@@ -123,24 +118,20 @@ impl Acceptor for SecureAcceptor {
         let tls = self.config.clone();
         let l = TcpListener::bind(addr, &self.handle).unwrap();
 
-        let metrics = self.metrics.clone();
-        let connects_key = self.connects_key.clone();
-        let fails_key = self.fails_key.clone();
+        let mut connects = self.connects.clone();
+        let mut fails = self.fails.clone();
 
         // Lift handshake errors so those connections are ignored.
         let sockets = l.incoming()
             .and_then(move |(tcp, addr)| Socket::secure_server_handshake(addr, tcp, &tls));
-        let srcs = sockets.then(Ok).filter_map(move |result| {
-            let mut rec = metrics.recorder();
-            match result {
-                Err(_) => {
-                    rec.incr(&fails_key, 1);
-                    None
-                }
-                Ok(s) => {
-                    rec.incr(&connects_key, 1);
-                    Some(Src(s))
-                }
+        let srcs = sockets.then(Ok).filter_map(move |result| match result {
+            Err(_) => {
+                fails.incr(1);
+                None
+            }
+            Ok(s) => {
+                connects.incr(1);
+                Some(Src(s))
             }
         });
         Box::new(srcs)
