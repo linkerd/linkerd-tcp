@@ -45,9 +45,11 @@ impl WithAddr for Src {
     }
 }
 
-/// Binds on `addr` and produces `U`-typed src connections.
+/// Binds on `addr` and produces the bound `SocketAddr` and a` Stream` of `Src` connections.
 pub trait Acceptor {
-    fn accept(&self, addr: &SocketAddr) -> Box<Stream<Item = Src, Error = io::Error>>;
+    fn accept(&self,
+              addr: &SocketAddr)
+              -> (SocketAddr, Box<Stream<Item = Src, Error = io::Error>>);
 }
 
 /// Establishes a `D`-typed connection to `addr`.
@@ -71,17 +73,20 @@ impl PlainAcceptor {
     }
 }
 impl Acceptor for PlainAcceptor {
-    fn accept(&self, addr: &SocketAddr) -> Box<Stream<Item = Src, Error = io::Error>> {
+    fn accept(&self,
+              addr: &SocketAddr)
+              -> (SocketAddr, Box<Stream<Item = Src, Error = io::Error>>) {
         let metrics = self.metrics.clone();
         let connects_key = self.connects_key.clone();
-        TcpListener::bind(addr, &self.handle)
-            .unwrap()
-            .incoming()
+        let listener = TcpListener::bind(addr, &self.handle).expect("could not bind to address");
+        let local_addr = listener.local_addr().expect("could not get local_addr from listener");
+        let worker = listener.incoming()
             .map(move |(s, a)| {
                 metrics.recorder().incr(&connects_key, 1);
                 Src(Socket::plain(a, s))
             })
-            .boxed()
+            .boxed();
+        (local_addr, worker)
     }
 }
 
@@ -119,9 +124,13 @@ impl SecureAcceptor {
     }
 }
 impl Acceptor for SecureAcceptor {
-    fn accept(&self, addr: &SocketAddr) -> Box<Stream<Item = Src, Error = io::Error>> {
+    fn accept(&self,
+              addr: &SocketAddr)
+              -> (SocketAddr, Box<Stream<Item = Src, Error = io::Error>>) {
         let tls = self.config.clone();
-        let l = TcpListener::bind(addr, &self.handle).unwrap();
+        let l = TcpListener::bind(addr, &self.handle)
+            .expect("could not bind listener for SecureAcceptor");
+        let local_addr = l.local_addr().expect("could not get local_addr from listener");
 
         let metrics = self.metrics.clone();
         let connects_key = self.connects_key.clone();
@@ -143,7 +152,7 @@ impl Acceptor for SecureAcceptor {
                 }
             }
         });
-        Box::new(srcs)
+        (local_addr, Box::new(srcs))
     }
 }
 

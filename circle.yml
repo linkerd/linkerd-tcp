@@ -17,4 +17,4 @@ dependencies:
 test:
   override:
     #-  ~/.cargo/bin/cargo clippy
-    - ~/.cargo/bin/cargo test
+    - RUST_BACKTRACE=full ~/.cargo/bin/cargo test
