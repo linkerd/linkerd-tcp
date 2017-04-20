@@ -1,0 +1,53 @@
+version: 2
+jobs:
+  build:
+    docker:
+      - image: linkerd/rustup-nightly:v1
+
+    working_directory: ~/tacho
+    steps:
+      - run:
+          name: update rust nightly
+          command: rustup update nightly
+
+      - restore_cache:
+          key: rust-{{ checksum "/rust/update-hashes/nightly-x86_64-unknown-linux-gnu" }}.0
+
+      - run:
+          name: install clippy
+          command: |
+            #if [ ! -x /cargo/bin/cargo-fmt ]; then cargo install rustfmt ; fi
+            if [ ! -x /cargo/bin/cargo-clippy ]; then cargo install clippy ; fi
+
+      - save_cache:
+          key: rust-{{ checksum "/rust/update-hashes/nightly-x86_64-unknown-linux-gnu" }}.0
+          paths:
+            - /rust
+            - /cargo
+
+      - checkout
+
+      - run:
+          name: update
+          command: cargo update
+
+      - restore_cache:
+          key: cargo.lock-{{ checksum "Cargo.lock" }}
+
+      - run:
+          name: test
+          command: cargo test
+
+      - save_cache:
+          key: cargo.lock-{{ checksum "Cargo.lock" }}
+          paths:
+            - target
+
+      - run:
+          name: lint
+          command: cargo clippy
+
+      # TODO when rustfmt is more stable.'
+      #- run:
+      #    name: format
+      #    command: cargo fmt -- --write-mode=diff
