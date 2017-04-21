@@ -31,17 +31,18 @@ impl Service for Server {
             (&Get, "/metrics") => {
                 self.get_metrics_body()
                     .then(|body| match body {
-                        Ok(body) => {
-                            let rsp = Response::new()
-                                .with_status(StatusCode::Ok)
-                                .with_header(ContentLength(body.len() as u64))
-                                .with_body(body);
-                            future::ok(rsp)
-                        }
-                        Err(_) => {
-                            future::ok(Response::new().with_status(StatusCode::InternalServerError))
-                        }
-                    })
+                              Ok(body) => {
+                        let rsp = Response::new()
+                            .with_status(StatusCode::Ok)
+                            .with_header(ContentLength(body.len() as u64))
+                            .with_body(body);
+                        future::ok(rsp)
+                    }
+                              Err(_) => {
+                                  future::ok(Response::new()
+                                                 .with_status(StatusCode::InternalServerError))
+                              }
+                          })
                     .boxed()
             }
             (&Post, "/shutdown") => {

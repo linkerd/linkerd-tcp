@@ -276,7 +276,9 @@ impl Future for SecureServerHandshake {
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Socket, io::Error> {
         trace!("{:?}.poll()", self);
-        let mut ss = self.0.take().expect("poll must not be called after completion");
+        let mut ss = self.0
+            .take()
+            .expect("poll must not be called after completion");
 
         // Read and write the handshake.
         {
@@ -289,20 +291,20 @@ impl Future for SecureServerHandshake {
                 trace!("server handshake: write_session_to_tcp: {}", ss.addr);
                 wrote = ss.session.wants_write() &&
                         match ss.write_session_to_tcp() {
-                    Ok(sz) => {
-                        trace!("server handshake: write_session_to_tcp: {}: wrote {}",
-                               ss.addr,
-                               sz);
-                        sz > 0
-                    }
-                    Err(e) => {
-                        trace!("server handshake: write_session_to_tcp: {}: {}", ss.addr, e);
-                        if e.kind() != io::ErrorKind::WouldBlock {
-                            return Err(e);
-                        }
-                        false
-                    }
+                            Ok(sz) => {
+                    trace!("server handshake: write_session_to_tcp: {}: wrote {}",
+                           ss.addr,
+                           sz);
+                    sz > 0
                 }
+                            Err(e) => {
+                    trace!("server handshake: write_session_to_tcp: {}: {}", ss.addr, e);
+                    if e.kind() != io::ErrorKind::WouldBlock {
+                        return Err(e);
+                    }
+                    false
+                }
+                        }
             }
         }
 
@@ -346,7 +348,9 @@ impl Future for SecureClientHandshake {
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Socket, io::Error> {
         trace!("{:?}.poll()", self);
-        let mut ss = self.0.take().expect("poll must not be called after completion");
+        let mut ss = self.0
+            .take()
+            .expect("poll must not be called after completion");
 
         // Read and write the handshake.
         {
@@ -377,20 +381,20 @@ impl Future for SecureClientHandshake {
                 trace!("client handshake: write_session_to_tcp: {}", ss.addr);
                 write_ok = ss.session.wants_write() &&
                            match ss.write_session_to_tcp() {
-                    Ok(sz) => {
-                        trace!("client handshake: write_session_to_tcp: {}: wrote {}",
-                               ss.addr,
-                               sz);
-                        sz > 0
+                               Ok(sz) => {
+                    trace!("client handshake: write_session_to_tcp: {}: wrote {}",
+                           ss.addr,
+                           sz);
+                    sz > 0
+                }
+                               Err(e) => {
+                    trace!("client handshake: write_session_to_tcp: {}: {}", ss.addr, e);
+                    if e.kind() != io::ErrorKind::WouldBlock {
+                        return Err(e);
                     }
-                    Err(e) => {
-                        trace!("client handshake: write_session_to_tcp: {}: {}", ss.addr, e);
-                        if e.kind() != io::ErrorKind::WouldBlock {
-                            return Err(e);
-                        }
-                        false
-                    }
-                };
+                    false
+                }
+                           };
             }
         }
 

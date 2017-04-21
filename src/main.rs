@@ -22,9 +22,9 @@ fn main() {
         .version(crate_version!())
         .about(crate_description!())
         .arg(Arg::with_name(CONFIG_PATH_ARG)
-            .required(true)
-            .index(1)
-            .help("Config file path."))
+                 .required(true)
+                 .index(1)
+                 .help("Config file path."))
         .get_matches();
 
     // Parse configuration file.

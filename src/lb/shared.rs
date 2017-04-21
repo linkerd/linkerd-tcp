@@ -35,7 +35,9 @@ impl Sink for Shared {
 
     fn start_send(&mut self, src: Src) -> StartSend<Src, Self::SinkError> {
         debug!("start_send {}", src.addr());
-        self.0.start_send(src).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        self.0
+            .start_send(src)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
     }
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {

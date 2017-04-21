@@ -1,5 +1,3 @@
-
-
 use WeightedAddr;
 use futures::{StartSend, AsyncSink, Async, Poll, Sink, Stream};
 use lb::{Connector, Endpoint, Shared, Src, WithAddr};
@@ -313,7 +311,8 @@ impl<A, C> Balancer<A, C>
     }
 
     fn record_balanacer_stats(&mut self) {
-        self.stats.measure(&self.unready, &self.ready, &self.retired);
+        self.stats
+            .measure(&self.unready, &self.ready, &self.retired);
     }
 }
 
@@ -368,10 +367,10 @@ impl<A, C> Sink for Balancer<A, C>
         self.record_balanacer_stats();
         trace!("start_sent {}: {} unready={} ready={} retired={}",
                src_addr,
-               match &ret {
-                   &Ok(AsyncSink::Ready) => "sent",
-                   &Ok(AsyncSink::NotReady(_)) => "not sent",
-                   &Err(_) => "failed",
+               match ret {
+                   Ok(AsyncSink::Ready) => "sent",
+                   Ok(AsyncSink::NotReady(_)) => "not sent",
+                   Err(_) => "failed",
                },
                self.unready.len(),
                self.ready.len(),

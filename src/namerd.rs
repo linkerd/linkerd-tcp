@@ -67,22 +67,23 @@ fn request<C: Connect>(client: Rc<Client<C>>, url: Url, stats: Stats) -> AddrsFu
     debug!("Polling namerd at {}", url.to_string());
     let mut stats = stats;
     let rsp = future::lazy(|| Ok(tacho::Timing::start())).and_then(move |start_t| {
-        client.get(url)
+        client
+            .get(url)
             .then(|rsp| match rsp {
-                Ok(rsp) => {
-                    match *rsp.status() {
-                        StatusCode::Ok => parse_body(rsp.body()),
-                        status => {
-                            info!("error: bad response: {}", status);
-                            future::ok(None).boxed()
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("failed to read response: {}", e);
-                    future::ok(None).boxed()
-                }
-            })
+                      Ok(rsp) => {
+                          match *rsp.status() {
+                              StatusCode::Ok => parse_body(rsp.body()),
+                              status => {
+                info!("error: bad response: {}", status);
+                future::ok(None).boxed()
+            }
+                          }
+                      }
+                      Err(e) => {
+                error!("failed to read response: {}", e);
+                future::ok(None).boxed()
+            }
+                  })
             .then(move |rsp| {
                 stats.request_latency_ms.add(start_t.elapsed_ms());
                 if rsp.as_ref().ok().and_then(|r| r.as_ref()).is_some() {
@@ -101,12 +102,12 @@ fn parse_body(body: Body) -> AddrsFuture {
     trace!("parsing namerd response");
     body.collect()
         .then(|res| match res {
-            Ok(ref chunks) => Ok(parse_chunks(chunks)),
-            Err(e) => {
-                info!("error: {}", e);
-                Ok(None)
-            }
-        })
+                  Ok(ref chunks) => Ok(parse_chunks(chunks)),
+                  Err(e) => {
+            info!("error: {}", e);
+            Ok(None)
+        }
+              })
         .boxed()
 }
 
