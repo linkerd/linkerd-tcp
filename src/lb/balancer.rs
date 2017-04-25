@@ -44,6 +44,8 @@ pub struct Balancer<A, C> {
     retired: VecDeque<Endpoint>,
 
     stats: Stats,
+
+    handle: Handle,
 }
 
 impl<A, C> Balancer<A, C>
@@ -54,7 +56,8 @@ impl<A, C> Balancer<A, C>
     pub fn new(addrs: A,
                connector: C,
                buf: Rc<RefCell<Vec<u8>>>,
-               metrics: tacho::Scope)
+               metrics: tacho::Scope,
+               handle: Handle)
                -> Balancer<A, C> {
         Balancer {
             addrs: addrs,
@@ -64,6 +67,7 @@ impl<A, C> Balancer<A, C>
             ready: VecDeque::new(),
             retired: VecDeque::new(),
             stats: Stats::new(metrics),
+            handle: handle,
         }
     }
 
@@ -71,9 +75,10 @@ impl<A, C> Balancer<A, C>
     ///
     /// The Balancer's handle is used to drive all balancer changes on a single thread,
     /// while other threads may submit `Srcs` to be processed.
-    pub fn into_shared(self, max_waiters: usize, h: Handle) -> Shared
+    pub fn into_shared(self, max_waiters: usize) -> Shared
         where A: 'static
     {
+        let h = self.handle.clone();
         Shared::new(self, max_waiters, h)
     }
 
@@ -313,7 +318,8 @@ impl<A, C> Balancer<A, C>
     }
 
     fn record_balanacer_stats(&mut self) {
-        self.stats.measure(&self.unready, &self.ready, &self.retired);
+        self.stats
+            .measure(&self.unready, &self.ready, &self.retired);
     }
 }
 
@@ -368,10 +374,10 @@ impl<A, C> Sink for Balancer<A, C>
         self.record_balanacer_stats();
         trace!("start_sent {}: {} unready={} ready={} retired={}",
                src_addr,
-               match &ret {
-                   &Ok(AsyncSink::Ready) => "sent",
-                   &Ok(AsyncSink::NotReady(_)) => "not sent",
-                   &Err(_) => "failed",
+               match ret {
+                   Ok(AsyncSink::Ready) => "sent",
+                   Ok(AsyncSink::NotReady(_)) => "not sent",
+                   Err(_) => "failed",
                },
                self.unready.len(),
                self.ready.len(),

@@ -36,3 +36,38 @@ pub use lb::Balancer;
 
 #[derive(Clone, Debug)]
 pub struct WeightedAddr(pub net::SocketAddr, pub f32);
+
+#[derive(Clone, Debug)]
+pub struct Path {
+    elems: std::rc::Rc<Vec<String>>,
+}
+
+#[derive(Clone)]
+pub struct IncomingEnvelope {
+    srv_addr: net::SocketAddr,
+    src_addr: net::SocketAddr,
+    src_id: Option<Path>,
+    dst_service: Path,
+
+    connect_deadline: Option<std::time::Instant>,
+    stream_deadline: Option<std::time::Instant>,
+    idle_timeout: Option<std::time::Duration>,
+}
+
+// TODO a r/w stream
+struct DuplexStream {}
+
+pub struct IncomingConnection {
+    envelope: IncomingEnvelope,
+    stream: DuplexStream,
+}
+
+pub type Incoming = futures::Stream<Item = IncomingConnection, Error = std::io::Error> + 'static;
+
+pub fn merge_servers(servers: Vec<Box<Incoming>>) -> Box<Incoming> {
+    let mut accum: Box<Incoming> = Box::new(futures::stream::empty());
+    for s in servers.drain(..) {
+        accum = accum.merge(s)
+    }
+    Box::new(accum)
+}
