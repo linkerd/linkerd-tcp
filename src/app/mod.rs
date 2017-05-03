@@ -47,7 +47,7 @@ pub fn configure(app: AppConfig) -> (Admin, Proxies) {
         Rc::new(RefCell::new(vec![0;sz]))
     };
 
-    let (metrics, reporter) = tacho::new();
+    let (metrics_tx, metrics_rx) = tacho::new();
 
     let mut namerds = VecDeque::new();
     let mut proxies = VecDeque::new();
@@ -65,7 +65,7 @@ pub fn configure(app: AppConfig) -> (Admin, Proxies) {
         namerds.push_back(Namerd {
                               config: namerd,
                               sender: addrs_tx,
-                              metrics: metrics.clone(),
+                              metrics: metrics_tx.clone(),
                           });
         proxies.push_back(Proxy {
                               client: client,
@@ -75,7 +75,7 @@ pub fn configure(app: AppConfig) -> (Admin, Proxies) {
                                   servers: servers,
                                   buf: transfer_buf.clone(),
                                   max_waiters: max_waiters.unwrap_or(DEFAULT_MAX_WAITERS),
-                                  metrics: metrics.clone(),
+                                  metrics: metrics_tx.clone(),
                               },
                           });
     }
@@ -92,7 +92,7 @@ pub fn configure(app: AppConfig) -> (Admin, Proxies) {
         addr: addr,
         metrics_interval: Duration::from_secs(interval_s),
         namerds: namerds,
-        metrics: reporter,
+        metrics: metrics_rx,
     };
     let proxies = Proxies { proxies: proxies };
     (admin, proxies)

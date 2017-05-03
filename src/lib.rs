@@ -63,11 +63,3 @@ pub struct IncomingConnection {
 }
 
 pub type Incoming = futures::Stream<Item = IncomingConnection, Error = std::io::Error> + 'static;
-
-pub fn merge_servers(servers: Vec<Box<Incoming>>) -> Box<Incoming> {
-    let mut accum: Box<Incoming> = Box::new(futures::stream::empty());
-    for s in servers.drain(..) {
-        accum = accum.merge(s)
-    }
-    Box::new(accum)
-}
