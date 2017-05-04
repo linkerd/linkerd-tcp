@@ -5,7 +5,7 @@ extern crate log;
 extern crate pretty_env_logger;
 extern crate linkerd_tcp;
 
-// use clap::{Arg, App};
+//use clap::{Arg, App};
 // use linkerd_tcp::app::{self, Runner};
 // use std::fs;
 // use std::io::Read;

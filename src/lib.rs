@@ -19,61 +19,21 @@ extern crate serde_json;
 extern crate serde_yaml;
 extern crate tacho;
 extern crate tokio_core;
-#[macro_use]
+// #[macro_use]
 extern crate tokio_io;
 extern crate tokio_timer;
 extern crate url;
 
-use std::iter::Iterator;
+use futures::Stream;
 use std::net;
-use std::rc::Rc;
 
-mod namerd;
+pub mod namerd;
+mod path;
+
+pub use path::{PathElem, PathElems, Path};
 
 #[derive(Clone, Debug)]
 pub struct WeightedAddr(pub net::SocketAddr, pub f32);
-
-pub type PathElem = Rc<Vec<u8>>;
-pub type PathElems = Rc<Vec<PathElem>>;
-
-#[derive(Clone, Debug)]
-pub struct Path(PathElems);
-impl Path {
-    pub fn empty() -> Path { Path(Rc::new(Vec::new())) }
-
-    pub fn new(elems0: Vec<Vec<u8>>) -> Path {
-        let mut elems = Vec::with_capacity(elems0.len());
-        for el in elems0 {
-            elems.push(Rc::new(el));
-        }
-        Path(Rc::new(elems))
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn elems(&self) -> PathElems {
-        self.0.clone()
-    }
-
-    pub fn concat(&self, other: Path) -> Path {
-        if self.len() == 0 {
-            other.clone()
-        } else if other.len() == 0 {
-            self.clone()
-        } else {
-            let mut elems = Vec::with_capacity(self.len() + other.len());
-            for el in &*self.0 {
-                elems.push(el.clone());
-            }
-            for el in &*other.0 {
-                elems.push(el.clone());
-            }
-            Path(Rc::new(elems))
-        }
-    } 
-}
 
 /// Describes an incoming conneciton.
 #[derive(Clone)]
@@ -96,6 +56,5 @@ pub struct EnvelopedConnection {
     pub socket: Socket,
 }
 
-pub type EnvelopedConnectionStream = futures::Stream<Item = EnvelopedConnection,
-                                                     Error = std::io::Error> + 'static;
-                                                     
+pub type EnvelopedConnectionStream =
+    Stream<Item = EnvelopedConnection, Error = std::io::Error> + 'static;
