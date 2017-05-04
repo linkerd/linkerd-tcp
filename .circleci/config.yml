@@ -2,13 +2,13 @@ version: 2
 jobs:
   build:
     docker:
-      - image: linkerd/rustup-nightly:v1
+      - image: linkerd/rustup-nightly:v2
 
     working_directory: ~/tacho
     steps:
       - run:
-          name: update rust nightly
-          command: rustup update nightly
+          name: install rust
+          command: /install-rust.sh
 
       - restore_cache:
           key: rust-{{ checksum "/rust/update-hashes/nightly-x86_64-unknown-linux-gnu" }}.0
