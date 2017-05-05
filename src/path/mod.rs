@@ -1,9 +1,16 @@
 use std::ops::Index;
 use std::rc::Rc;
 
+mod parser;
+
+pub use self::parser::{Parsed as Read, Error as ReadError};
+
 pub type PathElem = Rc<Vec<u8>>;
 pub type PathElems = Rc<Vec<PathElem>>;
 
+/// Represents a slash-delimited path.alloc
+///
+/// Inspired by com.twitter.finagle.Path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Path(PathElems);
 impl Path {
@@ -11,7 +18,9 @@ impl Path {
         Path(Rc::new(Vec::new()))
     }
 
-    // TODO pub fn read(s: &str) -> Path {}
+    pub fn read(txt: &str) -> Read {
+        parser::parse_path(txt)
+    }
 
     pub fn new(elems0: Vec<Vec<u8>>) -> Path {
         let mut elems = Vec::with_capacity(elems0.len());
@@ -102,6 +111,7 @@ fn test_string() {
     assert_eq!(path[1], "outside".as_bytes());
     assert_eq!(path[2], "ramona".as_bytes());
     assert_eq!(path, Path::from_strings(elems));
+    assert_eq!(path, Path::read("/bowie/outside/ramona").unwrap());
 }
 
 #[test]
