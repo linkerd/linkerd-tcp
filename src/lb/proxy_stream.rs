@@ -130,7 +130,7 @@ impl Future for ProxyStream {
                         // Allocate a temporary buffer to the unwritten remainder for next
                         // time.
                         self.allocs_count.incr(1);
-                        let mut p = Vec::with_capacity(rsz - wsz);
+                        let mut p = vec![0; (rsz - wsz)];
                         p.copy_from_slice(&buf[wsz..rsz]);
                         self.pending = Some(p);
                         return Ok(Async::NotReady);
@@ -138,8 +138,7 @@ impl Future for ProxyStream {
                 }
                 Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => {
                     self.allocs_count.incr(1);
-                    let mut p = Vec::with_capacity(rsz);
-                    p.copy_from_slice(&buf);
+                    let p = buf.clone();
                     self.pending = Some(p);
                     return Ok(Async::NotReady);
                 }
