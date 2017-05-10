@@ -1,9 +1,12 @@
 use super::*;
+use futures::{Future, Poll, Async};
+use std::cell::RefCell;
+use std::io;
+use std::rc::Rc;
 //use tacho::Scope;
 
-pub fn new(listen_addr: net::SocketAddr, router: Router, buf: Rc<RefCell<Vec<u8>>>) -> Server {
+pub fn new(router: Router, buf: Rc<RefCell<Vec<u8>>>) -> Server {
     Server {
-        listen_addr: listen_addr,
         router: router,
         buf: buf,
         // srv_metrics: metrics.scope("srv", listen_addr.into()),
@@ -12,7 +15,6 @@ pub fn new(listen_addr: net::SocketAddr, router: Router, buf: Rc<RefCell<Vec<u8>
 }
 
 pub struct Server {
-    listen_addr: net::SocketAddr,
     router: Router,
     buf: Rc<RefCell<Vec<u8>>>,
     // srv_metrics: tacho::Scope,

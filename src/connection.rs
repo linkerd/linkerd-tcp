@@ -34,7 +34,7 @@ pub struct Envelope {
     /// An optional identifier for the remote endpoint (e.g. from TLS -- SNI or client ID or...).
     pub remote_id: Option<Path>,
 
-    /// The destination service name.
+    /// A slash-delimeted destination service path.
     pub dst_name: Path,
 
     /// The time by which the stream must be established.
