@@ -116,17 +116,17 @@ impl Stream for Resolve {
     }
 }
 
+/// Materializes a load balancer from a resolution stream.
+///
 ///
 #[derive(Clone)]
 pub struct Route {
     reactor: Handle,
     resolve: Option<Resolve>,
 }
-
 impl Future for Route {
     type Item = Balancer;
     type Error = io::Error;
-
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.resolve.take() {
             None => panic!("polled after completion"),
@@ -142,8 +142,10 @@ impl Future for Route {
                     }
                     Async::Ready(Some(addr)) => {
                         let bal = Balancer { addrs: Rc::new(RefCell::new(addr)) };
+
                         let updating = resolve.forward(bal.clone()).map(|_| {}).map_err(|_| {});
                         self.reactor.spawn(updating);
+
                         Ok(Async::Ready(bal))
                     }
                 }
@@ -168,6 +170,7 @@ impl Sink for Balancer {
     type SinkItem = Vec<DstAddr>;
     type SinkError = io::Error;
 
+    /// Update the load balancer from service discovery.
     fn start_send(&mut self, new_addrs: Vec<DstAddr>) -> StartSend<Vec<DstAddr>, Self::SinkError> {
         // TODO this is where we will update the load balancer's state to retire lapsed
         // endpoints.  Should new connections be initiated here as well?
@@ -177,6 +180,7 @@ impl Sink for Balancer {
         Ok(AsyncSink::Ready)
     }
 
+    /// Never completes.
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
         Ok(Async::NotReady)
     }
