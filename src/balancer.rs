@@ -1,4 +1,4 @@
-use super::{Connection, DstAddr};
+use super::{Connection, DstAddr, namerd};
 use futures::{Future, Sink, Poll, Async, StartSend, AsyncSink};
 use std::cell::RefCell;
 use std::io;
@@ -23,16 +23,22 @@ impl Balancer {
 }
 
 impl Sink for Balancer {
-    type SinkItem = Vec<DstAddr>;
-    type SinkError = io::Error;
+    type SinkItem = namerd::Result<Vec<DstAddr>>;
+    type SinkError = ();
 
     /// Update the load balancer from service discovery.
-    fn start_send(&mut self, new_addrs: Vec<DstAddr>) -> StartSend<Vec<DstAddr>, Self::SinkError> {
-        // TODO this is where we will update the load balancer's state to retire lapsed
-        // endpoints.  Should new connections be initiated here as well?
-        let mut addrs = self.addrs.borrow_mut();
-        *addrs = new_addrs;
-
+    fn start_send(&mut self,
+                  update: namerd::Result<Vec<DstAddr>>)
+                  -> StartSend<namerd::Result<Vec<DstAddr>>, Self::SinkError> {
+        match update {
+            Ok(new_addrs) => {
+                // TODO this is where we will update the load balancer's state to retire lapsed
+                // endpoints.  Should new connections be initiated here as well?
+                let mut addrs = self.addrs.borrow_mut();
+                *addrs = new_addrs;
+            }
+            Err(e) => warn!("balancer update error: {:?}", e),
+        }
         Ok(AsyncSink::Ready)
     }
 

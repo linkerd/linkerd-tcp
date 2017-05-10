@@ -1,8 +1,8 @@
 use super::{Path, namerd};
 use futures::{Future, Sink, Stream, Poll};
 use futures::sync::mpsc;
-use std::{io, net};
 use std::cell::RefCell;
+use std::net;
 use std::rc::Rc;
 use tokio_core::reactor::Remote;
 
@@ -34,39 +34,26 @@ impl Resolver {
             let namerd = self.namerd.clone();
             let path = path.clone();
             let (tx, rx) = mpsc::unbounded();
+            let tx = tx.sink_map_err(|_| {});
+            // Run namerd in
             self.reactor
                 .spawn(move |handle| {
-                           namerd
-                               .resolve(handle, path.as_str())
-                               .map_err(|_| {})
-                               .forward(tx.sink_map_err(|_| {}))
-                               .map(|_| {})
-                               .map_err(|_| {})
+                           let addrs = namerd.resolve(handle, path.as_str());
+                           addrs.map_err(|_| {}).forward(tx).map(|_| {})
                        });
             rx
         };
-        Resolve {
-            path: path,
-            state: Rc::new(RefCell::new(State::Pending(addrs))),
-        }
+        Resolve(Rc::new(RefCell::new(addrs)))
     }
 }
 
 // A stream of name resolutions.
 #[derive(Clone)]
-pub struct Resolve {
-    path: Path,
-    state: Rc<RefCell<State>>,
-}
-enum State {
-    Pending(mpsc::UnboundedReceiver<namerd::Result<Vec<DstAddr>>>),
-    Streaming(Vec<DstAddr>, mpsc::UnboundedReceiver<namerd::Result<Vec<DstAddr>>>),
-    Done,
-}
+pub struct Resolve(Rc<RefCell<mpsc::UnboundedReceiver<namerd::Result<Vec<DstAddr>>>>>);
 impl Stream for Resolve {
-    type Item = Vec<DstAddr>;
-    type Error = io::Error;
+    type Item = namerd::Result<Vec<DstAddr>>;
+    type Error = ();
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        unimplemented!()
+        self.0.borrow_mut().poll()
     }
 }

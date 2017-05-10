@@ -34,7 +34,6 @@ impl Router {
 
 /// Materializes a load balancer from a resolution stream.
 ///
-///
 #[derive(Clone)]
 pub struct Route {
     reactor: Handle,
@@ -47,16 +46,22 @@ impl Future for Route {
         match self.resolve.take() {
             None => panic!("polled after completion"),
             Some(mut resolve) => {
-                match resolve.poll()? {
-                    Async::Ready(None) => {
+                match resolve.poll() {
+                    Err(e) => Err(io::Error::new(io::ErrorKind::Other, "resolution error")),
+                    Ok(Async::Ready(None)) => {
                         Err(io::Error::new(io::ErrorKind::Other,
                                            "resolution stream ended prematurely"))
                     }
-                    Async::NotReady => {
+                    Ok(Async::NotReady) => {
                         self.resolve = Some(resolve);
                         Ok(Async::NotReady)
                     }
-                    Async::Ready(Some(addr)) => {
+                    Ok(Async::Ready(Some(Err(e)))) => {
+                        error!("ignoring ");
+                        self.resolve = Some(resolve);
+                        Ok(Async::NotReady)
+                    }
+                    Ok(Async::Ready(Some(Ok(addr)))) => {
                         let bal = balancer::new(addr);
 
                         let updating = resolve.forward(bal.clone()).map(|_| {}).map_err(|_| {});
