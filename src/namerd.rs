@@ -16,8 +16,8 @@ use url::Url;
 #[derive(Debug)]
 pub struct NamerdError(String);
 
-type AddrsFuture = Box<Future<Item = Option<Vec<::WeightedAddr>>, Error = ()>>;
-type AddrsStream = Box<Stream<Item = Vec<::WeightedAddr>, Error = ()>>;
+type AddrsFuture = Box<Future<Item = Option<Vec<::DstAddr>>, Error = ()>>;
+type AddrsStream = Box<Stream<Item = Vec<::DstAddr>, Error = ()>>;
 
 #[derive(Clone)]
 struct Stats {
@@ -127,7 +127,7 @@ fn to_buf(chunks: &[Chunk]) -> Bytes {
     buf.freeze()
 }
 
-fn parse_chunks(chunks: &[Chunk]) -> Option<Vec<::WeightedAddr>> {
+fn parse_chunks(chunks: &[Chunk]) -> Option<Vec<::DstAddr>> {
     let r = to_buf(chunks).into_buf().reader();
     let result: json::Result<NamerdResponse> = json::from_reader(r);
     match result {
@@ -140,13 +140,13 @@ fn parse_chunks(chunks: &[Chunk]) -> Option<Vec<::WeightedAddr>> {
     }
 }
 
-fn to_weighted_addrs(namerd_addrs: &[NamerdAddr]) -> Vec<::WeightedAddr> {
+fn to_weighted_addrs(namerd_addrs: &[NamerdAddr]) -> Vec<::DstAddr> {
     // We never intentionally clear the EndpointMap.
-    let mut weighted_addrs: Vec<::WeightedAddr> = Vec::new();
+    let mut weighted_addrs: Vec<::DstAddr> = Vec::new();
     for na in namerd_addrs {
         let addr = net::SocketAddr::new(na.ip.parse().unwrap(), na.port);
         let w = na.meta.endpoint_addr_weight.unwrap_or(1.0);
-        weighted_addrs.push(::WeightedAddr(addr, w));
+        weighted_addrs.push(::DstAddr::new(addr, w));
     }
     weighted_addrs
 }
@@ -175,4 +175,3 @@ struct Meta {
 
     endpoint_addr_weight: Option<f32>,
 }
-

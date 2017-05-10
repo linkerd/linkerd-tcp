@@ -11,7 +11,7 @@ pub type PathElems = Rc<Vec<PathElem>>;
 /// Represents a slash-delimited path.alloc
 ///
 /// Inspired by com.twitter.finagle.Path.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Path(PathElems);
 impl Path {
     pub fn empty() -> Path {

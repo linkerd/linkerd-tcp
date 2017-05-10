@@ -11,6 +11,14 @@ pub struct Error {
 
 pub type Parsed = StdResult<Path, Error>;
 
+const SLASH: u8 = b'/'; // iiii]; )'
+fn is_valid(c: u8) -> bool {
+    match c {
+        b'-' | b'_' | b'\\' | b':' | b'#' | b'%' | b'$' | b'.' => true,
+        _ => (b'A' <= c && c <= b'Z') || (b'a' <= c && c <= b'z') || (b'0' <= c && c <= b'9'),
+    }
+}
+
 /// Parses a slash-delimited path.
 pub fn parse_path(txt: &str) -> Parsed {
     let mut elems: Vec<Vec<u8>> = Vec::new();
@@ -18,7 +26,7 @@ pub fn parse_path(txt: &str) -> Parsed {
     let mut is_first = true;
     let mut cur_elem: Vec<u8> = Vec::new();
     for (i, c) in txt.bytes().enumerate() {
-        if c == b'/' {
+        if c == SLASH {
             if is_first {
                 is_first = false;
             } else if cur_elem.is_empty() {
@@ -56,13 +64,6 @@ pub fn parse_path(txt: &str) -> Parsed {
     }
 
     Ok(Path::new(elems))
-}
-
-fn is_valid(c: u8) -> bool {
-    match c {
-        b'-' | b'_' | b'\\' | b':' | b'#' | b'%' | b'$' | b'.' => true,
-        _ => (b'A' <= c && c <= b'Z') || (b'a' <= c && c <= b'z') || (b'0' <= c && c <= b'9'),
-    }
 }
 
 #[test]
