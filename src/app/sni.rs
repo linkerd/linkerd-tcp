@@ -43,14 +43,15 @@ impl ResolvesServerCert for Sni {
                _sigschemes: &[SignatureScheme])
                -> Option<sign::CertChainAndSigner> {
         debug!("finding cert resolver for {:?}", server_name);
-        server_name.and_then(|n| {
-                debug!("found match for {}", n);
-                self.identities.get(n)
-            })
+        server_name
+            .and_then(|n| {
+                          debug!("found match for {}", n);
+                          self.identities.get(n)
+                      })
             .or_else(|| {
-                debug!("reverting to default");
-                self.default.as_ref()
-            })
+                         debug!("reverting to default");
+                         self.default.as_ref()
+                     })
             .map(to_chain_and_signer)
     }
 }

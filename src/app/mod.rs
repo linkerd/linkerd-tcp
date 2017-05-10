@@ -53,25 +53,31 @@ pub fn configure(app: AppConfig) -> (Admin, Proxies) {
     let mut proxies = VecDeque::new();
     let mut proxy_configs = app.proxies;
     for _ in 0..proxy_configs.len() {
-        let ProxyConfig { label, namerd, servers, client, max_waiters, .. } = proxy_configs.pop()
-            .unwrap();
+        let ProxyConfig {
+            label,
+            namerd,
+            servers,
+            client,
+            max_waiters,
+            ..
+        } = proxy_configs.pop().unwrap();
         let (addrs_tx, addrs_rx) = mpsc::channel(1);
         namerds.push_back(Namerd {
-            config: namerd,
-            sender: addrs_tx,
-            metrics: metrics.clone(),
-        });
+                              config: namerd,
+                              sender: addrs_tx,
+                              metrics: metrics.clone(),
+                          });
         proxies.push_back(Proxy {
-            client: client,
-            server: ProxyServer {
-                label: label,
-                addrs: Box::new(addrs_rx.fuse()),
-                servers: servers,
-                buf: transfer_buf.clone(),
-                max_waiters: max_waiters.unwrap_or(DEFAULT_MAX_WAITERS),
-                metrics: metrics.clone(),
-            },
-        });
+                              client: client,
+                              server: ProxyServer {
+                                  label: label,
+                                  addrs: Box::new(addrs_rx.fuse()),
+                                  servers: servers,
+                                  buf: transfer_buf.clone(),
+                                  max_waiters: max_waiters.unwrap_or(DEFAULT_MAX_WAITERS),
+                                  metrics: metrics.clone(),
+                              },
+                          });
     }
 
     let addr = app.admin
@@ -133,12 +139,12 @@ impl Loader for Admin {
                 .interval(self.metrics_interval)
                 .map_err(|_| {})
                 .for_each(move |_| {
-                    let metrics_export = metrics_export.clone();
-                    let report = metrics.take();
-                    let mut export = metrics_export.borrow_mut();
-                    *export = tacho::prometheus::format(&report);
-                    Ok(())
-                })
+                              let metrics_export = metrics_export.clone();
+                              let report = metrics.take();
+                              let mut export = metrics_export.borrow_mut();
+                              *export = tacho::prometheus::format(&report);
+                              Ok(())
+                          })
                 .map(|_| {})
                 .map_err(|_| io::ErrorKind::Other.into());
             running.register(reporting);
@@ -151,11 +157,13 @@ impl Loader for Admin {
             };
 
             let http = Http::new();
-            let srv = listener.incoming().for_each(move |(socket, addr)| {
-                let server = admin_http::Server::new(metrics_export.clone());
-                http.bind_connection(&handle, socket, addr, server);
-                Ok(())
-            });
+            let srv = listener
+                .incoming()
+                .for_each(move |(socket, addr)| {
+                              let server = admin_http::Server::new(metrics_export.clone());
+                              http.bind_connection(&handle, socket, addr, server);
+                              Ok(())
+                          });
             running.register(srv);
         }
         Ok(running)
@@ -173,9 +181,14 @@ impl Loader for Namerd {
     fn load(self, handle: Handle) -> io::Result<Self::Run> {
         let path = self.config.path;
         let url = self.config.url;
-        let interval_secs = self.config.interval_secs.unwrap_or(DEFAULT_NAMERD_SECONDS);
+        let interval_secs = self.config
+            .interval_secs
+            .unwrap_or(DEFAULT_NAMERD_SECONDS);
         let interval = Duration::from_secs(interval_secs);
-        let ns = self.config.namespace.clone().unwrap_or_else(|| "default".into());
+        let ns = self.config
+            .namespace
+            .clone()
+            .unwrap_or_else(|| "default".into());
         info!("Updating {} in {} from {} every {}s",
               path,
               ns,
@@ -187,7 +200,10 @@ impl Loader for Namerd {
         };
         let driver = {
             let sink = self.sender.sink_map_err(|_| error!("sink error"));
-            addrs.forward(sink).map_err(|_| io::ErrorKind::Other.into()).map(|_| {})
+            addrs
+                .forward(sink)
+                .map_err(|_| io::ErrorKind::Other.into())
+                .map(|_| {})
         };
         Ok(Box::new(driver))
     }
@@ -252,7 +268,9 @@ impl ProxyServer {
         where C: Connector + 'static
     {
         let addrs = self.addrs.map_err(|_| io::ErrorKind::Other.into());
-        let metrics = self.metrics.clone().labeled("proxy".into(), self.label.into());
+        let metrics = self.metrics
+            .clone()
+            .labeled("proxy".into(), self.label.into());
         let bal = Balancer::new(addrs, conn, self.buf.clone(), metrics.clone())
             .into_shared(self.max_waiters, handle.clone());
 
@@ -264,23 +282,29 @@ impl ProxyServer {
             let bal = bal.clone();
             match *s {
                 ServerConfig::Tcp { ref addr } => {
-                    let metrics = metrics.clone().labeled("srv".into(), format!("{}", addr));
+                    let metrics = metrics
+                        .clone()
+                        .labeled("srv".into(), format!("{}", addr));
                     let acceptor = PlainAcceptor::new(handle, metrics);
                     let f = acceptor.accept(addr).forward(bal).map(|_| {});
                     running.register(f);
                 }
-                ServerConfig::Tls { ref addr,
-                                    ref alpn_protocols,
-                                    ref default_identity,
-                                    ref identities,
-                                    .. } => {
+                ServerConfig::Tls {
+                    ref addr,
+                    ref alpn_protocols,
+                    ref default_identity,
+                    ref identities,
+                    ..
+                } => {
                     let mut tls = rustls::ServerConfig::new();
                     tls.cert_resolver = load_cert_resolver(identities, default_identity);
                     if let Some(ref protos) = *alpn_protocols {
                         tls.set_protocols(protos);
                     }
 
-                    let metrics = metrics.clone().labeled("srv".into(), format!("{}", addr));
+                    let metrics = metrics
+                        .clone()
+                        .labeled("srv".into(), format!("{}", addr));
                     let acceptor = SecureAcceptor::new(handle, tls, metrics);
                     let f = acceptor.accept(addr).forward(bal).map(|_| {});
                     running.register(f);

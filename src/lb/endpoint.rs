@@ -152,10 +152,11 @@ impl Endpoint {
     /// Initiate a new connection
     pub fn init_connection<C: Connector>(&mut self, c: &C) {
         debug!("initiating connection to {}", self.addr);
-        self.pending.push_back(Pending {
-            start_t: tacho::Timing::start(),
-            connect: c.connect(&self.addr),
-        });
+        self.pending
+            .push_back(Pending {
+                           start_t: tacho::Timing::start(),
+                           connect: c.connect(&self.addr),
+                       });
     }
 
     /// Checks the state of connections for this endpoint.
@@ -200,7 +201,9 @@ impl Endpoint {
                           active.duplex.src_addr,
                           e);
                     self.stats.failures.incr(1);
-                    self.stats.connection_active_ms.add(active.start_t.elapsed_ms());
+                    self.stats
+                        .connection_active_ms
+                        .add(active.start_t.elapsed_ms());
                     drop(active);
                 }
             }
@@ -218,11 +221,14 @@ impl Endpoint {
                 }
                 Ok(Async::Ready(dst)) => {
                     trace!("{}: connection established", self.addr);
-                    self.stats.connect_latency_us.add(pending.start_t.elapsed_us());
-                    self.established.push_back(Established {
-                        dst: dst,
-                        start_t: tacho::Timing::start(),
-                    });
+                    self.stats
+                        .connect_latency_us
+                        .add(pending.start_t.elapsed_us());
+                    self.established
+                        .push_back(Established {
+                                       dst: dst,
+                                       start_t: tacho::Timing::start(),
+                                   });
                 }
                 Err(e) => {
                     info!("{}: cannot establish connection: {}", self.addr, e);
@@ -248,14 +254,17 @@ impl Endpoint {
             Some(established) => {
                 let Src(src) = src;
                 let Dst(dst) = established.dst;
-                self.stats.connection_ready_ms.add(established.start_t.elapsed_ms());
+                self.stats
+                    .connection_ready_ms
+                    .add(established.start_t.elapsed_ms());
                 trace!("transmitting to {} from {}", self.addr, src.addr());
                 let tx_metrics = self.stats.tx_metrics.clone();
                 let rx_metrics = self.stats.rx_metrics.clone();
-                self.active.push_front(Active {
-                    duplex: Duplex::new(src, dst, buf, tx_metrics, rx_metrics),
-                    start_t: tacho::Timing::start(),
-                });
+                self.active
+                    .push_front(Active {
+                                    duplex: Duplex::new(src, dst, buf, tx_metrics, rx_metrics),
+                                    start_t: tacho::Timing::start(),
+                                });
                 AsyncSink::Ready
             }
         }

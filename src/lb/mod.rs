@@ -75,9 +75,9 @@ impl Acceptor for PlainAcceptor {
             .unwrap()
             .incoming()
             .map(move |(s, a)| {
-                connects.incr(1);
-                Src(Socket::plain(a, s))
-            })
+                     connects.incr(1);
+                     Src(Socket::plain(a, s))
+                 })
             .boxed()
     }
 }
@@ -122,18 +122,21 @@ impl Acceptor for SecureAcceptor {
         let mut fails = self.fails.clone();
 
         // Lift handshake errors so those connections are ignored.
-        let sockets = l.incoming()
-            .and_then(move |(tcp, addr)| Socket::secure_server_handshake(addr, tcp, &tls));
-        let srcs = sockets.then(Ok).filter_map(move |result| match result {
-            Err(_) => {
+        let sockets =
+            l.incoming()
+                .and_then(move |(tcp, addr)| Socket::secure_server_handshake(addr, tcp, &tls));
+        let srcs = sockets
+            .then(Ok)
+            .filter_map(move |result| match result {
+                            Err(_) => {
                 fails.incr(1);
                 None
             }
-            Ok(s) => {
+                            Ok(s) => {
                 connects.incr(1);
                 Some(Src(s))
             }
-        });
+                        });
         Box::new(srcs)
     }
 }
