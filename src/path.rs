@@ -3,7 +3,7 @@ use std::fmt;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Path(String);
 impl Path {
-    pub fn to_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }

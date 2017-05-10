@@ -7,7 +7,7 @@ use std::rc::Rc;
 use tokio_core::reactor::Handle;
 
 /// Routes incoming connections to an outbound balancer.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Router {
     reactor: Handle,
     routes: Rc<RefCell<HashMap<Path, Route>>>,
@@ -35,7 +35,7 @@ impl Router {
 /// Materializes a load balancer from a resolution stream.
 ///
 ///
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Route {
     reactor: Handle,
     resolve: Option<Resolve>,

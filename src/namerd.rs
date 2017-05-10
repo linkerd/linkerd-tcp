@@ -1,26 +1,44 @@
 //! Namerd Endpointer
 
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
-use futures::{Future, Stream, future};
+use futures::{Async, Future, IntoFuture, Poll, Stream, future};
 use hyper::{Body, Chunk, Client};
-use hyper::client::Connect;
+use hyper::client::{Connect as HyperConnect, HttpConnector};
 use hyper::status::StatusCode;
 use serde_json as json;
 use std::{f32, net, time};
 use std::collections::HashMap;
 use std::rc::Rc;
 use tacho::{self, Timing};
-use tokio_timer::Timer;
+use tokio_core::reactor::Handle;
+use tokio_timer::{Timer, TimerError, Interval};
 use url::Url;
 
-#[derive(Debug)]
-pub struct NamerdError(String);
+type HttpClient = Client<HttpConnector>;
 
-type AddrsFuture = Box<Future<Item = Option<Vec<::DstAddr>>, Error = ()>>;
-type AddrsStream = Box<Stream<Item = Vec<::DstAddr>, Error = ()>>;
+#[derive(Debug)]
+pub enum Error {
+    Hyper(::hyper::Error),
+    Serde(json::Error),
+    UnexpectedStatus(::hyper::StatusCode),
+    NotBound,
+}
+
+pub type Result<T> = ::std::result::Result<T, Error>;
+
+type AddrsFuture = Box<Future<Item = Vec<::DstAddr>, Error = Error>>;
+
+// pub struct Addrs(Box<Stream<Item = Result<Vec<::DstAddr>>, Error = ()>>);
+// impl Stream for Addrs {
+//     type Item = Result<Vec<::DstAddr>>;
+//     type Error = ();
+//     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+//         self.0.poll()
+//     }
+// }
 
 #[derive(Clone)]
-struct Stats {
+pub struct Stats {
     request_latency_ms: tacho::Stat,
     success_count: tacho::Counter,
     failure_count: tacho::Counter,
@@ -36,57 +54,106 @@ impl Stats {
     }
 }
 
-/// Make a Resolver that periodically polls namerd to resolve a name
-/// to a set of addresses.
-///
-/// The returned stream never completes.
-pub fn resolve<C>(base_url: &str,
-                  client: Client<C>,
-                  period: time::Duration,
-                  namespace: &str,
-                  target: &str,
-                  metrics: tacho::Scope)
-                  -> AddrsStream
-    where C: Connect
-{
-    let url = {
-        let base = format!("{}/api/1/resolve/{}", base_url, namespace);
-        Url::parse_with_params(&base, &[("path", &target)]).expect("invalid namerd url")
-    };
-    let stats = Stats::new(metrics);
-    let client = Rc::new(client);
-    let init = request(client.clone(), url.clone(), stats.clone());
-    let updates = Timer::default()
-        .interval(period)
-        .then(move |_| request(client.clone(), url.clone(), stats.clone()));
-    Box::new(init.into_stream().chain(updates).filter_map(|opt| opt))
+#[derive(Clone)]
+pub struct Namerd {
+    base_url: String,
+    period: time::Duration,
+    namespace: String,
+    stats: Stats,
 }
 
+impl Namerd {
+    pub fn new(base_url: String,
+               period: time::Duration,
+               namespace: String,
+               metrics: tacho::Scope)
+               -> Namerd {
+        Namerd {
+            base_url: format!("{}/api/1/resolve/{}", base_url, namespace),
+            period: period,
+            namespace: namespace,
+            stats: Stats::new(metrics),
+        }
+    }
 
-fn request<C: Connect>(client: Rc<Client<C>>, url: Url, stats: Stats) -> AddrsFuture {
+    pub fn resolve(&self, handle: &Handle, target: &str) -> Addrs {
+        let client = Rc::new(Client::new(handle));
+        let url = Url::parse_with_params(&self.base_url, &[("path", &target)]).expect("invalid namerd url");
+        let init = request(client.clone(), url.clone(), self.stats.clone());
+        let interval = Timer::default().interval(self.period);
+        Addrs {
+            client: client.clone(),
+            url: url,
+            stats: self.stats.clone(),
+            state: Some(State::Pending(init, interval)),
+        }
+    }
+}
+
+pub struct Addrs {
+    state: Option<State>,
+    client: Rc<HttpClient>,
+    url: Url,
+    stats: Stats,
+}
+enum State {
+    Pending(AddrsFuture, Interval),
+    Waiting(Interval),
+}
+impl Stream for Addrs {
+    type Item = Result<Vec<::DstAddr>>;
+    type Error = TimerError;
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        loop {
+            match self.state.take().expect("polled after completion") {
+                State::Waiting(mut int) => {
+                    match int.poll()? {
+                        Async::NotReady => {
+                            self.state = Some(State::Waiting(int));
+                            return Ok(Async::NotReady);
+                        }
+                        Async::Ready(_) => {
+                            let fut = {
+                                let c = self.client.clone();
+                                let u = self.url.clone();
+                                let s = self.stats.clone();
+                                request(c, u, s)
+                            };
+                            self.state = Some(State::Pending(fut, int));
+                        }
+                    }
+                }
+                State::Pending(mut fut, int) => {
+                    match fut.poll() {
+                        Err(e) => {
+                            self.state = Some(State::Waiting(int));
+                            return Ok(Async::Ready(Some(Err(e))));
+                        }
+                        Ok(Async::NotReady) => {
+                            self.state = Some(State::Pending(fut, int));
+                            return Ok(Async::NotReady);
+                        }
+                        Ok(Async::Ready(addrs)) => {
+                            self.state = Some(State::Waiting(int));
+                            return Ok(Async::Ready(Some(Ok(addrs))));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn request<C: HyperConnect>(client: Rc<Client<C>>, url: Url, stats: Stats) -> AddrsFuture {
     debug!("Polling namerd at {}", url.to_string());
     let mut stats = stats;
     let rsp = future::lazy(|| Ok(tacho::Timing::start())).and_then(move |start_t| {
         client
             .get(url)
-            .then(|rsp| match rsp {
-                      Ok(rsp) => {
-                          match *rsp.status() {
-                              StatusCode::Ok => parse_body(rsp.body()),
-                              status => {
-                info!("error: bad response: {}", status);
-                future::ok(None).boxed()
-            }
-                          }
-                      }
-                      Err(e) => {
-                error!("failed to read response: {}", e);
-                future::ok(None).boxed()
-            }
-                  })
+            .then(handle_response)
             .then(move |rsp| {
                 stats.request_latency_ms.add(start_t.elapsed_ms());
-                if rsp.as_ref().ok().and_then(|r| r.as_ref()).is_some() {
+                if rsp.is_ok() {
                     stats.success_count.incr(1);
                 } else {
                     stats.failure_count.incr(1);
@@ -97,15 +164,32 @@ fn request<C: Connect>(client: Rc<Client<C>>, url: Url, stats: Stats) -> AddrsFu
     Box::new(rsp)
 }
 
+fn handle_response(result: ::hyper::Result<::hyper::client::Response>) -> AddrsFuture {
+    match result {
+        Ok(rsp) => {
+            match *rsp.status() {
+                StatusCode::Ok => parse_body(rsp.body()),
+                status => {
+                    info!("error: bad response: {}", status);
+                    Box::new(Err(Error::UnexpectedStatus(status)).into_future())
+                }
+            }
+        }
+        Err(e) => {
+            error!("failed to read response: {:?}", e);
+            Box::new(Err(Error::Hyper(e)).into_future())
+        }
+    }
+}
 
 fn parse_body(body: Body) -> AddrsFuture {
     trace!("parsing namerd response");
     body.collect()
         .then(|res| match res {
-                  Ok(ref chunks) => Ok(parse_chunks(chunks)),
+                  Ok(ref chunks) => parse_chunks(chunks),
                   Err(e) => {
             info!("error: {}", e);
-            Ok(None)
+            Err(Error::Hyper(e))
         }
               })
         .boxed()
@@ -127,15 +211,15 @@ fn to_buf(chunks: &[Chunk]) -> Bytes {
     buf.freeze()
 }
 
-fn parse_chunks(chunks: &[Chunk]) -> Option<Vec<::DstAddr>> {
+fn parse_chunks(chunks: &[Chunk]) -> Result<Vec<::DstAddr>> {
     let r = to_buf(chunks).into_buf().reader();
     let result: json::Result<NamerdResponse> = json::from_reader(r);
     match result {
-        Ok(ref nrsp) if nrsp.kind == "bound" => Some(to_weighted_addrs(&nrsp.addrs)),
-        Ok(_) => Some(vec![]),
+        Ok(ref nrsp) if nrsp.kind == "bound" => Ok(to_weighted_addrs(&nrsp.addrs)),
+        Ok(_) => Err(Error::NotBound),
         Err(e) => {
             info!("error parsing response: {}", e);
-            None
+            Err(Error::Serde(e))
         }
     }
 }
