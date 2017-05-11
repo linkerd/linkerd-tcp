@@ -12,6 +12,7 @@ pub struct DstAddr {
     pub addr: net::SocketAddr,
     pub weight: f32,
 }
+
 impl DstAddr {
     pub fn new(addr: net::SocketAddr, weight: f32) -> DstAddr {
         DstAddr {
@@ -22,12 +23,14 @@ impl DstAddr {
 }
 
 // TODO In the future, we likely want to change this to use the split bind & addr APIs so
-// that.
+// balancers can be shared across logical names. In the meantime, it's sufficient to have
+// a balancer per logical name.
 #[derive(Clone)]
 pub struct Resolver {
     reactor: Remote,
     namerd: namerd::Namerd,
 }
+
 impl Resolver {
     pub fn resolve(&mut self, path: Path) -> Resolve {
         let addrs = {
@@ -35,7 +38,6 @@ impl Resolver {
             let path = path.clone();
             let (tx, rx) = mpsc::unbounded();
             let tx = tx.sink_map_err(|_| {});
-            // Run namerd in
             self.reactor
                 .spawn(move |handle| {
                            let addrs = namerd.resolve(handle, path.as_str());

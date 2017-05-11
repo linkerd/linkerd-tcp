@@ -47,7 +47,7 @@ impl Future for Route {
             None => panic!("polled after completion"),
             Some(mut resolve) => {
                 match resolve.poll() {
-                    Err(e) => Err(io::Error::new(io::ErrorKind::Other, "resolution error")),
+                    Err(_) => Err(io::Error::new(io::ErrorKind::Other, "resolution error")),
                     Ok(Async::Ready(None)) => {
                         Err(io::Error::new(io::ErrorKind::Other,
                                            "resolution stream ended prematurely"))
@@ -56,17 +56,10 @@ impl Future for Route {
                         self.resolve = Some(resolve);
                         Ok(Async::NotReady)
                     }
-                    Ok(Async::Ready(Some(Err(e)))) => {
-                        error!("ignoring error: {:?}", e);
-                        self.resolve = Some(resolve);
-                        Ok(Async::NotReady)
-                    }
-                    Ok(Async::Ready(Some(result)) => {
-                        let bal = balancer::new(addr);
-
+                    Ok(Async::Ready(Some(res))) => {
+                        let bal = balancer::Config::default().build(res);
                         let updating = resolve.forward(bal.clone()).map(|_| {}).map_err(|_| {});
                         self.reactor.spawn(updating);
-
                         Ok(Async::Ready(bal))
                     }
                 }

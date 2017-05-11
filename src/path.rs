@@ -1,6 +1,6 @@
 use std::fmt;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
 pub struct Path(String);
 impl Path {
     pub fn as_str(&self) -> &str {

@@ -9,6 +9,7 @@ extern crate bytes;
 extern crate log;
 extern crate futures;
 extern crate hyper;
+extern crate ordermap;
 extern crate rand;
 extern crate rustls;
 extern crate serde;
@@ -21,6 +22,7 @@ extern crate tokio_core;
 #[macro_use]
 extern crate tokio_io;
 extern crate tokio_timer;
+extern crate twox_hash;
 extern crate url;
 
 mod balancer;
