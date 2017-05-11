@@ -57,11 +57,11 @@ impl Future for Route {
                         Ok(Async::NotReady)
                     }
                     Ok(Async::Ready(Some(Err(e)))) => {
-                        error!("ignoring ");
+                        error!("ignoring error: {:?}", e);
                         self.resolve = Some(resolve);
                         Ok(Async::NotReady)
                     }
-                    Ok(Async::Ready(Some(Ok(addr)))) => {
+                    Ok(Async::Ready(Some(result)) => {
                         let bal = balancer::new(addr);
 
                         let updating = resolve.forward(bal.clone()).map(|_| {}).map_err(|_| {});

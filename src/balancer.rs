@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::io;
 use std::rc::Rc;
 
-pub fn new(addrs: Vec<DstAddr>) -> Balancer {
+pub fn new(addrs: namerd::Result<Vec<DstAddr>>) -> Balancer {
     Balancer { addrs: Rc::new(RefCell::new(addrs)) }
 }
 
@@ -13,7 +13,7 @@ pub fn new(addrs: Vec<DstAddr>) -> Balancer {
 ///
 #[derive(Clone)]
 pub struct Balancer {
-    addrs: Rc<RefCell<Vec<DstAddr>>>,
+    addrs: Rc<RefCell<namerd::Result<Vec<DstAddr>>>>,
 }
 
 impl Balancer {
