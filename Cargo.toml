@@ -19,11 +19,11 @@ bytes = "0.4"
 clap = "2.20"
 futures = "0.1"
 # We use not-yet-released tokio integration on master:
-hyper = { git = "https://github.com/hyperium/hyper", rev = "5a3743c1" }
+hyper = { git = "https://github.com/hyperium/hyper", rev = "ca22eae" }
 log = "0.3"
 rand = "0.3"
 pretty_env_logger = "0.1"
-rustls = "0.5"
+rustls = "0.8"
 serde = "0.9"
 serde_derive = "0.9"
 serde_json = "0.9"

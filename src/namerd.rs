@@ -2,7 +2,7 @@
 
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
 use futures::{Future, Stream, future};
-use hyper::{Body, Chunk, Client};
+use hyper::{Body, Chunk, Client, Uri};
 use hyper::client::Connect;
 use hyper::status::StatusCode;
 use serde_json as json;
@@ -51,7 +51,8 @@ pub fn resolve<C>(base_url: &str,
 {
     let url = {
         let base = format!("{}/api/1/resolve/{}", base_url, namespace);
-        Url::parse_with_params(&base, &[("path", &target)]).expect("invalid namerd url")
+        let url = Url::parse_with_params(&base, &[("path", &target)]).expect("invalid namerd url");
+        url.as_str().parse::<Uri>().expect("Could not parse invalid URI")
     };
     let stats = Stats::new(metrics);
     let client = Rc::new(client);
@@ -63,14 +64,14 @@ pub fn resolve<C>(base_url: &str,
 }
 
 
-fn request<C: Connect>(client: Rc<Client<C>>, url: Url, stats: Stats) -> AddrsFuture {
-    debug!("Polling namerd at {}", url.to_string());
+fn request<C: Connect>(client: Rc<Client<C>>, uri: Uri, stats: Stats) -> AddrsFuture {
+    debug!("Polling namerd at {}", uri.to_string());
     let mut stats = stats;
     let rsp = future::lazy(|| Ok(tacho::Timing::start())).and_then(move |start_t| {
-        client.get(url)
+        client.get(uri)
             .then(|rsp| match rsp {
                 Ok(rsp) => {
-                    match *rsp.status() {
+                    match rsp.status() {
                         StatusCode::Ok => parse_body(rsp.body()),
                         status => {
                             info!("error: bad response: {}", status);
