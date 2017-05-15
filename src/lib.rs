@@ -1,7 +1,5 @@
 //! A TCP/TLS load balancer.
 //!
-//!
-//!
 //! Copyright 2017 Buoyant, Inc.
 
 extern crate bytes;
@@ -22,11 +20,13 @@ extern crate tokio_core;
 #[macro_use]
 extern crate tokio_io;
 extern crate tokio_timer;
-extern crate twox_hash;
+//extern crate twox_hash;
 extern crate url;
 
 mod balancer;
+mod client;
 mod connection;
+mod duplex;
 pub mod namerd;
 mod path;
 mod proxy_stream;
@@ -35,10 +35,26 @@ mod router;
 pub mod server;
 mod socket;
 
-use balancer::Connect;
-use connection::{Connection, Duplex, Envelope, Summary};
-pub use path::Path;
-use proxy_stream::ProxyStream;
-pub use resolver::{DstAddr, Resolver, Resolve};
-pub use router::{Router, Route};
+use path::Path;
 use socket::Socket;
+
+#[derive(Clone, Debug)]
+pub struct ConfigError(String);
+
+impl<'a> From<&'a str> for ConfigError {
+    fn from(msg: &'a str) -> ConfigError {
+        ConfigError(msg.into())
+    }
+}
+
+impl<'a> From<String> for ConfigError {
+    fn from(msg: String) -> ConfigError {
+        ConfigError(msg)
+    }
+}
+
+impl ::std::fmt::Display for ConfigError {
+    fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
+        fmt.write_str(&self.0)
+    }
+}

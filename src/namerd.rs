@@ -1,5 +1,6 @@
 //! Namerd Endpointer
 
+use super::resolver::DstAddr;
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
 use futures::{Async, Future, IntoFuture, Poll, Stream, future};
 use hyper::{Body, Chunk, Client};
@@ -26,11 +27,11 @@ pub enum Error {
 
 pub type Result<T> = ::std::result::Result<T, Error>;
 
-type AddrsFuture = Box<Future<Item = Vec<::DstAddr>, Error = Error>>;
+type AddrsFuture = Box<Future<Item = Vec<DstAddr>, Error = Error>>;
 
-// pub struct Addrs(Box<Stream<Item = Result<Vec<::DstAddr>>, Error = ()>>);
+// pub struct Addrs(Box<Stream<Item = Result<Vec<DstAddr>>, Error = ()>>);
 // impl Stream for Addrs {
-//     type Item = Result<Vec<::DstAddr>>;
+//     type Item = Result<Vec<DstAddr>>;
 //     type Error = ();
 //     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
 //         self.0.poll()
@@ -101,7 +102,7 @@ enum State {
     Waiting(Interval),
 }
 impl Stream for Addrs {
-    type Item = Result<Vec<::DstAddr>>;
+    type Item = Result<Vec<DstAddr>>;
     type Error = TimerError;
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         loop {
@@ -211,7 +212,7 @@ fn to_buf(chunks: &[Chunk]) -> Bytes {
     buf.freeze()
 }
 
-fn parse_chunks(chunks: &[Chunk]) -> Result<Vec<::DstAddr>> {
+fn parse_chunks(chunks: &[Chunk]) -> Result<Vec<DstAddr>> {
     let r = to_buf(chunks).into_buf().reader();
     let result: json::Result<NamerdResponse> = json::from_reader(r);
     match result {
@@ -224,13 +225,13 @@ fn parse_chunks(chunks: &[Chunk]) -> Result<Vec<::DstAddr>> {
     }
 }
 
-fn to_weighted_addrs(namerd_addrs: &[NamerdAddr]) -> Vec<::DstAddr> {
+fn to_weighted_addrs(namerd_addrs: &[NamerdAddr]) -> Vec<DstAddr> {
     // We never intentionally clear the EndpointMap.
-    let mut weighted_addrs: Vec<::DstAddr> = Vec::new();
+    let mut weighted_addrs: Vec<DstAddr> = Vec::new();
     for na in namerd_addrs {
         let addr = net::SocketAddr::new(na.ip.parse().unwrap(), na.port);
         let w = na.meta.endpoint_addr_weight.unwrap_or(1.0);
-        weighted_addrs.push(::DstAddr::new(addr, w));
+        weighted_addrs.push(DstAddr::new(addr, w));
     }
     weighted_addrs
 }

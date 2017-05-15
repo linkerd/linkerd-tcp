@@ -1,9 +1,14 @@
-use super::*;
+use super::client::Connect;
+use super::connection::Connection;
+use super::duplex::{Duplex, DuplexSummary};
+use super::router::{Router, Route};
 use futures::{Future, Poll, Async};
 use std::cell::RefCell;
 use std::io;
 use std::rc::Rc;
 //use tacho::Scope;
+
+pub type ServerConnection = Connection<ServerCtx>;
 
 pub fn new(router: Router, buf: Rc<RefCell<Vec<u8>>>) -> Server {
     Server {
@@ -21,22 +26,22 @@ pub struct Server {
     // metrics: tacho::Scope,
 }
 impl Server {
-    pub fn serve(&mut self, src: Connection) -> Serving {
-        let route = self.router.route(&src.envelope);
+    pub fn serve(&mut self, src: Connection<ServerCtx>) -> Serving {
+        let route = self.router.route(&src.context);
         Serving(Some(State::Routing(src, self.buf.clone(), route)))
     }
 }
 
 pub struct Serving(Option<State>);
 enum State {
-    Routing(Connection, Rc<RefCell<Vec<u8>>>, Route),
-    Connecting(Connection, Rc<RefCell<Vec<u8>>>, Connect),
+    Routing(Connection<ServerCtx>, Rc<RefCell<Vec<u8>>>, Route),
+    Connecting(Connection<ServerCtx>, Rc<RefCell<Vec<u8>>>, Connect),
     Streaming(Duplex),
 }
 impl Future for Serving {
-    type Item = Summary;
+    type Item = DuplexSummary;
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<Summary, io::Error> {
+    fn poll(&mut self) -> Poll<Self::Item, io::Error> {
         loop {
             match self.0.take() {
                 None => panic!("future polled after completion"),
@@ -76,5 +81,30 @@ impl Future for Serving {
                 }
             }
         }
+    }
+}
+
+/// The state of a
+#[derive(Clone, Debug, Default)]
+pub struct ServerCtx(Rc<RefCell<InnerServerCtx>>);
+
+#[derive(Debug, Default)]
+struct InnerServerCtx {
+    connects: usize,
+    disconnects: usize,
+    failures: usize,
+    bytes_to_dst: usize,
+    bytes_to_src: usize,
+}
+
+impl ServerCtx {
+    fn active(&self) -> usize {
+        let InnerServerCtx {
+            connects,
+            disconnects,
+            ..
+        } = *self.0.borrow();
+
+        connects - disconnects
     }
 }
