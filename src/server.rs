@@ -3,22 +3,50 @@ use super::connection::Connection;
 use super::duplex::{Duplex, DuplexSummary};
 use super::router::{Router, Route};
 use futures::{Future, Poll, Async};
+use std::{io, net};
 use std::cell::RefCell;
-use std::io;
+use std::collections::HashMap;
 use std::rc::Rc;
 //use tacho::Scope;
 
-/// An incoming connection.
-pub type SrcConnection = Connection<ServerCtx>;
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields, tag = "kind")]
+pub enum ServerConfig {
+    #[serde(rename = "io.l5d.tcp")]
+    Tcp { addr: net::SocketAddr },
 
-pub fn new(router: Router, buf: Rc<RefCell<Vec<u8>>>) -> Server {
-    Server {
-        router: router,
-        buf: buf,
-        // srv_metrics: metrics.scope("srv", listen_addr.into()),
-        // metrics: metrics,
+    // TODO support cypher suites
+    // TODO support client validation
+    // TODO supoprt persistence?
+    #[serde(rename = "io.l5d.tls", rename_all = "camelCase")]
+    Tls {
+        addr: net::SocketAddr,
+        alpn_protocols: Option<Vec<String>>,
+        default_identity: Option<TlsServerIdentityConfig>,
+        identities: Option<HashMap<String, TlsServerIdentityConfig>>,
+    },
+}
+
+impl ServerConfig {
+    fn mk_server(router: Router, buf: Rc<RefCell<Vec<u8>>>) -> Server {
+        Server {
+            router: router,
+            buf: buf,
+            // srv_metrics: metrics.scope("srv", listen_addr.into()),
+            // metrics: metrics,
+        }
     }
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TlsServerIdentityConfig {
+    pub certs: Vec<String>,
+    pub private_key: String,
+}
+
+/// An incoming connection.
+pub type SrcConnection = Connection<ServerCtx>;
 
 pub struct Server {
     router: Router,
@@ -34,14 +62,17 @@ impl Server {
 }
 
 pub struct Serving(Option<State>);
+
 enum State {
     Routing(Connection<ServerCtx>, Rc<RefCell<Vec<u8>>>, Route),
     Connecting(Connection<ServerCtx>, Rc<RefCell<Vec<u8>>>, Connect),
     Streaming(Duplex),
 }
+
 impl Future for Serving {
     type Item = DuplexSummary;
     type Error = io::Error;
+
     fn poll(&mut self) -> Poll<Self::Item, io::Error> {
         loop {
             match self.0.take() {
