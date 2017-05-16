@@ -1,24 +1,20 @@
-use super::{Path, namerd};
+use super::{DstAddr, Path};
 use futures::{Future, Sink, Stream, Poll};
 use futures::sync::mpsc;
-use std::net;
 use tokio_core::reactor::Remote;
 
-/// A weighted concrete destination address.
-#[derive(Clone, Debug)]
-pub struct DstAddr {
-    pub addr: net::SocketAddr,
-    pub weight: f32,
+mod namerd;
+use self::namerd::Namerd;
+
+#[derive(Debug)]
+pub enum Error {
+    Hyper(::hyper::Error),
+    UnexpectedStatus(::hyper::StatusCode),
+    Serde(::serde_json::Error),
+    NotBound,
 }
 
-impl DstAddr {
-    pub fn new(addr: net::SocketAddr, weight: f32) -> DstAddr {
-        DstAddr {
-            addr: addr,
-            weight: weight,
-        }
-    }
-}
+pub type Result<T> = ::std::result::Result<T, Error>;
 
 // TODO In the future, we likely want to change this to use the split bind & addr APIs so
 // balancers can be shared across logical names. In the meantime, it's sufficient to have
@@ -26,7 +22,7 @@ impl DstAddr {
 #[derive(Clone)]
 pub struct Resolver {
     reactor: Remote,
-    namerd: namerd::Namerd,
+    namerd: Namerd,
 }
 
 impl Resolver {
@@ -48,9 +44,9 @@ impl Resolver {
 }
 
 // A stream of name resolutions.
-pub struct Resolve(mpsc::UnboundedReceiver<namerd::Result<Vec<DstAddr>>>);
+pub struct Resolve(mpsc::UnboundedReceiver<Result<Vec<DstAddr>>>);
 impl Stream for Resolve {
-    type Item = namerd::Result<Vec<DstAddr>>;
+    type Item = Result<Vec<DstAddr>>;
     type Error = ();
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         self.0.poll()

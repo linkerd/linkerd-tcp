@@ -1,6 +1,6 @@
 //! Namerd Endpointer
 
-use super::resolver::DstAddr;
+use super::{DstAddr, Result, Error};
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
 use futures::{Async, Future, IntoFuture, Poll, Stream, future};
 use hyper::{Body, Chunk, Client};
@@ -15,17 +15,7 @@ use tokio_core::reactor::Handle;
 use tokio_timer::{Timer, TimerError, Interval};
 use url::Url;
 
-type HttpClient = Client<HttpConnector>;
-
-#[derive(Debug)]
-pub enum Error {
-    Hyper(::hyper::Error),
-    Serde(json::Error),
-    UnexpectedStatus(::hyper::StatusCode),
-    NotBound,
-}
-
-pub type Result<T> = ::std::result::Result<T, Error>;
+type HttpConnectorFactory = Client<HttpConnector>;
 
 type AddrsFuture = Box<Future<Item = Vec<DstAddr>, Error = Error>>;
 
@@ -93,7 +83,7 @@ impl Namerd {
 
 pub struct Addrs {
     state: Option<State>,
-    client: Rc<HttpClient>,
+    client: Rc<HttpConnectorFactory>,
     url: Url,
     stats: Stats,
 }

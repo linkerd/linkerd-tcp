@@ -1,6 +1,6 @@
-use super::balancer::Connect;
 use super::connection::Connection;
 use super::duplex::{Duplex, DuplexSummary};
+use super::lb::Connect;
 use super::router::{Router, Route};
 use futures::{Future, Poll, Async};
 use std::{io, net};

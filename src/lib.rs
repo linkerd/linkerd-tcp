@@ -25,11 +25,9 @@ extern crate tokio_timer;
 //extern crate twox_hash;
 extern crate url;
 
-mod balancer;
 mod connection;
-mod connector;
 mod duplex;
-mod namerd;
+mod lb;
 mod path;
 mod proxy_stream;
 mod resolver;
@@ -37,6 +35,8 @@ mod router;
 mod server;
 mod socket;
 
+use connection::Connection;
+use lb::{DstAddr, DstConnection};
 use path::Path;
 use socket::Socket;
 

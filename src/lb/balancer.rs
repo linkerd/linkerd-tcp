@@ -1,8 +1,7 @@
-use super::{ConfigError, Path, namerd};
-use super::connection::Connection;
-use super::connector::{DstConnection, ConnectorFactoryConfig, ConnectorFactory, Connector,
-                       EndpointCtx, ConnectingSocket};
-use super::resolver::DstAddr;
+use super::config::ConnectorFactoryConfig;
+use super::connector::{ConnectorFactory, Connector, ConnectingSocket, Tls};
+use super::endpoint::Endpoint;
+use super::super::{DstConnection, DstAddr, Path, resolver};
 use futures::{Future, Sink, Poll, Async, StartSend, AsyncSink};
 use futures::sync::oneshot;
 use ordermap::OrderMap;
@@ -12,65 +11,37 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use tokio_core::reactor::Handle;
 
-#[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct BalancerConfig {
-    pub minimum_connections: usize,
-    pub maximum_waiters: usize,
-    pub client: ConnectorFactoryConfig,
-}
-
-impl BalancerConfig {
-    pub fn mk_factory(&self, handle: &Handle) -> Result<BalancerFactory, ConfigError> {
-        let cf = self.client.mk_connector_factory(handle)?;
-        Ok(BalancerFactory {
-               minimum_connections: self.minimum_connections,
-               maximum_waiters: self.maximum_waiters,
-               connector_factory: Rc::new(RefCell::new(cf)),
-           })
-    }
-}
-
-/// Creates a balancer for
-#[derive(Clone)]
-pub struct BalancerFactory {
-    minimum_connections: usize,
-    maximum_waiters: usize,
-    connector_factory: Rc<RefCell<ConnectorFactory>>,
-}
-impl BalancerFactory {
-    pub fn mk_balancer(&self,
-                       dst_name: &Path,
-                       init: namerd::Result<Vec<DstAddr>>)
-                       -> Result<Balancer, ConfigError> {
-        let connector = self.connector_factory.borrow().mk_connector(dst_name)?;
-
-        let active = {
-            if let Ok(ref addrs) = init {
-                let mut active = OrderMap::with_capacity(addrs.len());
-                for &DstAddr { addr, weight } in addrs {
-                    active.insert(addr, Endpoint::new(dst_name.clone(), addr, weight));
-                }
-                active
-            } else {
-                OrderMap::new()
+pub fn new(dst: Path,
+           min_conns: usize,
+           max_waiters: usize,
+           conn: Connector,
+           last_result: resolver::Result<Vec<DstAddr>>)
+           -> Balancer {
+    let active = {
+        if let Ok(ref addrs) = last_result {
+            let mut active = OrderMap::with_capacity(addrs.len());
+            for &DstAddr { addr, weight } in addrs {
+                active.insert(addr, Endpoint::new(dst.clone(), addr, weight));
             }
-        };
+            active
+        } else {
+            OrderMap::new()
+        }
+    };
 
-        let b = InnerBalancer {
-            dst_name: dst_name.clone(),
-            minimum_connections: self.minimum_connections,
-            maximum_waiters: self.maximum_waiters,
-            connector: connector,
-            last_result: init,
-            active: active,
-            retired: OrderMap::default(),
-            established_connections: 0,
-            pending_connections: 0,
-            waiters: VecDeque::with_capacity(self.maximum_waiters),
-        };
-        Ok(Balancer(Rc::new(RefCell::new(b))))
-    }
+    let b = InnerBalancer {
+        dst_name: dst,
+        minimum_connections: min_conns,
+        maximum_waiters: max_waiters,
+        connector: conn,
+        last_result: last_result,
+        active: active,
+        retired: OrderMap::default(),
+        established_connections: 0,
+        pending_connections: 0,
+        waiters: VecDeque::with_capacity(max_waiters),
+    };
+    Balancer(Rc::new(RefCell::new(b)))
 }
 
 /// Provisions new outbound connections to a replica set.
@@ -116,13 +87,13 @@ impl Balancer {
 
 /// Balancers accept a stream of service discovery updates,
 impl Sink for Balancer {
-    type SinkItem = namerd::Result<Vec<DstAddr>>;
+    type SinkItem = resolver::Result<Vec<DstAddr>>;
     type SinkError = ();
 
     /// Update the load balancer from service discovery.
     fn start_send(&mut self,
-                  update: namerd::Result<Vec<DstAddr>>)
-                  -> StartSend<namerd::Result<Vec<DstAddr>>, Self::SinkError> {
+                  update: resolver::Result<Vec<DstAddr>>)
+                  -> StartSend<resolver::Result<Vec<DstAddr>>, Self::SinkError> {
         let mut inner = self.0.borrow_mut();
         if let Ok(ref dsts) = update {
             let addr_weights = {
@@ -153,14 +124,14 @@ struct InnerBalancer {
     minimum_connections: usize,
     maximum_waiters: usize,
     connector: Connector,
-    last_result: namerd::Result<Vec<DstAddr>>,
+    last_result: resolver::Result<Vec<DstAddr>>,
     active: OrderMap<net::SocketAddr, Endpoint>,
     retired: OrderMap<net::SocketAddr, Endpoint>,
     pending_connections: usize,
     established_connections: usize,
     waiters: VecDeque<Waiter>,
 }
-type Waiter = oneshot::Sender<Connection<EndpointCtx>>;
+type Waiter = oneshot::Sender<DstConnection>;
 
 impl InnerBalancer {
     fn update_endoints(&mut self, mut dsts: OrderMap<net::SocketAddr, f32>) {
@@ -174,7 +145,7 @@ impl InnerBalancer {
             for (addr, ep) in self.retired.drain(..) {
                 if dsts.contains_key(&addr) {
                     self.active.insert(addr, ep);
-                } else if ep.active() > 0 {
+                } else if ep.ctx.active() > 0 {
                     temp.push_back((addr, ep));
                 } else {
                     drop(ep);
@@ -193,8 +164,10 @@ impl InnerBalancer {
             for (addr, ep) in self.active.drain(..) {
                 if dsts.contains_key(&addr) {
                     temp.push_back((addr, ep));
-                } else if ep.active() > 0 {
+                } else if ep.ctx.active() > 0 {
                     let mut ep = ep;
+                    self.pending_connections -= ep.connecting.len();
+                    self.established_connections -= ep.connected.len();
                     ep.clear_connections();
                     self.retired.insert(addr, ep);
                 } else {
@@ -213,7 +186,7 @@ impl InnerBalancer {
             let mut ep = self.active
                 .entry(addr)
                 .or_insert_with(|| Endpoint::new(name.clone(), addr, weight));
-            ep.set_base_weight(weight);
+            ep.base_weight = weight;
         }
     }
 
@@ -226,7 +199,7 @@ impl InnerBalancer {
                 match fut.poll() {
                     Ok(Async::NotReady) => ep.connecting.push_back(fut),
                     Ok(Async::Ready(conn)) => {
-                        ep.record_connect_success();
+                        ep.ctx.connect_ok();
                         match send_to_waiter(conn, &mut self.waiters) {
                             Ok(_) => {
                                 summary.dispatched += 1;
@@ -236,8 +209,8 @@ impl InnerBalancer {
                             }
                         }
                     }
-                    Err(e) => {
-                        ep.record_connect_failure(e);
+                    Err(_) => {
+                        ep.ctx.connect_fail();
                         summary.failed += 1
                     }
                 }
@@ -249,7 +222,7 @@ impl InnerBalancer {
         while !self.active.is_empty() &&
               summary.connected + summary.pending < self.minimum_connections {
             for mut ep in self.active.values_mut() {
-                let mut fut = self.connector.connect(ep.new_ctx());
+                let mut fut = self.connector.connect(ep.ctx.clone());
                 // Poll the new connection immediately so that task notification is
                 // established.
                 match fut.poll() {
@@ -258,12 +231,12 @@ impl InnerBalancer {
                         summary.pending += 1;
                     }
                     Ok(Async::Ready(sock)) => {
-                        ep.record_connect_success();
+                        ep.ctx.connect_ok();
                         summary.connected += 1;
                         ep.connected.push_back(sock)
                     }
-                    Err(e) => {
-                        ep.record_connect_failure(e);
+                    Err(_) => {
+                        ep.ctx.connect_fail();
                         summary.failed += 1
                     }
                 }
@@ -315,53 +288,6 @@ fn send_to_waiter(conn: DstConnection,
                };
     }
     Err(conn)
-}
-
-struct Endpoint {
-    base_weight: f32,
-    ctx: EndpointCtx,
-    connecting: VecDeque<ConnectingSocket>,
-    connected: VecDeque<Connection<EndpointCtx>>,
-}
-
-impl Endpoint {
-    fn new(dst: Path, addr: net::SocketAddr, base_weight: f32) -> Endpoint {
-        Endpoint {
-            base_weight: base_weight,
-            ctx: EndpointCtx::new(addr, dst),
-            connecting: VecDeque::default(),
-            connected: VecDeque::default(),
-        }
-    }
-
-    fn new_ctx(&self) -> EndpointCtx {
-        self.ctx.clone()
-    }
-
-    fn active(&self) -> usize {
-        self.ctx.active()
-    }
-
-    fn clear_connections(&mut self) {
-        self.connecting.clear();
-        self.connected.clear();
-    }
-
-    fn set_base_weight(&mut self, weight: f32) {
-        self.base_weight = weight;
-    }
-
-    fn record_connect_attempt(&mut self) {
-        self.ctx.connect_init();
-    }
-
-    fn record_connect_success(&mut self) {
-        self.ctx.connect_ok();
-    }
-
-    fn record_connect_failure(&mut self, _: io::Error) {
-        self.ctx.connect_fail();
-    }
 }
 
 pub struct Connect(Option<ConnectState>);

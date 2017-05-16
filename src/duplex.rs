@@ -1,5 +1,5 @@
 use super::connection::ConnectionCtx;
-use super::connector::{EndpointCtx, DstConnection};
+use super::lb::{EndpointCtx, DstConnection};
 use super::proxy_stream::ProxyStream;
 use super::server::{ServerCtx, SrcConnection};
 use futures::{Async, Future, Poll};
