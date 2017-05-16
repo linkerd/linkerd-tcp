@@ -1,8 +1,6 @@
 use super::Path;
 use super::balancer::{Balancer, BalancerFactory};
-use super::connection::ConnectionCtx;
 use super::resolver::{Resolver, Resolve};
-use super::server::ServerCtx;
 use futures::{Future, Stream, Poll, Async};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -63,6 +61,7 @@ pub struct Route(Option<Rc<RefCell<Option<RouteState>>>>);
 impl Future for Route {
     type Item = Balancer;
     type Error = io::Error;
+
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let state_ref = self.0.take().expect("route polled after completion");
         let mut state = state_ref.borrow_mut();

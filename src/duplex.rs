@@ -1,5 +1,5 @@
 use super::connection::ConnectionCtx;
-use super::connector::{EndpointCtx, ConnectorFactoryConnection};
+use super::connector::{EndpointCtx, DstConnection};
 use super::proxy_stream::ProxyStream;
 use super::server::{ServerCtx, SrcConnection};
 use futures::{Async, Future, Poll};
@@ -33,10 +33,7 @@ pub struct Duplex {
 }
 
 impl Duplex {
-    pub fn new(src: SrcConnection,
-               dst: ConnectorFactoryConnection,
-               buf: Rc<RefCell<Vec<u8>>>)
-               -> Duplex {
+    pub fn new(src: SrcConnection, dst: DstConnection, buf: Rc<RefCell<Vec<u8>>>) -> Duplex {
         let src_socket = Rc::new(RefCell::new(src.socket));
         let dst_socket = Rc::new(RefCell::new(dst.socket));
         Duplex {

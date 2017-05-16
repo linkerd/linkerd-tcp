@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio_core::net::{TcpStream, TcpStreamNew};
 use tokio_core::reactor::Handle;
 
-pub type ConnectorFactoryConnection = Connection<EndpointCtx>;
+pub type DstConnection = Connection<EndpointCtx>;
 
 #[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "kind")]

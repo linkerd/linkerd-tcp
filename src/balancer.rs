@@ -1,9 +1,10 @@
 use super::{ConfigError, Path, namerd};
 use super::connection::Connection;
-use super::connector::{ConnectorFactoryConfig, ConnectorFactory, Connector, EndpointCtx,
-                       ConnectingSocket};
+use super::connector::{DstConnection, ConnectorFactoryConfig, ConnectorFactory, Connector,
+                       EndpointCtx, ConnectingSocket};
 use super::resolver::DstAddr;
 use futures::{Future, Sink, Poll, Async, StartSend, AsyncSink};
+use futures::sync::oneshot;
 use ordermap::OrderMap;
 use std::{cmp, io, net};
 use std::cell::RefCell;
@@ -15,6 +16,7 @@ use tokio_core::reactor::Handle;
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct BalancerConfig {
     pub minimum_connections: usize,
+    pub maximum_waiters: usize,
     pub client: ConnectorFactoryConfig,
 }
 
@@ -23,6 +25,7 @@ impl BalancerConfig {
         let cf = self.client.mk_connector_factory(handle)?;
         Ok(BalancerFactory {
                minimum_connections: self.minimum_connections,
+               maximum_waiters: self.maximum_waiters,
                connector_factory: Rc::new(RefCell::new(cf)),
            })
     }
@@ -32,6 +35,7 @@ impl BalancerConfig {
 #[derive(Clone)]
 pub struct BalancerFactory {
     minimum_connections: usize,
+    maximum_waiters: usize,
     connector_factory: Rc<RefCell<ConnectorFactory>>,
 }
 impl BalancerFactory {
@@ -56,10 +60,14 @@ impl BalancerFactory {
         let b = InnerBalancer {
             dst_name: dst_name.clone(),
             minimum_connections: self.minimum_connections,
+            maximum_waiters: self.maximum_waiters,
             connector: connector,
             last_result: init,
             active: active,
             retired: OrderMap::default(),
+            established_connections: 0,
+            pending_connections: 0,
+            waiters: VecDeque::with_capacity(self.maximum_waiters),
         };
         Ok(Balancer(Rc::new(RefCell::new(b))))
     }
@@ -67,30 +75,43 @@ impl BalancerFactory {
 
 /// Provisions new outbound connections to a replica set.
 ///
-/// A
+/// A `Balancer` is a `Sink` for destination resolutions. As new states are sent to the sink, the
 ///
 /// When a `Balancer` is cloned, it's internal state is shared.
 #[derive(Clone)]
 pub struct Balancer(Rc<RefCell<InnerBalancer>>);
 
 impl Balancer {
-    pub fn connect(&mut self) -> Connect {
-        Connect::new(self.0.clone())
+    /// Obtain an established connection immediately or wait until one becomes available.
+    pub fn connect(&self) -> Connect {
+        let mut inner = self.0.borrow_mut();
+        if let Some(conn) = inner.take_connection() {
+            return Connect(Some(ConnectState::Ready(conn)));
+        }
+
+        let (sender, receiver) = oneshot::channel();
+        inner.add_waiter(sender);
+        Connect(Some(ConnectState::Pending(receiver)))
     }
 
     /// Keeps track of pending and established connections.
     ///
     ///
-    fn poll_connecting(&mut self) -> ConnectionPollSummary {
+    fn poll_connecting(&self) -> ConnectionPollSummary {
         self.0.borrow_mut().poll_connecting()
     }
-}
 
-#[derive(Debug, Default)]
-struct ConnectionPollSummary {
-    pending: usize,
-    connected: usize,
-    failed: usize,
+    pub fn pending_connections(&self) -> usize {
+        self.0.borrow().pending_connections
+    }
+
+    pub fn established_connections(&self) -> usize {
+        self.0.borrow().established_connections
+    }
+
+    pub fn waiters(&self) -> usize {
+        self.0.borrow().waiters.len()
+    }
 }
 
 /// Balancers accept a stream of service discovery updates,
@@ -113,15 +134,15 @@ impl Sink for Balancer {
             };
             inner.update_endoints(addr_weights)
         }
-        let summary = inner.poll_connecting();
-        trace!("start_send: NotReady: {:?}", summary);
         inner.last_result = update;
+        let summary = inner.poll_connecting();
+        trace!("start_send: Ready: {:?}", summary);
         Ok(AsyncSink::Ready)
     }
 
     /// Never completes.
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        let summary = self.poll_connecting();
+        let summary = self.0.borrow_mut().poll_connecting();
         trace!("poll_complete: NotReady: {:?}", summary);
         Ok(Async::NotReady)
     }
@@ -130,11 +151,16 @@ impl Sink for Balancer {
 struct InnerBalancer {
     dst_name: Path,
     minimum_connections: usize,
+    maximum_waiters: usize,
     connector: Connector,
     last_result: namerd::Result<Vec<DstAddr>>,
     active: OrderMap<net::SocketAddr, Endpoint>,
     retired: OrderMap<net::SocketAddr, Endpoint>,
+    pending_connections: usize,
+    established_connections: usize,
+    waiters: VecDeque<Waiter>,
 }
+type Waiter = oneshot::Sender<Connection<EndpointCtx>>;
 
 impl InnerBalancer {
     fn update_endoints(&mut self, mut dsts: OrderMap<net::SocketAddr, f32>) {
@@ -201,7 +227,14 @@ impl InnerBalancer {
                     Ok(Async::NotReady) => ep.connecting.push_back(fut),
                     Ok(Async::Ready(conn)) => {
                         ep.record_connect_success();
-                        ep.connected.push_back(conn)
+                        match send_to_waiter(conn, &mut self.waiters) {
+                            Ok(_) => {
+                                summary.dispatched += 1;
+                            }
+                            Err(conn) => {
+                                ep.connected.push_back(conn);
+                            }
+                        }
                     }
                     Err(e) => {
                         ep.record_connect_failure(e);
@@ -240,8 +273,48 @@ impl InnerBalancer {
             }
         }
 
+        self.established_connections = summary.connected;
+        self.pending_connections = summary.pending;
         summary
     }
+
+    fn add_waiter(&mut self, w: Waiter) -> Result<(), Waiter> {
+        if self.waiters.len() == self.maximum_waiters {
+            return Err(w);
+        }
+        self.waiters.push_back(w);
+        Ok(())
+    }
+
+    fn take_connection(&mut self) -> Option<DstConnection> {
+        for ep in self.active.values_mut() {
+            if let Some(conn) = ep.connected.pop_front() {
+                self.established_connections -= 1;
+                return Some(conn);
+            }
+        }
+        None
+    }
+}
+
+#[derive(Debug, Default)]
+struct ConnectionPollSummary {
+    pending: usize,
+    connected: usize,
+    dispatched: usize,
+    failed: usize,
+}
+
+fn send_to_waiter(conn: DstConnection,
+                  waiters: &mut VecDeque<Waiter>)
+                  -> Result<(), DstConnection> {
+    if let Some(waiter) = waiters.pop_front() {
+        return match waiter.send(conn) {
+                   Err(conn) => send_to_waiter(conn, waiters),
+                   Ok(()) => Ok(()),
+               };
+    }
+    Err(conn)
 }
 
 struct Endpoint {
@@ -291,31 +364,35 @@ impl Endpoint {
     }
 }
 
-pub struct Connect {
-    state: Option<ConnectState>,
-}
+pub struct Connect(Option<ConnectState>);
 enum ConnectState {
-    Init(Rc<RefCell<InnerBalancer>>),
-}
-impl Connect {
-    fn new(bal: Rc<RefCell<InnerBalancer>>) -> Connect {
-        Connect { state: Some(ConnectState::Init(bal)) }
-    }
+    Pending(oneshot::Receiver<DstConnection>),
+    Ready(DstConnection),
 }
 
 impl Future for Connect {
-    type Item = Connection<EndpointCtx>;
+    type Item = DstConnection;
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         // TODO:
         // - Pick two active endpoints at random (cheaply).
         // - Score the two endpoints.
         // - Pick a winner endponit.
-        let state = self.state
+        let state = self.0
             .take()
             .expect("connect must not be polled after completion");
         match state {
-            ConnectState::Init(_) => unimplemented!(),
+            ConnectState::Ready(conn) => Ok(conn.into()),
+            ConnectState::Pending(mut recv) => {
+                match recv.poll() {
+                    Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
+                    Ok(Async::Ready(conn)) => Ok(conn.into()),
+                    Ok(Async::NotReady) => {
+                        self.0 = Some(ConnectState::Pending(recv));
+                        Ok(Async::NotReady)
+                    }
+                }
+            }
         }
     }
 }
