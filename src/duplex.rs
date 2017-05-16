@@ -1,7 +1,7 @@
-use super::client::{EndpointCtx, ClientConnection};
-use super::connection::{Connection, ConnectionCtx};
+use super::connection::ConnectionCtx;
+use super::connector::{EndpointCtx, ConnectorFactoryConnection};
 use super::proxy_stream::ProxyStream;
-use super::server::{ServerCtx, ServerConnection};
+use super::server::{ServerCtx, SrcConnection};
 use futures::{Async, Future, Poll};
 use std::cell::RefCell;
 use std::io;
@@ -10,8 +10,8 @@ use std::rc::Rc;
 //use tacho;
 
 pub struct DuplexCtx {
-    src: ConnectionCtx<ServerCtx>,
-    dst: ConnectionCtx<EndpointCtx>,
+    pub src: ConnectionCtx<ServerCtx>,
+    pub dst: ConnectionCtx<EndpointCtx>,
 }
 
 pub struct DuplexSummary {
@@ -33,7 +33,10 @@ pub struct Duplex {
 }
 
 impl Duplex {
-    pub fn new(src: ServerConnection, dst: ClientConnection, buf: Rc<RefCell<Vec<u8>>>) -> Duplex {
+    pub fn new(src: SrcConnection,
+               dst: ConnectorFactoryConnection,
+               buf: Rc<RefCell<Vec<u8>>>)
+               -> Duplex {
         let src_socket = Rc::new(RefCell::new(src.socket));
         let dst_socket = Rc::new(RefCell::new(dst.socket));
         Duplex {
@@ -56,6 +59,7 @@ impl Duplex {
             Some(ref ctx) => ctx.src.peer_addr(),
         }
     }
+
     fn dst_addr(&self) -> net::SocketAddr {
         match self.ctx {
             None => panic!("missing context"),

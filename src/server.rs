@@ -1,4 +1,4 @@
-use super::client::Connect;
+use super::balancer::Connect;
 use super::connection::Connection;
 use super::duplex::{Duplex, DuplexSummary};
 use super::router::{Router, Route};
@@ -8,7 +8,8 @@ use std::io;
 use std::rc::Rc;
 //use tacho::Scope;
 
-pub type ServerConnection = Connection<ServerCtx>;
+/// An incoming connection.
+pub type SrcConnection = Connection<ServerCtx>;
 
 pub fn new(router: Router, buf: Rc<RefCell<Vec<u8>>>) -> Server {
     Server {
@@ -27,7 +28,7 @@ pub struct Server {
 }
 impl Server {
     pub fn serve(&mut self, src: Connection<ServerCtx>) -> Serving {
-        let route = self.router.route(&src.context);
+        let route = self.router.route(src.context.dst_name());
         Serving(Some(State::Routing(src, self.buf.clone(), route)))
     }
 }

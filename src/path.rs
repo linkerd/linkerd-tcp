@@ -7,20 +7,20 @@ impl Path {
         &self.0
     }
 
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.len() == 1
     }
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.0.len()
     }
 
     pub fn starts_with(&self, other: &Path) -> bool {
-        let &Path(other) = other;
+        let &Path(ref other) = other;
         if self.0.len() > other.len() {
-            self.0.starts_with(&other) &&
+            self.0.starts_with(other) &&
             (self.0.ends_with('/') || other[self.0.len()..].starts_with('/'))
         } else if other.len() == self.0.len() {
-            self.0 == other
+            self.0 == *other
         } else {
             false
         }

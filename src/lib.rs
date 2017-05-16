@@ -2,6 +2,8 @@
 //!
 //! Copyright 2017 Buoyant, Inc.
 
+#![deny(missing_docs)]
+
 extern crate bytes;
 #[macro_use]
 extern crate log;
@@ -24,20 +26,21 @@ extern crate tokio_timer;
 extern crate url;
 
 mod balancer;
-mod client;
 mod connection;
+mod connector;
 mod duplex;
-pub mod namerd;
+mod namerd;
 mod path;
 mod proxy_stream;
 mod resolver;
 mod router;
-pub mod server;
+mod server;
 mod socket;
 
 use path::Path;
 use socket::Socket;
 
+/// Describes a configuratin error.
 #[derive(Clone, Debug)]
 pub struct ConfigError(String);
 

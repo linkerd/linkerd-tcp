@@ -1,6 +1,5 @@
 use super::Path;
-use super::balancer::{Balancer, BalancerConfig, BalancerFactory};
-use super::client::Client;
+use super::balancer::{Balancer, BalancerFactory};
 use super::connection::ConnectionCtx;
 use super::resolver::{Resolver, Resolve};
 use super::server::ServerCtx;
@@ -11,70 +10,92 @@ use std::io;
 use std::rc::Rc;
 use tokio_core::reactor::Handle;
 
-/// Routes incoming connections to an outbound balancer.
+/// Produces a `Balancer` for a
+///
+/// The router maintains an internal cache of routes, by destination name.
 #[derive(Clone)]
-pub struct Router {
-    reactor: Handle,
-    routes: Rc<RefCell<HashMap<Path, Route>>>,
-    resolver: Resolver,
-    factory: BalancerFactory,
-}
+pub struct Router(Rc<RefCell<InnerRouter>>);
+
 impl Router {
-    pub fn route(&mut self, ctx: &ConnectionCtx<ServerCtx>) -> Route {
-        let mut routes = self.routes.borrow_mut();
-
-        // Try to get a balancer from the cache.
-        let dst = ctx.dst_name();
-        if let Some(bal) = routes.get(dst) {
-            return (*bal).clone();
-        }
-
-        let resolve = self.resolver.resolve(dst.clone());
-        let balancer = self.factory.mk_balancer(dst);
-        let route = Route(RouteState::Pending(self.reactor.clone(), resolve, balancer));
-        routes.insert(dst.clone(), route.clone());
-        route
+    /// Obtains a balancer for an inbound connection.
+    pub fn route(&mut self, dst: &Path) -> Route {
+        self.0.borrow_mut().route(dst)
     }
 }
 
-/// Materializes a load balancer from a resolution stream.
-///
-#[derive(Clone)]
-pub struct Route(RouteState);
-#[derive(Clone)]
+struct InnerRouter {
+    reactor: Handle,
+    routes: HashMap<Path, Rc<RefCell<Option<RouteState>>>>,
+    resolver: Resolver,
+    factory: BalancerFactory,
+}
+
+impl InnerRouter {
+    fn route(&mut self, dst: &Path) -> Route {
+        // Try to get a balancer from the cache.
+        if let Some(state) = self.routes.get(dst) {
+            return Route(Some(state.clone()));
+        }
+
+        let new_route = {
+            let reactor = self.reactor.clone();
+            let resolve = self.resolver.resolve(dst.clone());
+            let factory = self.factory.clone();
+            let s = RouteState::Pending(reactor, resolve, dst.clone(), factory);
+            Rc::new(RefCell::new(Some(s)))
+        };
+        self.routes.insert(dst.clone(), new_route.clone());
+        Route(Some(new_route))
+    }
+}
+
 enum RouteState {
-    Pending(Handle, Resolve, Balancer),
+    Pending(Handle, Resolve, Path, BalancerFactory),
     Ready(Balancer),
 }
+
+/// Materializes a `Balancer`.
+///
+///
+#[derive(Clone)]
+pub struct Route(Option<Rc<RefCell<Option<RouteState>>>>);
+
 impl Future for Route {
     type Item = Balancer;
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match self.0 {
-            RouteState::Ready(bal) => Ok(Async::Ready(bal.clone())),
-            RouteState::Pending(reactor, mut resolve, factory) => {
+        let state_ref = self.0.take().expect("route polled after completion");
+        let mut state = state_ref.borrow_mut();
+        match state.take() {
+            None => Err(io::Error::new(io::ErrorKind::Other, "route nullified")),
+            Some(RouteState::Pending(reactor, mut resolve, dst, factory)) => {
                 match resolve.poll() {
-                    Err(_) => Err(io::Error::new(io::ErrorKind::Other, "resolution error")),
+                    Ok(Async::NotReady) => Ok(Async::NotReady),
+                    Err(()) => Err(io::Error::new(io::ErrorKind::Other, "resolution error")),
                     Ok(Async::Ready(None)) => {
                         Err(io::Error::new(io::ErrorKind::Other,
                                            "resolution stream ended prematurely"))
                     }
-                    Ok(Async::NotReady) => {
-                        self.0 = RouteState::Pending(reactor, resolve, factory);
-                        Ok(Async::NotReady)
-                    }
-                    Ok(Async::Ready(Some(res))) => {
-                        let balancer = factory.build(res);
-                        let updating = resolve
-                            .forward(balancer.clone())
-                            .map(|_| {})
-                            .map_err(|_| {});
-                        reactor.spawn(updating);
-                        self.0 = RouteState::Ready(balancer.clone());
-                        Ok(Async::Ready(balancer))
+                    Ok(Async::Ready(Some(result))) => {
+                        match factory.mk_balancer(&dst, result) {
+                            Err(e) => {
+                                Err(io::Error::new(io::ErrorKind::Other,
+                                                   format!("failed to build balancer: {}", e)))
+                            }
+                            Ok(balancer) => {
+                                let updating = resolve
+                                    .forward(balancer.clone())
+                                    .map(|_| {})
+                                    .map_err(|_| {});
+                                reactor.spawn(updating);
+                                *state = Some(RouteState::Ready(balancer.clone()));
+                                Ok(Async::Ready(balancer))
+                            }
+                        }
                     }
                 }
             }
+            Some(RouteState::Ready(bal)) => Ok(Async::Ready(bal.clone())),
         }
     }
 }

@@ -1,9 +1,7 @@
 use super::{Path, namerd};
 use futures::{Future, Sink, Stream, Poll};
 use futures::sync::mpsc;
-use std::cell::RefCell;
 use std::net;
-use std::rc::Rc;
 use tokio_core::reactor::Remote;
 
 /// A weighted concrete destination address.
@@ -45,17 +43,16 @@ impl Resolver {
                        });
             rx
         };
-        Resolve(Rc::new(RefCell::new(addrs)))
+        Resolve(addrs)
     }
 }
 
 // A stream of name resolutions.
-#[derive(Clone)]
-pub struct Resolve(Rc<RefCell<mpsc::UnboundedReceiver<namerd::Result<Vec<DstAddr>>>>>);
+pub struct Resolve(mpsc::UnboundedReceiver<namerd::Result<Vec<DstAddr>>>);
 impl Stream for Resolve {
     type Item = namerd::Result<Vec<DstAddr>>;
     type Error = ();
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.0.borrow_mut().poll()
+        self.0.poll()
     }
 }
