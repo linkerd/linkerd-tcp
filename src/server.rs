@@ -1,5 +1,4 @@
-use super::connection::Connection;
-use super::duplex::{Duplex, DuplexSummary};
+use super::connection::{Connection, Duplex, Summary};
 use super::lb::Connect;
 use super::router::{Router, Route};
 use futures::{Future, Poll, Async};
@@ -70,7 +69,7 @@ enum State {
 }
 
 impl Future for Serving {
-    type Item = DuplexSummary;
+    type Item = Summary;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, io::Error> {

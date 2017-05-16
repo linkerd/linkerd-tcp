@@ -1,7 +1,7 @@
-use super::connection::ConnectionCtx;
-use super::lb::{EndpointCtx, DstConnection};
-use super::proxy_stream::ProxyStream;
-use super::server::{ServerCtx, SrcConnection};
+use super::half_duplex::{self, HalfDuplex};
+use super::super::connection::ConnectionCtx;
+use super::super::lb::{EndpointCtx, DstConnection};
+use super::super::server::{ServerCtx, SrcConnection};
 use futures::{Async, Future, Poll};
 use std::cell::RefCell;
 use std::io;
@@ -14,7 +14,7 @@ pub struct DuplexCtx {
     pub dst: ConnectionCtx<EndpointCtx>,
 }
 
-pub struct DuplexSummary {
+pub struct Summary {
     pub ctx: DuplexCtx,
     pub to_dst_bytes: u64,
     pub to_src_bytes: u64,
@@ -23,8 +23,8 @@ pub struct DuplexSummary {
 /// Joins src and dst transfers into a single Future.
 pub struct Duplex {
     ctx: Option<DuplexCtx>,
-    to_dst: Option<ProxyStream>,
-    to_src: Option<ProxyStream>,
+    to_dst: Option<HalfDuplex>,
+    to_src: Option<HalfDuplex>,
 
     to_dst_bytes: u64,
     //tx_bytes_stat: tacho::Stat,
@@ -42,10 +42,10 @@ impl Duplex {
                           dst: dst.context,
                       }),
 
-            to_dst: Some(ProxyStream::new(src_socket.clone(), src_socket.clone(), buf.clone())),
+            to_dst: Some(half_duplex::new(src_socket.clone(), src_socket.clone(), buf.clone())),
             to_dst_bytes: 0,
 
-            to_src: Some(ProxyStream::new(dst_socket.clone(), src_socket.clone(), buf)),
+            to_src: Some(half_duplex::new(dst_socket.clone(), src_socket.clone(), buf)),
             to_src_bytes: 0,
         }
     }
@@ -66,9 +66,9 @@ impl Duplex {
 }
 
 impl Future for Duplex {
-    type Item = DuplexSummary;
+    type Item = Summary;
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<DuplexSummary, io::Error> {
+    fn poll(&mut self) -> Poll<Summary, io::Error> {
         if let Some(mut to_dst) = self.to_dst.take() {
             trace!("polling dstward from {} to {}",
                    self.src_addr(),
@@ -110,7 +110,7 @@ impl Future for Duplex {
             // self.tx_bytes_stat.add(self.tx_bytes);
             // self.rx_bytes_stat.add(self.rx_bytes)
             let ctx = self.ctx.take().expect("missing source");
-            let summary = DuplexSummary {
+            let summary = Summary {
                 ctx: ctx,
                 to_dst_bytes: self.to_dst_bytes,
                 to_src_bytes: self.to_src_bytes,

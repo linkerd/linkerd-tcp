@@ -1,6 +1,11 @@
 use super::{Path, Socket};
 use std::net;
 
+mod duplex;
+mod half_duplex;
+
+pub use self::duplex::{Duplex, Summary};
+
 pub struct ConnectionCtx<E> {
     local_addr: net::SocketAddr,
     peer_addr: net::SocketAddr,

@@ -7,12 +7,25 @@ use std::rc::Rc;
 //use tacho;
 use tokio_io::AsyncWrite;
 
+pub fn new(r: Rc<RefCell<Socket>>, w: Rc<RefCell<Socket>>, b: Rc<RefCell<Vec<u8>>>) -> HalfDuplex {
+    HalfDuplex {
+        reader: r,
+        writer: w,
+        buf: b,
+        pending: None,
+        bytes_total: 0,
+        completed: false,
+            // bytes_total_count: metrics.counter("bytes_total".into()),
+            // allocs_count: metrics.counter("allocs_count".into()),
+    }
+}
+
 /// A future representing reading all data from one side of a proxy connection and writing
 /// it to another.
 ///
 /// In the typical case, nothing allocations are required.  If the write side exhibits
 /// backpressure, however, a buffer is allocated to
-pub struct ProxyStream {
+pub struct HalfDuplex {
     reader: Rc<RefCell<Socket>>,
     writer: Rc<RefCell<Socket>>,
 
@@ -31,25 +44,7 @@ pub struct ProxyStream {
     // allocs_count: tacho::Counter,
 }
 
-impl ProxyStream {
-    pub fn new(r: Rc<RefCell<Socket>>,
-               w: Rc<RefCell<Socket>>,
-               b: Rc<RefCell<Vec<u8>>>)
-               -> ProxyStream {
-        ProxyStream {
-            reader: r,
-            writer: w,
-            buf: b,
-            pending: None,
-            bytes_total: 0,
-            completed: false,
-            // bytes_total_count: metrics.counter("bytes_total".into()),
-            // allocs_count: metrics.counter("allocs_count".into()),
-        }
-    }
-}
-
-impl Future for ProxyStream {
+impl Future for HalfDuplex {
     type Item = u64;
     type Error = io::Error;
 
