@@ -49,6 +49,13 @@ pub struct Connection<E> {
     pub socket: Socket,
 }
 impl<E> Connection<E> {
+    pub fn new(ctx: E, dst: Path, sock: Socket) -> Connection<E> {
+        Connection {
+            context: ConnectionCtx::new(sock.local_addr(), sock.peer_addr(), dst, ctx),
+            socket: sock,
+        }
+    }
+
     pub fn peer_addr(&self) -> net::SocketAddr {
         self.context.peer_addr
     }

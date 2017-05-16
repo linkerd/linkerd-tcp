@@ -1,11 +1,8 @@
 use super::DstAddr;
 use super::balancer::{self, Balancer};
-use super::connector::ConnectorFactory;
-use super::endpoint::Endpoint;
 use super::super::{ConfigError, Path, resolver};
-use ordermap::OrderMap;
+use super::super::connector::ConnectorFactory;
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 
 pub fn new(min_conns: usize, max_waiters: usize, cf: ConnectorFactory) -> BalancerFactory {

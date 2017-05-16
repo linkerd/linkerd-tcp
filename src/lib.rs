@@ -26,6 +26,7 @@ extern crate tokio_timer;
 extern crate url;
 
 mod connection;
+mod connector;
 mod lb;
 mod path;
 mod resolver;

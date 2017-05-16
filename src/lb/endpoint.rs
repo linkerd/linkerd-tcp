@@ -1,5 +1,5 @@
-use super::connector::ConnectingSocket;
 use super::super::{Connection, Path};
+use super::super::connector::Connecting;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::net;
@@ -8,7 +8,7 @@ use std::rc::Rc;
 pub struct Endpoint {
     pub base_weight: f32,
     pub ctx: EndpointCtx,
-    pub connecting: VecDeque<ConnectingSocket>,
+    pub connecting: VecDeque<Connecting>,
     pub connected: VecDeque<Connection<EndpointCtx>>,
 }
 

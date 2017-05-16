@@ -1,7 +1,6 @@
-use super::config::ConnectorFactoryConfig;
-use super::connector::{ConnectorFactory, Connector, ConnectingSocket, Tls};
 use super::endpoint::Endpoint;
 use super::super::{DstConnection, DstAddr, Path, resolver};
+use super::super::connector::{ConnectorFactory, ConnectorFactoryConfig, Connector, Connecting, Tls};
 use futures::{Future, Sink, Poll, Async, StartSend, AsyncSink};
 use futures::sync::oneshot;
 use ordermap::OrderMap;

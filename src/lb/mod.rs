@@ -1,6 +1,5 @@
 mod balancer;
 mod config;
-mod connector;
 mod endpoint;
 mod factory;
 
