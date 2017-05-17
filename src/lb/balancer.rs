@@ -65,17 +65,10 @@ impl Balancer {
         if let Err(sender) = inner.add_waiter(sender) {
             drop(sender);
             drop(receiver);
-            Connect(Some(ConnectState::Failed(io::ErrorKind::ConnectionReset.into())))
+            Connect(Some(ConnectState::Failed(io::ErrorfKind::ConnectionReset.into())))
         } else {
             Connect(Some(ConnectState::Pending(receiver)))
         }
-    }
-
-    /// Keeps track of pending and established connections.
-    ///
-    ///
-    fn poll_connecting(&self) -> ConnectionPollSummary {
-        self.0.borrow_mut().poll_connecting()
     }
 
     pub fn pending_connections(&self) -> usize {
@@ -266,6 +259,10 @@ impl InnerBalancer {
         Ok(())
     }
 
+    // XXX This isn't real load balancing.
+    // 1. Select 2 endpoints at random.
+    // 2. Score both endpoints.
+    // 3. Take winner.
     fn take_connection(&mut self) -> Option<DstConnection> {
         for ep in self.active.values_mut() {
             if let Some(conn) = ep.connected.pop_front() {
