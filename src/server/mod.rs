@@ -83,13 +83,16 @@ impl Sink for Serving {
     type SinkItem = (TcpStream, net::SocketAddr);
     type SinkError = io::Error;
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
-        let (tcp, from_addr) = item;
         let dst_name = self.meta.dst_name.clone();
         let ctx = self.meta.ctx.clone();
         let buf = self.meta.buf.clone();
         let router = self.meta.router.clone();
 
+        // Finish accepting the connection from the server.
+        //
+        // TODO we should be able to get metadata from a TLS handshake but we can't!
         let src = {
+            let (tcp, _) = item;
             let sock: Box<Future<Item = Socket, Error = io::Error>> =
                 match self.meta.tls.as_ref() {
                     None => Box::new(future::ok(Socket::plain(tcp))),
@@ -99,18 +102,29 @@ impl Sink for Serving {
             sock.map(move |sock| Connection::new(dst_name, sock, ctx))
         };
 
-        let dst = router
-            .route(&dst_name, &self.reactor)
-            .and_then(|bal| bal.connect());
+        // Obtain a balancer.
+        let bal = router.route(&dst_name, &self.reactor);
 
-        let duplex = src.join(dst)
-            .and_then(move |(src, dst)| Duplex::new(src, dst, buf));
+        // Once the incoming connection is ready and we have a balancer ready, obtain an
+        // outbound connection and begin streaming. We obtain an outbound connection after
+        // the incoming handshake is complete so that we don't waste outbound connections
+        // on failed inbound connections.
+        let duplex = src.join(bal)
+            .and_then(move |(src, bal)| {
+                          bal.connect()
+                              .and_then(move |dst| Duplex::new(src, dst, buf))
+                      });
 
+        // Do all of this work in a single, separate task so that we may process
+        // additional connections while this connection is open.
+        //
+        // TODO: implement some sort of backpressure here?
         self.reactor.spawn(duplex.map(|_| {}).map_err(|_| {}));
-
         Ok(AsyncSink::Ready)
     }
+
     fn poll_complete(&mut self) -> Poll<(), io::Error> {
+        // TODO allow servers to be closed gracefully.
         Ok(Async::NotReady)
     }
 }
