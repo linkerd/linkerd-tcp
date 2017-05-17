@@ -76,7 +76,7 @@ impl Future for Route {
                                            "resolution stream ended prematurely"))
                     }
                     Ok(Async::Ready(Some(result))) => {
-                        match factory.mk_balancer(&dst, result) {
+                        match factory.mk_balancer(&reactor, &dst, result) {
                             Err(e) => {
                                 Err(io::Error::new(io::ErrorKind::Other,
                                                    format!("failed to build balancer: {}", e)))

@@ -11,10 +11,7 @@ pub fn new(tcp: TcpStreamNew, tls: Option<Tls>, ctx: EndpointCtx) -> Connecting 
         Some(tls) => Box::new(tcp.and_then(move |tcp| tls.handshake(tcp))),
         None => Box::new(tcp.map(Socket::plain)),
     };
-    let dst = sock.map(|sock| {
-                           let dst = ctx.dst_name().clone();
-                           Connection::new(ctx, dst, sock)
-                       });
+    let dst = sock.map(|sock| Connection::new(ctx.dst_name().clone(), sock, ctx));
     Connecting(Box::new(dst))
 }
 

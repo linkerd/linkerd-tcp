@@ -55,13 +55,14 @@ fn main() {
     let serve_thread = thread::Builder::new()
         .name("serve".into())
         .spawn(move || {
-                   let mut core = Core::new().expect("failed to initialize server reactor");
-                   let mut routers = routers;
-                   for router in routers.drain(..) {
-                       router.spawn(core.handle(), remote.clone());
-                   }
-                   core.run(close_rx).expect("failed to run")
-               })
+            let mut core = Core::new().expect("failed to initialize server reactor");
+            let mut routers = routers;
+            for r in routers.drain(..) {
+                r.spawn(core.handle(), remote.clone())
+                    .expect("failed to spawn router");
+            }
+            core.run(close_rx).expect("failed to run")
+        })
         .expect("could not spawn admin thread");
 
     admin

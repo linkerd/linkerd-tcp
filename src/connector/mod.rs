@@ -23,11 +23,8 @@ impl ConnectorFactory {
         ConnectorFactory(ConnectorFactoryInner::Global(conn))
     }
 
-    pub fn new_static(h: &Handle, configs: Vec<(Path, ConnectorConfig)>) -> ConnectorFactory {
-        let f = StaticConnectorFactory {
-            reactor: h.clone(),
-            configs: configs,
-        };
+    pub fn new_static(configs: Vec<(Path, ConnectorConfig)>) -> ConnectorFactory {
+        let f = StaticConnectorFactory(configs);
         ConnectorFactory(ConnectorFactoryInner::Static(f))
     }
 
@@ -39,19 +36,16 @@ impl ConnectorFactory {
     }
 }
 
-struct StaticConnectorFactory {
-    reactor: Handle,
-    configs: Vec<(Path, ConnectorConfig)>,
-}
+struct StaticConnectorFactory(Vec<(Path, ConnectorConfig)>);
 impl StaticConnectorFactory {
     fn mk_connector(&self, dst_name: &Path) -> Result<Connector, ConfigError> {
         let mut config = ConnectorConfig::default();
-        for &(ref pfx, ref c) in &self.configs {
+        for &(ref pfx, ref c) in &self.0 {
             if pfx.starts_with(dst_name) {
                 config.update(c);
             }
         }
-        config.mk_connector(&self.reactor)
+        config.mk_connector()
     }
 }
 
@@ -66,13 +60,11 @@ impl Tls {
     }
 }
 
-fn new(reactor: &Handle,
-       connect_timeout: Option<time::Duration>,
+fn new(connect_timeout: Option<time::Duration>,
        idle_timeout: Option<time::Duration>,
        tls: Option<Tls>)
        -> Connector {
     Connector {
-        reactor: reactor.clone(),
         connect_timeout: connect_timeout,
         idle_timeout: idle_timeout,
         tls: tls,
@@ -81,14 +73,13 @@ fn new(reactor: &Handle,
 
 #[derive(Clone)]
 pub struct Connector {
-    reactor: Handle,
     connect_timeout: Option<time::Duration>,
     idle_timeout: Option<time::Duration>,
     tls: Option<Tls>,
 }
 impl Connector {
-    pub fn connect(&mut self, ctx: EndpointCtx) -> Connecting {
-        let c = TcpStream::connect(&ctx.peer_addr(), &self.reactor);
+    pub fn connect(&mut self, ctx: EndpointCtx, reactor: &Handle) -> Connecting {
+        let c = TcpStream::connect(&ctx.peer_addr(), reactor);
         connecting::new(c, self.tls.clone(), ctx)
     }
 }

@@ -24,13 +24,13 @@ impl Default for ConnectorFactoryConfig {
 }
 
 impl ConnectorFactoryConfig {
-    pub fn mk_connector_factory(&self, handle: &Handle) -> Result<ConnectorFactory, ConfigError> {
+    pub fn mk_connector_factory(&self) -> Result<ConnectorFactory, ConfigError> {
         match *self {
             ConnectorFactoryConfig::Global(ref cfg) => {
                 if cfg.prefix.is_some() {
                     return Err("`prefix` not supported in io.l5d.global".into());
                 }
-                let conn = cfg.mk_connector(handle)?;
+                let conn = cfg.mk_connector()?;
                 Ok(ConnectorFactory::new_global(conn))
             }
             ConnectorFactoryConfig::Static { ref configs } => {
@@ -45,7 +45,7 @@ impl ConnectorFactoryConfig {
                         } 
                     }
                 }
-                Ok(ConnectorFactory::new_static(handle, pfx_configs))
+                Ok(ConnectorFactory::new_static(pfx_configs))
             }
         }
     }
@@ -63,14 +63,14 @@ pub struct ConnectorConfig {
 }
 
 impl ConnectorConfig {
-    pub fn mk_connector(&self, handle: &Handle) -> Result<Connector, ConfigError> {
+    pub fn mk_connector(&self) -> Result<Connector, ConfigError> {
         let tls = match self.tls {
             None => None,
             Some(ref tls) => Some(tls.mk_tls()?),
         };
         let connect_timeout = self.connect_timeout_ms.map(time::Duration::from_millis);
         let idle_timeout = self.idle_timeout_ms.map(time::Duration::from_millis);
-        Ok(super::new(handle, connect_timeout, idle_timeout, tls))
+        Ok(super::new(connect_timeout, idle_timeout, tls))
     }
 
     pub fn update(&mut self, other: &ConnectorConfig) {

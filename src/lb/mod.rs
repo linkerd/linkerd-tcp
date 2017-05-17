@@ -1,12 +1,10 @@
 mod balancer;
-mod config;
 mod endpoint;
 mod factory;
 
 pub type DstConnection = super::Connection<EndpointCtx>;
 
 pub use self::balancer::{Balancer, Connect};
-pub use self::config::BalancerConfig;
 pub use self::endpoint::EndpointCtx;
 pub use self::factory::BalancerFactory;
 

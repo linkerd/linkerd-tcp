@@ -49,7 +49,7 @@ impl Server {
                 Some(ref tls) => Box::new(Socket::secure_server_handshake(tcp, &tls.config)),
             };
             let dst_name = dst_name.clone();
-            sock.map(move |sock| Connection::new(ctx.clone(), dst_name, sock))
+            sock.map(move |sock| Connection::new(dst_name, sock, ctx))
         };
         let dst = router.route(&dst_name).and_then(|bal| bal.connect());
         let duplex = src.join(dst)

@@ -4,6 +4,7 @@
 
 use super::ConfigError;
 use super::connector::ConnectorFactoryConfig;
+use super::lb::BalancerFactory;
 use super::server::ServerConfig;
 use futures::future;
 use futures::sync::oneshot;
@@ -14,6 +15,8 @@ use std::rc::Rc;
 use tokio_core::reactor::{Core, Handle, Remote};
 
 const DEFAULT_BUFFER_SIZE_BYTES: usize = 16 * 1024;
+const DEFAULT_MINIMUM_CONNECTIONS: usize = 1;
+const DEFAULT_MAXIMUM_WAITERS: usize = 128;
 
 /// Holds the configuration for a linkerd-tcp instance.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -80,15 +83,28 @@ pub struct RouterConfig {
     ///
     /// By default, connections are clear TCP.
     pub client: Option<ConnectorFactoryConfig>,
+
+    pub minimum_connections: Option<usize>,
+    pub maximum_waiters: Option<usize>,
 }
 
 impl RouterConfig {
     fn into_router(self, _buf: Rc<RefCell<Vec<u8>>>) -> Result<RouterSpawner, ConfigError> {
-        Ok(RouterSpawner {})
+        let balancer = {
+            let min_conns = self.minimum_connections
+                .unwrap_or(DEFAULT_MINIMUM_CONNECTIONS);
+            let max_waiters = self.maximum_waiters.unwrap_or(DEFAULT_MAXIMUM_WAITERS);
+            let client = self.client.unwrap_or_default().mk_connector_factory()?;
+            BalancerFactory::new(min_conns, max_waiters, client)
+        };
+        Ok(RouterSpawner { balancer: balancer })
     }
 }
 
-pub struct RouterSpawner {}
+pub struct RouterSpawner {
+    balancer: BalancerFactory,
+}
+
 impl RouterSpawner {
     pub fn spawn(&self, _reactor: Handle, _admin: Remote) -> Result<(), ConfigError> {
         unimplemented!();
@@ -96,6 +112,7 @@ impl RouterSpawner {
 }
 
 pub struct AdminRunner {}
+
 impl AdminRunner {
     pub fn run(&self, closer: oneshot::Sender<()>, mut reactor: Core) -> Result<(), ConfigError> {
         let _ = closer.send(());

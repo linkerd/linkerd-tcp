@@ -8,8 +8,10 @@ use std::{cmp, io, net};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use tokio_core::reactor::Handle;
 
-pub fn new(dst: Path,
+pub fn new(reactor: Handle,
+           dst: Path,
            min_conns: usize,
            max_waiters: usize,
            conn: Connector,
@@ -28,6 +30,7 @@ pub fn new(dst: Path,
     };
 
     let b = InnerBalancer {
+        reactor: reactor,
         dst_name: dst,
         minimum_connections: min_conns,
         maximum_waiters: max_waiters,
@@ -123,6 +126,7 @@ impl Sink for Balancer {
 }
 
 struct InnerBalancer {
+    reactor: Handle,
     dst_name: Path,
     minimum_connections: usize,
     maximum_waiters: usize,
@@ -225,7 +229,7 @@ impl InnerBalancer {
         while !self.active.is_empty() &&
               summary.connected + summary.pending < self.minimum_connections {
             for mut ep in self.active.values_mut() {
-                let mut fut = self.connector.connect(ep.ctx.clone());
+                let mut fut = self.connector.connect(ep.ctx.clone(), &self.reactor);
                 // Poll the new connection immediately so that task notification is
                 // established.
                 match fut.poll() {
