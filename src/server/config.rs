@@ -6,7 +6,10 @@ use std::net;
 #[serde(deny_unknown_fields, tag = "kind")]
 pub enum ServerConfig {
     #[serde(rename = "io.l5d.tcp")]
-    Tcp { addr: net::SocketAddr },
+    Tcp {
+        addr: net::SocketAddr,
+        dst_name: String,
+    },
 
     // TODO support cypher suites
     // TODO support client validation
@@ -15,6 +18,7 @@ pub enum ServerConfig {
     Tls {
         addr: net::SocketAddr,
         alpn_protocols: Option<Vec<String>>,
+        dst_prefix: Option<String>,
         default_identity: Option<TlsServerIdentityConfig>,
         identities: Option<HashMap<String, TlsServerIdentityConfig>>,
     },

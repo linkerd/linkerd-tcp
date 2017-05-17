@@ -16,7 +16,7 @@ pub struct Router(Rc<RefCell<InnerRouter>>);
 
 impl Router {
     /// Obtains a balancer for an inbound connection.
-    pub fn route(&mut self, dst: &Path) -> Route {
+    pub fn route(&self, dst: &Path) -> Route {
         self.0.borrow_mut().route(dst)
     }
 }
