@@ -12,6 +12,7 @@ use serde_json;
 use serde_yaml;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use tokio_core::reactor::{Core, Handle, Remote};
 
 const DEFAULT_BUFFER_SIZE_BYTES: usize = 16 * 1024;
@@ -52,6 +53,8 @@ impl AppConfig {
             Rc::new(RefCell::new(vec![0 as u8; sz]))
         };
 
+        // TODO let (interpreter, resolver_exec) = resolver::new();
+
         let mut routers = Vec::with_capacity(self.routers.len());
         for config in self.routers.drain(..) {
             let r = config.into_router(buf.clone())?;
@@ -61,14 +64,14 @@ impl AppConfig {
         let admin = AdminRunner {};
 
         Ok(AppSpawner {
-               routers: routers,
+               routers: Arc::new(Mutex::new(routers)),
                admin: admin,
            })
     }
 }
 
 pub struct AppSpawner {
-    pub routers: Vec<RouterSpawner>,
+    pub routers: Arc<Mutex<Vec<RouterSpawner>>>,
     pub admin: AdminRunner,
 }
 
@@ -106,7 +109,7 @@ pub struct RouterSpawner {
 }
 
 impl RouterSpawner {
-    pub fn spawn(&self, _reactor: Handle, _admin: Remote) -> Result<(), ConfigError> {
+    pub fn spawn(&self, _reactor: Handle) -> Result<(), ConfigError> {
         unimplemented!();
     }
 }

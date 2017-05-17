@@ -8,7 +8,7 @@ extern crate pretty_env_logger;
 extern crate tokio_core;
 
 use clap::{Arg, App};
-use futures::sync::oneshot;
+use futures::sync::{mpsc, oneshot};
 use linkerd_tcp::app::{AppConfig, AppSpawner};
 use std::fs;
 use std::io::Read;
@@ -41,9 +41,7 @@ fn main() {
         txt.parse().expect("configuration error")
     };
 
-    let core = Core::new().expect("failed to initialize admin reactor");
-    let remote = core.remote();
-    let (close_tx, close_rx) = oneshot::channel::<()>();
+    let mut core = Core::new().expect("failed to initialize admin reactor");
 
     // Process the configuration, splitting it into two threads. These threads are
     // connected by synchronization primitives as needed, but no work is being done yet.
@@ -51,25 +49,26 @@ fn main() {
     // both admin and serving work.
     let AppSpawner { routers, admin } = config.into_app().expect("failed to load configuration");
 
+    let (close_tx, close_rx) = oneshot::channel::<()>();
+
     // Run the servers in a new thread.
-    let serve_thread = thread::Builder::new()
-        .name("serve".into())
+    let admin_thread = thread::Builder::new()
+        .name("admin".into())
         .spawn(move || {
-            let mut core = Core::new().expect("failed to initialize server reactor");
-            let mut routers = routers;
-            for r in routers.drain(..) {
-                r.spawn(core.handle(), remote.clone())
-                    .expect("failed to spawn router");
-            }
-            core.run(close_rx).expect("failed to run")
-        })
+                   let core = Core::new().expect("failed to initialize admin reactor");
+                   admin
+                       .run(close_tx, core)
+                       .expect("failed to run the admin server");
+               })
         .expect("could not spawn admin thread");
 
-    admin
-        .run(close_tx, core)
-        .expect("failed to run the admin server");
+    let routers = routers.lock().expect("failed to lock routers");
+    for r in &*routers {
+        r.spawn(core.handle()).expect("failed to spawn router");
+    }
+    core.run(close_rx).expect("failed to run");
 
-    serve_thread
+    admin_thread
         .join()
         .expect("failed to wait for serve thread");
 

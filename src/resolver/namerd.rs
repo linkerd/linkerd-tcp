@@ -93,17 +93,21 @@ enum State {
 }
 impl Stream for Addrs {
     type Item = Result<Vec<DstAddr>>;
-    type Error = TimerError;
+    type Error = Error;
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         loop {
             match self.state.take().expect("polled after completion") {
                 State::Waiting(mut int) => {
-                    match int.poll()? {
-                        Async::NotReady => {
+                    match int.poll() {
+                        Err(e) => {
+                            self.state = Some(State::Waiting(int));
+                            return Err(Error::Timer(e));
+                        }
+                        Ok(Async::NotReady) => {
                             self.state = Some(State::Waiting(int));
                             return Ok(Async::NotReady);
                         }
-                        Async::Ready(_) => {
+                        Ok(Async::Ready(_)) => {
                             let fut = {
                                 let c = self.client.clone();
                                 let u = self.url.clone();
@@ -118,15 +122,15 @@ impl Stream for Addrs {
                     match fut.poll() {
                         Err(e) => {
                             self.state = Some(State::Waiting(int));
-                            return Ok(Async::Ready(Some(Err(e))));
+                            return Ok(Some(Err(e)).into());
+                        }
+                        Ok(Async::Ready(addrs)) => {
+                            self.state = Some(State::Waiting(int));
+                            return Ok(Some(Ok(addrs)).into());
                         }
                         Ok(Async::NotReady) => {
                             self.state = Some(State::Pending(fut, int));
                             return Ok(Async::NotReady);
-                        }
-                        Ok(Async::Ready(addrs)) => {
-                            self.state = Some(State::Waiting(int));
-                            return Ok(Async::Ready(Some(Ok(addrs))));
                         }
                     }
                 }
