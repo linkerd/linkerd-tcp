@@ -25,7 +25,10 @@ impl<T> From<mpsc::SendError<T>> for Error {
 
 pub type Result<T> = ::std::result::Result<T, Error>;
 
-/// Creates a multithreaded resolver that
+/// Creates a multithreaded resolver.
+///
+/// The `Resolver` side is a client of the `Executor`. Namerd work is performed on
+/// whatever thread the executor is spawned on.
 pub fn new(namerd: Namerd) -> (Resolver, Executor) {
     let (tx, rx) = mpsc::unbounded();
     let res = Resolver { requests: tx };
@@ -36,6 +39,10 @@ pub fn new(namerd: Namerd) -> (Resolver, Executor) {
     (res, exe)
 }
 
+/// Requests resolutions from an `Executor`.
+///
+/// Resolution requests are sent on an channel along with a response channel. The executor
+/// writes to the response channel as results are ready.
 #[derive(Clone)]
 pub struct Resolver {
     requests: mpsc::UnboundedSender<(Path, mpsc::UnboundedSender<Result<Vec<DstAddr>>>)>,
@@ -44,9 +51,10 @@ pub struct Resolver {
 impl Resolver {
     pub fn resolve(&mut self, path: Path) -> Resolve {
         let addrs = {
-            let mut reqs = &self.requests;
+            let reqs = &self.requests;
             let (tx, rx) = mpsc::unbounded();
-            reqs.send((path, tx));
+            reqs.send((path, tx))
+                .expect("failed to send resolution request");
             rx
         };
         Resolve(addrs)
@@ -63,6 +71,7 @@ impl Stream for Resolve {
     }
 }
 
+/// Serves resolutions from `Resolver`s.
 pub struct Executor {
     requests: mpsc::UnboundedReceiver<(Path, mpsc::UnboundedSender<Result<Vec<DstAddr>>>)>,
     namerd: Namerd,
@@ -74,11 +83,14 @@ impl Executor {
         let handle = handle.clone();
         let f = self.requests
             .for_each(move |(path, rsp_tx)| {
-                          let resolve = namerd.resolve(&handle, path.as_str());
-                          let respond = resolve.forward(rsp_tx).map_err(|_| {}).map(|_| {});
-                          handle.clone().spawn(respond);
-                          Ok(())
-                      });
+                // Stream namerd resolutions to the response channel.
+                let resolve = namerd.resolve(&handle, path.as_str());
+                let respond = resolve.forward(rsp_tx).map_err(|_| {}).map(|_| {});
+                // Do all of this work in another task so that we can receive
+                // additional requests.
+                handle.clone().spawn(respond);
+                Ok(())
+            });
         Execute(Box::new(f))
     }
 }
