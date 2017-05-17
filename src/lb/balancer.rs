@@ -65,7 +65,7 @@ impl Balancer {
         if let Err(sender) = inner.add_waiter(sender) {
             drop(sender);
             drop(receiver);
-            Connect(Some(ConnectState::Failed(io::ErrorfKind::ConnectionReset.into())))
+            Connect(Some(ConnectState::Failed(io::ErrorKind::ConnectionReset.into())))
         } else {
             Connect(Some(ConnectState::Pending(receiver)))
         }
@@ -259,11 +259,72 @@ impl InnerBalancer {
         Ok(())
     }
 
-    // XXX This isn't real load balancing.
+    // XXX This isn't proper (weighted) load balancing.
     // 1. Select 2 endpoints at random.
     // 2. Score both endpoints.
     // 3. Take winner.
     fn take_connection(&mut self) -> Option<DstConnection> {
+        // if false {
+        // match self.ready.len() {
+        //     0 => {
+        //         trace!("no endpoints ready");
+        //         Ok(AsyncSink::NotReady(src))
+        //     }
+        //     1 => {
+        //         // One endpoint, use it.
+        //         let mut ep = self.ready.pop_front().unwrap();
+        //         let tx = ep.transmit(src, self.buffer.clone());
+        //         // Replace the connection preemptively.
+        //         self.connect(ep);
+        //         Ok(tx)
+        //     }
+        //     sz => {
+        //         // Pick 2 candidate indices.
+        //         let (i0, i1) = if sz == 2 {
+        //             // There are only two endpoints, so no need for an RNG.
+        //             (0, 1)
+        //         } else {
+        //             // 3 or more endpoints: choose two distinct endpoints at random.
+        //             let mut rng = rand::thread_rng();
+        //             let i0 = rng.gen_range(0, sz);
+        //             let mut i1 = rng.gen_range(0, sz);
+        //             while i0 == i1 {
+        //                 i1 = rng.gen_range(0, sz);
+        //             }
+        //             (i0, i1)
+        //         };
+        //         // Determine the index of the lesser-loaded endpoint
+        //         let idx = {
+        //             let ep0 = &self.ready[i0];
+        //             let ep1 = &self.ready[i1];
+        //             if ep0.load() <= ep1.load() {
+        //                 trace!("dst: {} *{} (not {} *{})",
+        //                        ep0.addr(),
+        //                        ep0.weight(),
+        //                        ep1.addr(),
+        //                        ep1.weight());
+        //                 i0
+        //             } else {
+        //                 trace!("dst: {} *{} (not {} *{})",
+        //                        ep1.addr(),
+        //                        ep1.weight(),
+        //                        ep1.addr(),
+        //                        ep0.weight());
+        //                 i1
+        //             }
+        //         };
+        //         let tx = {
+        //             // Once we know the index of the endpoint we want to use, obtain a mutable
+        //             // reference to begin proxying.
+        //             let mut ep = self.ready.swap_remove_front(idx).unwrap();
+        //             let tx = ep.transmit(src, self.buffer.clone());
+        //             // Replace the connection preemptively.
+        //             self.connect(ep);
+        //             tx
+        //         };
+        //         Ok(tx)
+        //     }
+        //     }
         for ep in self.active.values_mut() {
             if let Some(conn) = ep.connected.pop_front() {
                 self.established_connections -= 1;
