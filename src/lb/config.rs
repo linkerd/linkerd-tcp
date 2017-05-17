@@ -4,7 +4,7 @@ use super::super::connector::ConnectorFactoryConfig;
 use std::time;
 use tokio_core::reactor::Handle;
 
-#[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct BalancerConfig {
     pub minimum_connections: usize,

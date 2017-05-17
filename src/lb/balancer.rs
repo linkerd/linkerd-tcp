@@ -1,6 +1,6 @@
 use super::endpoint::Endpoint;
 use super::super::{DstConnection, DstAddr, Path, resolver};
-use super::super::connector::{ConnectorFactory, ConnectorFactoryConfig, Connector, Connecting, Tls};
+use super::super::connector::Connector;
 use futures::{Future, Sink, Poll, Async, StartSend, AsyncSink};
 use futures::sync::oneshot;
 use ordermap::OrderMap;
@@ -8,7 +8,6 @@ use std::{cmp, io, net};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use tokio_core::reactor::Handle;
 
 pub fn new(dst: Path,
            min_conns: usize,
@@ -60,8 +59,13 @@ impl Balancer {
         }
 
         let (sender, receiver) = oneshot::channel();
-        inner.add_waiter(sender);
-        Connect(Some(ConnectState::Pending(receiver)))
+        if let Err(sender) = inner.add_waiter(sender) {
+            drop(sender);
+            drop(receiver);
+            Connect(Some(ConnectState::Failed(io::ErrorKind::ConnectionReset.into())))
+        } else {
+            Connect(Some(ConnectState::Pending(receiver)))
+        }
     }
 
     /// Keeps track of pending and established connections.
@@ -293,6 +297,7 @@ pub struct Connect(Option<ConnectState>);
 enum ConnectState {
     Pending(oneshot::Receiver<DstConnection>),
     Ready(DstConnection),
+    Failed(io::Error),
 }
 
 impl Future for Connect {
@@ -307,6 +312,7 @@ impl Future for Connect {
             .take()
             .expect("connect must not be polled after completion");
         match state {
+            ConnectState::Failed(e) => Err(e),
             ConnectState::Ready(conn) => Ok(conn.into()),
             ConnectState::Pending(mut recv) => {
                 match recv.poll() {

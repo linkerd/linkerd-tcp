@@ -1,4 +1,5 @@
-use app::config::TlsServerIdentity as IdentityConfig;
+use super::config::TlsServerIdentityConfig;
+use super::super::ConfigError;
 use rustls::{Certificate, ResolvesServerCert, SignatureScheme, sign};
 use rustls::internal::pemfile;
 use std::collections::HashMap;
@@ -6,26 +7,28 @@ use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
 
-pub fn new(ids: &Option<HashMap<String, TlsServerIdentity>>,
-           def: &Option<TlsServerIdentity>)
-           -> io::Result<Sni> {
-    if def.is_none() && ids.map(|ids| ids.is_empty()).unwrap_or(true) {
-        return io::Error::new(io::ErrorKind::Other, "No TLS server identities specified");
+pub fn new(identities: &Option<HashMap<String, TlsServerIdentityConfig>>,
+           default: &Option<TlsServerIdentityConfig>)
+           -> Result<Sni, ConfigError> {
+    let n_identities = identities.as_ref().map(|ids| ids.len()).unwrap_or(0);
+    if default.is_none() && n_identities > 0 {
+        return Err("No TLS server identities specified".into());
     }
-    Sni {
+    let sni = Sni {
         default: default.as_ref().map(|c| ServerIdentity::load(c)),
         identities: {
-            let mut ids = HashMap::new();
-            if let Some(ref identities) = *identities {
-                for (k, c) in identities {
-                    let k = k.clone();
-                    ids.insert(k, ServerIdentity::load(c));
+            let mut ids = HashMap::with_capacity(n_identities);
+            if let Some(identities) = identities.as_ref() {
+                for (ref k, ref c) in identities {
+                    let k: String = (*k).clone();
+                    let v = ServerIdentity::load(*c);
+                    ids.insert(k, v);
                 }
             }
             Arc::new(ids)
         },
-    }
-
+    };
+    Ok(sni)
 }
 
 pub struct Sni {
@@ -62,7 +65,7 @@ struct ServerIdentity {
 }
 
 impl ServerIdentity {
-    fn load(c: &IdentityConfig) -> ServerIdentity {
+    fn load(c: &TlsServerIdentityConfig) -> ServerIdentity {
         let mut certs = vec![];
         for p in &c.certs {
             certs.append(&mut load_certs(p));

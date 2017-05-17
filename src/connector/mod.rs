@@ -1,12 +1,10 @@
 use super::{ConfigError, Path};
-use super::connection::{Connection, ConnectionCtx};
 use super::lb::EndpointCtx;
 use super::socket::{Socket, SecureClientHandshake};
-use futures::{Async, Poll, Future};
 use rustls::ClientConfig as RustlsClientConfig;
-use std::{io, time};
 use std::sync::Arc;
-use tokio_core::net::{TcpStream, TcpStreamNew};
+use std::time;
+use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
 
 mod config;

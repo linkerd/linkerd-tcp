@@ -1,14 +1,13 @@
 use super::{Connector, ConnectorFactory, Tls};
 use super::super::ConfigError;
 use rustls;
-use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufReader};
+use std::io::BufReader;
 use std::sync::Arc;
 use std::time;
 use tokio_core::reactor::Handle;
 
-#[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "kind")]
 pub enum ConnectorFactoryConfig {
     #[serde(rename = "io.l5d.global")]
@@ -46,13 +45,13 @@ impl ConnectorFactoryConfig {
                         } 
                     }
                 }
-                Ok(ConnectorFactory::new_static(&handle, pfx_configs))
+                Ok(ConnectorFactory::new_static(handle, pfx_configs))
             }
         }
     }
 }
 
-#[derive(Clone, Default, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ConnectorConfig {
     prefix: Option<String>,
@@ -87,7 +86,7 @@ impl ConnectorConfig {
     }
 }
 
-#[derive(Clone, Default, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TlsConnectorFactoryConfig {
     pub dns_name: String,

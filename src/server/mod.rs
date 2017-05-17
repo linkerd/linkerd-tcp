@@ -1,28 +1,32 @@
 use super::Path;
 use super::connection::{Connection, Duplex, Summary};
-use super::router::{Router, Route};
+use super::router::Router;
 use super::socket::Socket;
-use futures::{Future, Poll, Async, future};
+use futures::{Future, Poll, future};
 use rustls;
-use std::{io, net};
 use std::cell::RefCell;
+use std::io;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio_core::net::TcpStream;
 //use tacho::Scope;
 
+mod config;
+mod sni;
+pub use self::config::ServerConfig;
+
 /// An incoming connection.
 pub type SrcConnection = Connection<ServerCtx>;
 
-pub fn new(dst: Path, router: Router, buf: Rc<RefCell<Vec<u8>>>, tls: Option<Tls>) -> Server {
-    let server = InnerServer {
+fn new(dst: Path, router: Router, buf: Rc<RefCell<Vec<u8>>>, tls: Option<Tls>) -> Server {
+    let inner = InnerServer {
         dst_name: dst,
         router: Rc::new(router),
         buf: buf,
         tls: tls,
         ctx: ServerCtx::default(),
     };
-    Server(server)
+    Server(inner)
 }
 
 pub struct Server(InnerServer);
@@ -44,13 +48,13 @@ impl Server {
                 None => Box::new(future::ok(Socket::plain(tcp))),
                 Some(ref tls) => Box::new(Socket::secure_server_handshake(tcp, &tls.config)),
             };
-            let dst = dst_name.clone();
-            sock.map(move |sock| Connection::new(ctx.clone(), dst, sock))
+            let dst_name = dst_name.clone();
+            sock.map(move |sock| Connection::new(ctx.clone(), dst_name, sock))
         };
         let dst = router.route(&dst_name).and_then(|bal| bal.connect());
-        let summary = src.join(dst)
-            .and_then(move |(src, dst)| Duplex::new(src, dst, buf.clone()));
-        Serving(Box::new(summary))
+        let duplex = src.join(dst)
+            .and_then(move |(src, dst)| Duplex::new(src, dst, buf));
+        Serving(Box::new(duplex))
     }
 }
 

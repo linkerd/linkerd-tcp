@@ -25,6 +25,7 @@ extern crate tokio_timer;
 //extern crate twox_hash;
 extern crate url;
 
+pub mod app;
 mod connection;
 mod connector;
 mod lb;
