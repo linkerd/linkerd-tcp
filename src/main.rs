@@ -8,7 +8,7 @@ extern crate pretty_env_logger;
 extern crate tokio_core;
 
 use clap::{Arg, App};
-use futures::sync::{mpsc, oneshot};
+use futures::sync::oneshot;
 use linkerd_tcp::app::{AppConfig, AppSpawner};
 use std::fs;
 use std::io::Read;
@@ -47,11 +47,14 @@ fn main() {
     // connected by synchronization primitives as needed, but no work is being done yet.
     // Next, we'll attach each of these to a reactor in an independent thread, driving
     // both admin and serving work.
-    let AppSpawner { routers, admin } = config.into_app().expect("failed to load configuration");
+    let AppSpawner { mut routers, admin } =
+        config.into_app().expect("failed to load configuration");
 
     let (close_tx, close_rx) = oneshot::channel::<()>();
 
-    // Run the servers in a new thread.
+    // Create a background admin thread that:
+    // - runs an admin server;
+    // - executes namerd resolutions;
     let admin_thread = thread::Builder::new()
         .name("admin".into())
         .spawn(move || {
@@ -62,15 +65,19 @@ fn main() {
                })
         .expect("could not spawn admin thread");
 
-    let routers = routers.lock().expect("failed to lock routers");
-    for r in &*routers {
-        r.spawn(core.handle()).expect("failed to spawn router");
+    // Schedule all routers on the main thread.
+    let handle = core.handle();
+    while let Some(r) = routers.pop_front() {
+        r.spawn(&handle).expect("failed to spawn router");
     }
+
+    // Run until the admin thread closes the application.
     core.run(close_rx).expect("failed to run");
 
+    // Wait until the admin thread completes.
     admin_thread
         .join()
         .expect("failed to wait for serve thread");
 
-    info!("Closing.")
+    debug!("Closed.")
 }

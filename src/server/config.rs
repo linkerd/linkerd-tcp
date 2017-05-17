@@ -1,4 +1,4 @@
-use super::Server;
+use super::Unbound;
 use super::sni::{self, Sni};
 use super::super::ConfigError;
 use super::super::router::Router;
@@ -32,7 +32,10 @@ pub enum ServerConfig {
 }
 
 impl ServerConfig {
-    fn mk_server(&self, router: Router, buf: Rc<RefCell<Vec<u8>>>) -> Result<Server, ConfigError> {
+    pub fn mk_server(&self,
+                     router: Router,
+                     buf: Rc<RefCell<Vec<u8>>>)
+                     -> Result<Unbound, ConfigError> {
         match self {
             &ServerConfig::Tcp {
                  ref addr,
@@ -42,7 +45,7 @@ impl ServerConfig {
                     return Err("".into());
                 }
                 let dst_name = dst_name.as_ref().unwrap().clone();
-                Ok(super::new(dst_name.into(), router, buf, None))
+                Ok(super::unbound(*addr, dst_name.into(), router, buf, None))
             }
             &ServerConfig::Tls {
                  ref addr,
@@ -58,7 +61,7 @@ impl ServerConfig {
                     super::Tls { config: Arc::new(tls) }
                 };
                 let dst_name = dst_name.as_ref().unwrap().clone();
-                Ok(super::new(dst_name.into(), router, buf, Some(tls)))
+                Ok(super::unbound(*addr, dst_name.into(), router, buf, Some(tls)))
             }
         }
     }

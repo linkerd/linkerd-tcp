@@ -5,7 +5,7 @@ use tokio_core::reactor::Handle;
 use tokio_timer::TimerError;
 
 mod namerd;
-use self::namerd::{Namerd, Addrs};
+pub use self::namerd::{Namerd, Addrs};
 
 #[derive(Debug)]
 pub enum Error {
@@ -25,9 +25,17 @@ impl<T> From<mpsc::SendError<T>> for Error {
 
 pub type Result<T> = ::std::result::Result<T, Error>;
 
-// TODO In the future, we likely want to change this to use the split bind & addr APIs so
-// balancers can be shared across logical names. In the meantime, it's sufficient to have
-// a balancer per logical name.
+/// Creates a multithreaded resolver that
+pub fn new(namerd: Namerd) -> (Resolver, Executor) {
+    let (tx, rx) = mpsc::unbounded();
+    let res = Resolver { requests: tx };
+    let exe = Executor {
+        requests: rx,
+        namerd: namerd,
+    };
+    (res, exe)
+}
+
 #[derive(Clone)]
 pub struct Resolver {
     requests: mpsc::UnboundedSender<(Path, mpsc::UnboundedSender<Result<Vec<DstAddr>>>)>,
@@ -45,12 +53,23 @@ impl Resolver {
     }
 }
 
+// A stream of name resolutions.
+pub struct Resolve(mpsc::UnboundedReceiver<Result<Vec<DstAddr>>>);
+impl Stream for Resolve {
+    type Item = Result<Vec<DstAddr>>;
+    type Error = ();
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        self.0.poll()
+    }
+}
+
 pub struct Executor {
     requests: mpsc::UnboundedReceiver<(Path, mpsc::UnboundedSender<Result<Vec<DstAddr>>>)>,
     namerd: Namerd,
 }
+
 impl Executor {
-    pub fn execute(self, handle: &Handle) -> Box<Future<Item = (), Error = ()>> {
+    pub fn execute(self, handle: &Handle) -> Execute {
         let namerd = self.namerd.clone();
         let handle = handle.clone();
         let f = self.requests
@@ -60,16 +79,16 @@ impl Executor {
                           handle.clone().spawn(respond);
                           Ok(())
                       });
-        Box::new(f)
+        Execute(Box::new(f))
     }
 }
 
 // A stream of name resolutions.
-pub struct Resolve(mpsc::UnboundedReceiver<Result<Vec<DstAddr>>>);
-impl Stream for Resolve {
-    type Item = Result<Vec<DstAddr>>;
+pub struct Execute(Box<Future<Item = (), Error = ()>>);
+impl Future for Execute {
+    type Item = ();
     type Error = ();
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.0.poll()
     }
 }

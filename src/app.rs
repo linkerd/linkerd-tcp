@@ -2,18 +2,20 @@
 
 #![allow(missing_docs)]
 
+use super::{resolver, router, server};
 use super::ConfigError;
 use super::connector::ConnectorFactoryConfig;
 use super::lb::BalancerFactory;
-use super::server::ServerConfig;
 use futures::future;
 use futures::sync::oneshot;
 use serde_json;
 use serde_yaml;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-use tokio_core::reactor::{Core, Handle, Remote};
+use std::time;
+use tacho;
+use tokio_core::reactor::{Core, Handle};
 
 const DEFAULT_BUFFER_SIZE_BYTES: usize = 16 * 1024;
 const DEFAULT_MINIMUM_CONNECTIONS: usize = 1;
@@ -53,25 +55,33 @@ impl AppConfig {
             Rc::new(RefCell::new(vec![0 as u8; sz]))
         };
 
-        // TODO let (interpreter, resolver_exec) = resolver::new();
+        let (metrics_tx, metrics_rx) = tacho::new();
 
-        let mut routers = Vec::with_capacity(self.routers.len());
+        let mut routers = VecDeque::with_capacity(self.routers.len());
+        let mut resolvers = VecDeque::with_capacity(self.routers.len());
         for config in self.routers.drain(..) {
-            let r = config.into_router(buf.clone())?;
-            routers.push(r);
+            let mut r = config.into_router(buf.clone(), metrics_tx.clone())?;
+            let e = r.resolver_executor
+                .take()
+                .expect("router missing resolver executor");
+            routers.push_back(r);
+            resolvers.push_back(e);
         }
 
-        let admin = AdminRunner {};
+        let admin = AdminRunner {
+            metrics: metrics_rx,
+            resolvers: resolvers,
+        };
 
         Ok(AppSpawner {
-               routers: Arc::new(Mutex::new(routers)),
+               routers: routers,
                admin: admin,
            })
     }
 }
 
 pub struct AppSpawner {
-    pub routers: Arc<Mutex<Vec<RouterSpawner>>>,
+    pub routers: VecDeque<RouterSpawner>,
     pub admin: AdminRunner,
 }
 
@@ -80,7 +90,7 @@ pub struct AppSpawner {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RouterConfig {
     /// The configuration for one or more servers.
-    pub servers: Vec<ServerConfig>,
+    pub servers: Vec<server::ServerConfig>,
 
     /// Determines how outbound connections are initiated.
     ///
@@ -92,7 +102,16 @@ pub struct RouterConfig {
 }
 
 impl RouterConfig {
-    fn into_router(self, _buf: Rc<RefCell<Vec<u8>>>) -> Result<RouterSpawner, ConfigError> {
+    fn into_router(mut self,
+                   buf: Rc<RefCell<Vec<u8>>>,
+                   metrics: tacho::Scope)
+                   -> Result<RouterSpawner, ConfigError> {
+        let n = resolver::Namerd::new("http://localhost:4180".into(),
+                                      time::Duration::from_secs(10),
+                                      "default".into(),
+                                      metrics);
+        let (resolver, resolver_exec) = resolver::new(n);
+
         let balancer = {
             let min_conns = self.minimum_connections
                 .unwrap_or(DEFAULT_MINIMUM_CONNECTIONS);
@@ -100,24 +119,50 @@ impl RouterConfig {
             let client = self.client.unwrap_or_default().mk_connector_factory()?;
             BalancerFactory::new(min_conns, max_waiters, client)
         };
-        Ok(RouterSpawner { balancer: balancer })
+        let router = router::new(resolver, balancer);
+
+        let mut servers = VecDeque::with_capacity(self.servers.len());
+        for config in self.servers.drain(..) {
+            let server = config.mk_server(router.clone(), buf.clone())?;
+            servers.push_back(server);
+        }
+
+        Ok(RouterSpawner {
+               servers: servers,
+               resolver_executor: Some(resolver_exec),
+           })
     }
 }
 
 pub struct RouterSpawner {
-    balancer: BalancerFactory,
+    servers: VecDeque<server::Unbound>,
+    resolver_executor: Option<resolver::Executor>,
 }
 
 impl RouterSpawner {
-    pub fn spawn(&self, _reactor: Handle) -> Result<(), ConfigError> {
+    pub fn spawn(mut self, reactor: &Handle) -> Result<(), ConfigError> {
+        while let Some(unbound) = self.servers.pop_front() {
+            let bound = unbound.bind(&reactor);
+        }
         unimplemented!();
     }
 }
 
-pub struct AdminRunner {}
+pub struct AdminRunner {
+    metrics: tacho::Reporter,
+    resolvers: VecDeque<resolver::Executor>,
+}
 
 impl AdminRunner {
-    pub fn run(&self, closer: oneshot::Sender<()>, mut reactor: Core) -> Result<(), ConfigError> {
+    pub fn run(mut self,
+               closer: oneshot::Sender<()>,
+               mut reactor: Core)
+               -> Result<(), ConfigError> {
+        let handle = reactor.handle();
+        while let Some(r) = self.resolvers.pop_front() {
+            let e = r.execute(&handle);
+            handle.spawn(e);
+        }
         let _ = closer.send(());
         reactor.run(future::ok(()))
     }

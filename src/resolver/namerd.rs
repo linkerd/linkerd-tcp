@@ -1,5 +1,9 @@
 //! Namerd Endpointer
 
+// TODO In the future, we likely want to change this to use the split bind & addr APIs so
+// balancers can be shared across logical names. In the meantime, it's sufficient to have
+// a balancer per logical name.
+
 use super::{DstAddr, Result, Error};
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
 use futures::{Async, Future, IntoFuture, Poll, Stream, future};
@@ -12,7 +16,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use tacho::{self, Timing};
 use tokio_core::reactor::Handle;
-use tokio_timer::{Timer, TimerError, Interval};
+use tokio_timer::{Timer, Interval};
 use url::Url;
 
 type HttpConnectorFactory = Client<HttpConnector>;
@@ -27,23 +31,6 @@ type AddrsFuture = Box<Future<Item = Vec<DstAddr>, Error = Error>>;
 //         self.0.poll()
 //     }
 // }
-
-#[derive(Clone)]
-pub struct Stats {
-    request_latency_ms: tacho::Stat,
-    success_count: tacho::Counter,
-    failure_count: tacho::Counter,
-}
-impl Stats {
-    fn new(metrics: tacho::Scope) -> Stats {
-        let metrics = metrics.labeled("service".into(), "namerd".into());
-        Stats {
-            request_latency_ms: metrics.stat("namerd_request_latency_ms".into()),
-            success_count: metrics.counter("namerd_success_count".into()),
-            failure_count: metrics.counter("namerd_failure_count".into()),
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct Namerd {
@@ -87,10 +74,12 @@ pub struct Addrs {
     url: Url,
     stats: Stats,
 }
+
 enum State {
     Pending(AddrsFuture, Interval),
     Waiting(Interval),
 }
+
 impl Stream for Addrs {
     type Item = Result<Vec<DstAddr>>;
     type Error = Error;
@@ -253,4 +242,22 @@ struct Meta {
     node_name: Option<String>,
 
     endpoint_addr_weight: Option<f32>,
+}
+
+
+#[derive(Clone)]
+pub struct Stats {
+    request_latency_ms: tacho::Stat,
+    success_count: tacho::Counter,
+    failure_count: tacho::Counter,
+}
+impl Stats {
+    fn new(metrics: tacho::Scope) -> Stats {
+        let metrics = metrics.labeled("service".into(), "namerd".into());
+        Stats {
+            request_latency_ms: metrics.stat("namerd_request_latency_ms".into()),
+            success_count: metrics.counter("namerd_success_count".into()),
+            failure_count: metrics.counter("namerd_failure_count".into()),
+        }
+    }
 }
