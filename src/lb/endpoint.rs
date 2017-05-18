@@ -6,16 +6,16 @@ use std::net;
 use std::rc::Rc;
 
 pub struct Endpoint {
-    pub base_weight: f32,
+    pub weight: f32,
     pub ctx: EndpointCtx,
     pub connecting: VecDeque<Connecting>,
     pub connected: VecDeque<Connection<EndpointCtx>>,
 }
 
 impl Endpoint {
-    pub fn new(dst: Path, addr: net::SocketAddr, base_weight: f32) -> Endpoint {
+    pub fn new(dst: Path, addr: net::SocketAddr, weight: f32) -> Endpoint {
         Endpoint {
-            base_weight: base_weight,
+            weight: weight,
             ctx: EndpointCtx::new(addr, dst),
             connecting: VecDeque::default(),
             connected: VecDeque::default(),

@@ -1,5 +1,5 @@
 use super::Path;
-use super::lb::{Balancer, BalancerFactory};
+use super::lb::{Balancer, BalancerFactory, Dispatcher};
 use super::resolver::{Resolver, Resolve};
 use futures::{Future, Stream, Poll, Async};
 use std::cell::RefCell;
@@ -57,7 +57,7 @@ impl InnerRouter {
 
 enum RouteState {
     Pending(Handle, Resolve, Path, BalancerFactory),
-    Ready(Balancer),
+    Ready(Dispatcher),
 }
 
 /// Materializes a `Balancer`.
@@ -67,7 +67,7 @@ enum RouteState {
 pub struct Route(Option<Rc<RefCell<Option<RouteState>>>>);
 
 impl Future for Route {
-    type Item = Balancer;
+    type Item = Dispatcher;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -89,14 +89,13 @@ impl Future for Route {
                                 Err(io::Error::new(io::ErrorKind::Other,
                                                    format!("failed to build balancer: {}", e)))
                             }
-                            Ok(balancer) => {
-                                let updating = resolve
-                                    .forward(balancer.clone())
-                                    .map(|_| {})
-                                    .map_err(|_| {});
-                                reactor.spawn(updating);
-                                *state = Some(RouteState::Ready(balancer.clone()));
-                                Ok(Async::Ready(balancer))
+                            Ok(Balancer {
+                                   dispatcher,
+                                   manager,
+                               }) => {
+                                reactor.spawn(manager.manage(resolve));
+                                *state = Some(RouteState::Ready(dispatcher.clone()));
+                                Ok(Async::Ready(dispatcher))
                             }
                         }
                     }

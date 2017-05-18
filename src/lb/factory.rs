@@ -1,5 +1,4 @@
-use super::DstAddr;
-use super::balancer::{self, Balancer};
+use super::{DstAddr, Balancer};
 use super::super::{ConfigError, Path, resolver};
 use super::super::connector::ConnectorFactory;
 use std::cell::RefCell;
@@ -29,7 +28,7 @@ impl BalancerFactory {
                        -> Result<Balancer, ConfigError> {
         let connector = self.connector_factory.borrow().mk_connector(dst_name)?;
 
-        let b = balancer::new(reactor.clone(),
+        let b = Balancer::new(reactor.clone(),
                               dst_name.clone(),
                               self.minimum_connections,
                               self.maximum_waiters,

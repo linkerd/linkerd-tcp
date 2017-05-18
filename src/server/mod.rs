@@ -111,7 +111,7 @@ impl Sink for Serving {
         // on failed inbound connections.
         let duplex = src.join(bal)
             .and_then(move |(src, bal)| {
-                          bal.connect()
+                          bal.dispatch()
                               .and_then(move |dst| Duplex::new(src, dst, buf))
                       });
 
