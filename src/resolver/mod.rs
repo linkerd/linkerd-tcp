@@ -1,5 +1,5 @@
 use super::{DstAddr, Path};
-use futures::{Future, Sink, Stream, Poll};
+use futures::{Future, Sink, Stream, Poll, Async};
 use futures::sync::{mpsc, oneshot};
 use tokio_core::reactor::Handle;
 use tokio_timer::TimerError;
@@ -57,17 +57,76 @@ impl Resolver {
                 .expect("failed to send resolution request");
             rx
         };
-        Resolve(addrs)
+        Resolve {
+            pending: None,
+            stream: Some(addrs),
+        }
     }
 }
 
-// A stream of name resolutions.
-pub struct Resolve(mpsc::UnboundedReceiver<Result<Vec<DstAddr>>>);
+/// A stream of name resolutions.
+///
+/// This stream may not return all resolutions.
+pub struct Resolve {
+    pending: Option<::std::result::Result<Option<Result<Vec<DstAddr>>>, ()>>,
+    stream: Option<mpsc::UnboundedReceiver<Result<Vec<DstAddr>>>>,
+}
 impl Stream for Resolve {
     type Item = Result<Vec<DstAddr>>;
     type Error = ();
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.0.poll()
+        if let Some(pending) = self.pending.take() {
+            return match pending {
+                       Ok(None) => Ok(Async::Ready(None)),
+                       Ok(Some(dsts)) => Ok(Async::Ready(Some(dsts))),
+                       Err(e) => Err(e),
+                   };
+        }
+
+        match self.stream.take() {
+            None => Ok(Async::Ready(None)),
+            Some(mut stream) => {
+                let mut most_recent_result: Option<Result<Vec<DstAddr>>> = None;
+                loop {
+                    match stream.poll() {
+                        Ok(Async::Ready(Some(result))) => {
+                            // Note the most recent result
+                            most_recent_result = Some(result);
+                        }
+                        Err(e) => {
+                            self.stream = Some(stream);
+                            match most_recent_result {
+                                None => {
+                                    return Err(e);
+                                }
+                                Some(result) => {
+                                    self.pending = Some(Err(e));
+                                    return Ok(Async::Ready(Some(result)));
+                                }
+                            }
+                        }
+                        Ok(Async::NotReady) => {
+                            self.stream = Some(stream);
+                            return match most_recent_result {
+                                       None => Ok(Async::NotReady),
+                                       Some(result) => Ok(Async::Ready(Some(result))),
+                                   };
+                        }
+                        Ok(Async::Ready(None)) => {
+                            match most_recent_result {
+                                None => {
+                                    return Ok(Async::Ready(None));
+                                }
+                                Some(result) => {
+                                    self.pending = Some(Ok(None));
+                                    return Ok(Async::Ready(Some(result)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
