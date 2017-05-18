@@ -142,7 +142,7 @@ pub struct RouterSpawner {
 impl RouterSpawner {
     pub fn spawn(mut self, reactor: &Handle) -> Result<(), ConfigError> {
         while let Some(unbound) = self.servers.pop_front() {
-            let bound = unbound.bind(&reactor);
+            let bound = unbound.bind(reactor);
         }
         unimplemented!();
     }

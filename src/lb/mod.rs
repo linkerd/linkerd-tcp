@@ -1,6 +1,5 @@
 use super::{Path, resolver};
 use super::connector::Connector;
-use futures::{Future, Stream, Sink, Poll, Async, StartSend, AsyncSink};
 use futures::unsync::mpsc;
 use ordermap::OrderMap;
 use std::cell::RefCell;
@@ -19,7 +18,6 @@ use self::endpoint::Endpoint;
 pub use self::endpoint::EndpointCtx;
 pub use self::factory::BalancerFactory;
 pub use self::manager::{Manager, Managing};
-use self::manager::OnDispatch;
 use self::pool::Pool;
 
 pub type DstConnection = super::Connection<EndpointCtx>;
@@ -41,8 +39,8 @@ impl DstAddr {
 }
 
 pub struct Balancer {
-    manager: manager::Manager,
-    dispatcher: dispatcher::Dispatcher,
+    pub manager: Manager,
+    pub dispatcher: Dispatcher,
 }
 
 impl Balancer {
@@ -65,30 +63,20 @@ impl Balancer {
 
         let pool = {
             let p = Pool {
-                active: active,
-                retired: OrderMap::default(),
-                waiters: VecDeque::with_capacity(max_waiters),
                 max_waiters: max_waiters,
-                last_result: last_result,
+                active: RefCell::new(active),
+                retired: RefCell::new(OrderMap::default()),
+                waiters: RefCell::new(VecDeque::with_capacity(max_waiters)),
+                last_result: RefCell::new(last_result),
             };
-            Rc::new(RefCell::new(p))
+            Rc::new(p)
         };
 
         let (on_dispatch_tx, on_dispatch_rx) = mpsc::unbounded();
 
         Balancer {
-            manager: Manager {
-                dst_name: dst,
-                reactor: reactor,
-                connector: conn,
-                minimum_connections: min_conns,
-                on_dispatch: OnDispatch::new(on_dispatch_rx),
-                pool: pool,
-            },
-            dispatcher: Dispatcher {
-                on_dispatch: on_dispatch_tx,
-                pool: pool,
-            },
+            manager: manager::new(dst, reactor, conn, min_conns, on_dispatch_rx, pool.clone()),
+            dispatcher: dispatcher::new(on_dispatch_tx, pool),
         }
     }
 }

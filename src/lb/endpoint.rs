@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 pub struct Endpoint {
     pub weight: f32,
+    pub load: f32,
     pub ctx: EndpointCtx,
     pub connecting: VecDeque<Connecting>,
     pub connected: VecDeque<Connection<EndpointCtx>>,
@@ -16,6 +17,7 @@ impl Endpoint {
     pub fn new(dst: Path, addr: net::SocketAddr, weight: f32) -> Endpoint {
         Endpoint {
             weight: weight,
+            load: 0.0,
             ctx: EndpointCtx::new(addr, dst),
             connecting: VecDeque::default(),
             connected: VecDeque::default(),
