@@ -1,14 +1,14 @@
 use super::Path;
-use super::connection::{Connection, Duplex, Summary};
+use super::connection::{Connection, Duplex, ctx};
 use super::router::Router;
 use super::socket::Socket;
-use futures::{Sink, AsyncSink, Async, Future, Poll, StartSend, Stream, future};
+use futures::{Async, Future, Poll, Stream, future};
 use rustls;
 use std::{io, net};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use tokio_core::net::{TcpStream, TcpListener, Incoming};
+use tokio_core::net::{TcpListener, Incoming};
 use tokio_core::reactor::Handle;
 //use tacho::Scope;
 
@@ -17,7 +17,7 @@ mod sni;
 pub use self::config::ServerConfig;
 
 /// An incoming connection.
-pub type SrcConnection = Connection<ServerCtx>;
+pub type SrcConnection = Connection<ctx::Null>;
 
 fn unbound(addr: net::SocketAddr,
            dst: Path,
@@ -31,7 +31,6 @@ fn unbound(addr: net::SocketAddr,
         router: Rc::new(router),
         buf: buf,
         tls: tls,
-        ctx: ServerCtx::default(),
     };
     Unbound(meta)
 }
@@ -42,7 +41,6 @@ struct Meta {
     pub router: Rc<Router>,
     pub buf: Rc<RefCell<Vec<u8>>>,
     pub tls: Option<Tls>,
-    pub ctx: ServerCtx,
 }
 
 pub struct Unbound(Meta);
@@ -51,7 +49,7 @@ impl Unbound {
         let listen = TcpListener::bind(&self.0.listen_addr, reactor)?;
         Ok(Bound {
                reactor: reactor.clone(),
-               bound_addr: listen.local_addr().unwrap(),
+               _bound_addr: listen.local_addr().unwrap(),
                incoming: listen.incoming(),
                meta: self.0,
            })
@@ -62,7 +60,7 @@ pub struct Bound {
     reactor: Handle,
     incoming: Incoming,
     meta: Meta,
-    bound_addr: net::SocketAddr,
+    _bound_addr: net::SocketAddr,
 }
 impl Future for Bound {
     type Item = ();
@@ -92,14 +90,14 @@ impl Future for Bound {
                             }
                         };
                         let dst_name = self.meta.dst_name.clone();
-                        let ctx = self.meta.ctx.clone();
-                        sock.map(move |sock| Connection::new(dst_name, sock, ctx))
+                        sock.map(move |sock| {
+                                     let ctx = ctx::null(sock.local_addr(), sock.peer_addr());
+                                     Connection::new(dst_name, sock, ctx)
+                                 })
                     };
 
                     // Obtain a dispatcher.
-                    let dst = self.meta
-                        .router
-                        .route(&self.meta.dst_name, &self.reactor);
+                    let dst = self.meta.router.route(&self.meta.dst_name, &self.reactor);
 
                     // Once the incoming connection is ready and we have a balancer ready, obtain an
                     // outbound connection and begin streaming. We obtain an outbound connection after
@@ -128,28 +126,4 @@ impl Future for Bound {
 #[derive(Clone)]
 pub struct Tls {
     config: Arc<rustls::ServerConfig>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ServerCtx(Rc<RefCell<InnerServerCtx>>);
-
-#[derive(Debug, Default)]
-struct InnerServerCtx {
-    connects: usize,
-    disconnects: usize,
-    failures: usize,
-    bytes_to_dst: usize,
-    bytes_to_src: usize,
-}
-
-impl ServerCtx {
-    fn active(&self) -> usize {
-        let InnerServerCtx {
-            connects,
-            disconnects,
-            ..
-        } = *self.0.borrow();
-
-        connects - disconnects
-    }
 }

@@ -1,9 +1,8 @@
 use super::{ConfigError, Path};
-use super::lb::EndpointCtx;
 use super::socket::{Socket, SecureClientHandshake};
 use rustls::ClientConfig as RustlsClientConfig;
+use std::{net, time};
 use std::sync::Arc;
-use std::time;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
 
@@ -78,8 +77,8 @@ pub struct Connector {
     tls: Option<Tls>,
 }
 impl Connector {
-    pub fn connect(&mut self, ctx: EndpointCtx, reactor: &Handle) -> Connecting {
-        let c = TcpStream::connect(&ctx.peer_addr(), reactor);
-        connecting::new(c, self.tls.clone(), ctx)
+    pub fn connect(&mut self, addr: &net::SocketAddr, reactor: &Handle) -> Connecting {
+        let c = TcpStream::connect(addr, reactor);
+        connecting::new(c, self.tls.clone())
     }
 }

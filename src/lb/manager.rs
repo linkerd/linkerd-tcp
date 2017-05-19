@@ -1,45 +1,34 @@
-use super::{DstConnection, DstAddr};
-//use super::endpoint::Endpoint;
-//use super::pool::{Pool, Waiter};
+use super::{DstAddr, DstConnection, DstCtx, Summary, Error};
+use super::dispatcher::Dispatchee;
 use super::super::Path;
+use super::super::connection::Connection;
 use super::super::connector::{Connector, Connecting};
 use super::super::resolver::{self, Resolve};
-use futures::{Future, Stream, Sink, Poll, Async, StartSend, AsyncSink};
+use futures::{Future, Stream, Poll, Async, AsyncSink};
 use futures::unsync::{mpsc, oneshot};
 use ordermap::OrderMap;
+use rand::{self, Rng};
 use std::{cmp, net};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 use tokio_core::reactor::Handle;
 
-pub type Waiter = oneshot::Sender<DstConnection>;
-
 pub fn new(dst: Path,
            reactor: Handle,
            conn: Connector,
            min_conns: usize,
-           dispatch: mpsc::UnboundedReceiver<Waiter>)
+           dispatchees: mpsc::UnboundedReceiver<Dispatchee>)
            -> Manager {
-    let (tx, rx) = mpsc::unbounded();
     Manager {
         dst_name: dst,
         reactor: reactor,
         connector: conn,
         minimum_connections: min_conns,
-        active: OrderMap::default(),
+        available: OrderMap::default(),
         retired: OrderMap::default(),
-        dispatch: dispatch,
-        completions_rx: rx,
-        completions_tx: tx,
+        dispatchees: dispatchees,
     }
-}
-
-pub struct ConnectionSummary {
-    local_addr: net::SocketAddr,
-    peer_addr: net::SocketAddr,
-    read_bytes: usize,
-    summary_bytes: usize,
 }
 
 pub struct Manager {
@@ -51,15 +40,17 @@ pub struct Manager {
 
     minimum_connections: usize,
 
-    active: OrderMap<net::SocketAddr, Endpoint>,
+    /// Endpoints considered available for new connections.
+    available: OrderMap<net::SocketAddr, Endpoint>,
 
+    /// Endpointsthat are still actvie but considered unavailable for new connections.
     retired: OrderMap<net::SocketAddr, Endpoint>,
 
-    dispatch: mpsc::UnboundedReceiver<Waiter>,
-
-    completions_rx: mpsc::UnboundedReceiver<ConnectionSummary>,
-    completions_tx: mpsc::UnboundedSender<ConnectionSummary>,
+    /// Requests from a `Dispatcher` for a `DstConnection`.
+    dispatchees: mpsc::UnboundedReceiver<Dispatchee>,
 }
+
+type Completing = oneshot::Receiver<Summary>;
 
 impl Manager {
     pub fn manage(self, resolve: Resolve) -> Managing {
@@ -68,48 +59,90 @@ impl Manager {
             resolve: resolve,
         }
     }
+
     fn dispatch(&mut self) {
         // If there are no endpoints to select from, we can't do anything.
-        if self.active.is_empty() {
+        if self.available.is_empty() {
             // XXX we could fail these waiters here.  I'd prefer to rely on a timeout in
             // the dispatching task.
             return;
         }
         loop {
-            match self.dispatch.poll() {
+            match self.dispatchees.poll() {
                 Err(_) |
                 Ok(Async::NotReady) |
                 Ok(Async::Ready(None)) => return,
-                Ok(Async::Ready(Some(waiter))) => {
-                    let mut ep = self.select_endpoint();
-                    ep.dispatch(waiter);
+                Ok(Async::Ready(Some(dispatchee))) => {
+                    let mut ep = self.select_endpoint().unwrap();
+                    ep.dispatch(dispatchee);
                 }
             }
         }
     }
 
-    fn select_endpoint(&mut self) -> &mut Endpoint {
-        unimplemented!()
+    fn select_endpoint(&mut self) -> Option<&mut Endpoint> {
+        match self.available.len() {
+            0 => {
+                trace!("no endpoints ready");
+                None
+            }
+            1 => {
+                // One endpoint, use it.
+                self.available.get_index_mut(0).map(|(_, ep)| ep)
+            }
+            sz => {
+                // Pick 2 candidate indices.
+                let (i0, i1) = if sz == 2 {
+                    // There are only two endpoints, so no need for an RNG.
+                    (0, 1)
+                } else {
+                    // 3 or more endpoints: choose two distinct endpoints at random.
+                    let mut rng = rand::thread_rng();
+                    let i0 = rng.gen_range(0, sz);
+                    let mut i1 = rng.gen_range(0, sz);
+                    while i0 == i1 {
+                        i1 = rng.gen_range(0, sz);
+                    }
+                    (i0, i1)
+                };
+                let addr = {
+                    // Determine the index of the lesser-loaded endpoint
+                    let (addr0, ep0) = self.available.get_index(i0).unwrap();
+                    let (addr1, ep1) = self.available.get_index(i1).unwrap();
+                    if ep0.load <= ep1.load {
+                        trace!("dst: {} *{} (not {} *{})",
+                               addr0,
+                               ep0.weight,
+                               addr1,
+                               ep1.weight);
+
+                        *addr0
+                    } else {
+                        trace!("dst: {} *{} (not {} *{})",
+                               addr1,
+                               ep1.weight,
+                               addr0,
+                               ep0.weight);
+                        *addr1
+                    }
+                };
+                self.available.get_mut(&addr)
+            }
+        }
     }
 
     fn poll_connecting(&mut self) -> ConnectionPollSummary {
         let mut summary = ConnectionPollSummary::default();
 
-        for ep in self.active.values_mut() {
+        for ep in self.available.values_mut() {
             for _ in 0..ep.connecting.len() {
                 let mut fut = ep.connecting.pop_front().unwrap();
                 match fut.poll() {
                     Ok(Async::NotReady) => ep.connecting.push_back(fut),
-                    Ok(Async::Ready(conn)) => {
-                        // XXX ep.ctx.connect_ok();
-                        match ep.send_to_waiter(conn) {
-                            Ok(_) => {
-                                summary.dispatched += 1;
-                            }
-                            Err(conn) => {
-                                ep.connected.push_back(conn);
-                            }
-                        }
+                    Ok(Async::Ready(sock)) => {
+                        let ctx = ep.mk_ctx(sock.local_addr());
+                        let conn = Connection::new(self.dst_name.clone(), sock, ctx);
+                        ep.connected.push_back(conn);
                     }
                     Err(_) => {
                         // XX ep.ctx.connect_fail();
@@ -121,10 +154,10 @@ impl Manager {
             summary.connected += ep.connected.len();
         }
 
-        while !self.active.is_empty() &&
+        while !self.available.is_empty() &&
               summary.connected + summary.pending < self.minimum_connections {
-            for mut ep in self.active.values_mut() {
-                let mut fut = self.connector.connect(ep.ctx.clone(), &self.reactor);
+            for mut ep in self.available.values_mut() {
+                let mut fut = self.connector.connect(&ep.peer_addr, &self.reactor);
                 // Poll the new connection immediately so that task notification is
                 // established.
                 match fut.poll() {
@@ -135,7 +168,9 @@ impl Manager {
                     Ok(Async::Ready(sock)) => {
                         // XXX ep.ctx.connect_ok();
                         summary.connected += 1;
-                        ep.connected.push_back(sock)
+                        let ctx = ep.mk_ctx(sock.local_addr());
+                        let conn = Connection::new(self.dst_name.clone(), sock, ctx);
+                        ep.connected.push_back(conn)
                     }
                     Err(_) => {
                         // XXX ep.ctx.connect_fail();
@@ -152,14 +187,15 @@ impl Manager {
         // self.pending_connections = summary.pending;
         summary
     }
-    pub fn update_resolved(&self, resolved: resolver::Result<Vec<DstAddr>>) {
+    pub fn update_resolved(&mut self, resolved: resolver::Result<Vec<DstAddr>>) {
         if let Ok(ref resolved) = resolved {
             let mut dsts = OrderMap::with_capacity(resolved.len());
             for &DstAddr { addr, weight } in resolved {
                 dsts.insert(addr, weight);
             }
 
-            let mut temp = VecDeque::with_capacity(cmp::max(self.active.len(), self.retired.len()));
+            let mut temp = VecDeque::with_capacity(cmp::max(self.available.len(),
+                                                            self.retired.len()));
 
             // Check retired endpoints.
             //
@@ -168,11 +204,11 @@ impl Manager {
             {
                 for (addr, ep) in self.retired.drain(..) {
                     if dsts.contains_key(&addr) {
-                        self.active.insert(addr, ep);
-                    } else if ep.ctx.active() > 0 {
-                        temp.push_back((addr, ep));
-                    } else {
+                        self.available.insert(addr, ep);
+                    } else if ep.is_idle() {
                         drop(ep);
+                    } else {
+                        temp.push_back((addr, ep));
                     }
                 }
                 for _ in 0..temp.len() {
@@ -185,30 +221,41 @@ impl Manager {
             //
             // Endpoints are either maintained in the active pool, moved into the retired poll if
             {
-                for (addr, ep) in self.active.drain(..) {
+                for (addr, ep) in self.available.drain(..) {
                     if dsts.contains_key(&addr) {
                         temp.push_back((addr, ep));
-                    } else if ep.ctx.active() > 0 {
+                    } else if ep.is_idle() {
+                        drop(ep);
+                    } else {
                         let mut ep = ep;
                         // self.pending_connections -= ep.connecting.len();
                         // self.established_connections -= ep.connected.len();
                         self.retired.insert(addr, ep);
-                    } else {
-                        drop(ep);
                     }
                 }
                 for _ in 0..temp.len() {
                     let (addr, ep) = temp.pop_front().unwrap();
-                    self.active.insert(addr, ep);
+                    self.available.insert(addr, ep);
                 }
             }
 
             // Add new endpoints or update the base weights of existing endpoints.
             let name = self.dst_name.clone();
             for (addr, weight) in dsts.drain(..) {
-                let mut ep = self.active
+                let mut ep = self.available
                     .entry(addr)
-                    .or_insert_with(|| Endpoint::new(name.clone(), addr, weight));
+                    .or_insert_with(|| {
+                        Endpoint {
+                            dst_name: name.clone(),
+                            peer_addr: addr,
+                            weight: weight,
+                            load: ::std::f32::MAX,
+                            connecting: VecDeque::default(),
+                            connected: VecDeque::default(),
+                            dispatchees: VecDeque::default(),
+                            completing: VecDeque::default(),
+                        }
+                    });
                 ep.weight = weight;
             }
         }
@@ -216,44 +263,156 @@ impl Manager {
 }
 
 struct Endpoint {
+    dst_name: Path,
+    peer_addr: net::SocketAddr,
     weight: f32,
     load: f32,
+
+    /// Queues pending connections that have not yet been completed.
     connecting: VecDeque<Connecting>,
+
+    /// Queues established connections that have not yet been dispatched.
     connected: VecDeque<DstConnection>,
-    waiters: VecDeque<Waiter>,
+
+    /// Queues dispatch requests for connections.
+    dispatchees: VecDeque<Dispatchee>,
+
+    /// Holds a future that will be completed when streaming is complete.
+    ///
+    /// ## XXX
+    ///
+    /// This shold be replaced with a notification-aware data structure so that all items
+    /// are not polled regularly (so that balancers can scale to 100K+ connections).
+    completing: VecDeque<Completing>,
 }
+
 impl Endpoint {
     fn new(dst: Path, addr: net::SocketAddr, weight: f32) -> Endpoint {
         Endpoint {
+            dst_name: dst,
+            peer_addr: addr,
             weight: weight,
             load: ::std::f32::MAX,
             //ctx: EndpointCtx::new(addr, dst),
             connecting: VecDeque::default(),
             connected: VecDeque::default(),
-            waiters: VecDeque::default(),
+            dispatchees: VecDeque::default(),
+            completing: VecDeque::default(),
         }
     }
 
-    fn send_to_waiter(&mut self, conn: DstConnection) -> Result<(), DstConnection> {
-        if let Some(waiter) = self.waiters.pop_front() {
+    fn mk_ctx(&mut self, local_addr: net::SocketAddr) -> DstCtx {
+        let (tx, rx) = oneshot::channel();
+        self.completing.push_back(rx);
+        DstCtx::new(self.dst_name.clone(), local_addr, self.peer_addr, tx)
+    }
+
+    fn is_idle(&self) -> bool {
+        // XXX this should
+        self.connecting.is_empty() && self.dispatchees.is_empty()
+    }
+
+    fn send_to_dispatchee(&mut self, conn: DstConnection) -> Result<(), DstConnection> {
+        if let Some(waiter) = self.dispatchees.pop_front() {
             return match waiter.send(conn) {
-                       Err(conn) => self.send_to_waiter(conn),
+                       Err(conn) => self.send_to_dispatchee(conn),
                        Ok(()) => Ok(()),
                    };
         }
         Err(conn)
     }
 
-    fn dispatch(&mut self, waiter: Waiter) {
+    fn dispatch(&mut self, d: Dispatchee) {
         match self.connected.pop_front() {
-            None => self.waiters.push_back(waiter),
+            None => self.dispatchees.push_back(d),
             Some(conn) => {
-                if let Err(conn) = waiter.send(conn) {
-                    // waiter no longer waiting. save the connection for later.
+                if let Err(conn) = d.send(conn) {
+                    // Dispatchee no longer waiting. save the connection for later.
                     self.connected.push_front(conn);
                 }
             }
         }
+    }
+}
+
+/// The state of a load balaner endpoint.
+#[derive(Clone, Debug)]
+pub struct EndpointCtx(Rc<RefCell<InnerEndpointCtx>>);
+
+#[derive(Debug)]
+struct InnerEndpointCtx {
+    peer_addr: net::SocketAddr,
+    dst_name: Path,
+    connect_attempts: usize,
+    connect_failures: usize,
+    connect_successes: usize,
+    disconnects: usize,
+    bytes_to_dst: usize,
+    bytes_to_src: usize,
+}
+
+impl EndpointCtx {
+    pub fn new(addr: net::SocketAddr, dst: Path) -> EndpointCtx {
+        let inner = InnerEndpointCtx {
+            peer_addr: addr,
+            dst_name: dst,
+            connect_attempts: 0,
+            connect_failures: 0,
+            connect_successes: 0,
+            disconnects: 0,
+            bytes_to_dst: 0,
+            bytes_to_src: 0,
+        };
+        EndpointCtx(Rc::new(RefCell::new(inner)))
+    }
+
+    pub fn dst_name(&self) -> Path {
+        self.0.borrow().dst_name.clone()
+    }
+
+    pub fn peer_addr(&self) -> net::SocketAddr {
+        let s = self.0.borrow();
+        (*s).peer_addr
+    }
+
+    pub fn active(&self) -> usize {
+        let InnerEndpointCtx {
+            connect_successes,
+            disconnects,
+            ..
+        } = *self.0.borrow();
+
+        connect_successes - disconnects
+    }
+
+    pub fn connect_init(&self) {
+        let mut s = self.0.borrow_mut();
+        (*s).connect_attempts += 1;
+    }
+
+    pub fn connect_ok(&self) {
+        let mut s = self.0.borrow_mut();
+        (*s).connect_successes += 1;
+    }
+
+    pub fn connect_fail(&self) {
+        let mut s = self.0.borrow_mut();
+        (*s).connect_failures += 1;
+    }
+
+    pub fn disconnect(&self) {
+        let mut s = self.0.borrow_mut();
+        (*s).disconnects += 1;
+    }
+
+    pub fn dst_write(&self, sz: usize) {
+        let mut s = self.0.borrow_mut();
+        (*s).bytes_to_dst += sz;
+    }
+
+    pub fn src_write(&self, sz: usize) {
+        let mut s = self.0.borrow_mut();
+        (*s).bytes_to_dst += sz;
     }
 }
 
@@ -262,22 +421,24 @@ pub struct Managing {
     resolve: Resolve,
 }
 
-impl Managing {}
-
 /// Balancers accept a stream of service discovery updates,
 impl Future for Managing {
     type Item = ();
-    type Error = ();
+    type Error = Error;
 
-    fn poll(&mut self) -> Poll<(), ()> {
-        // First, check new connection requests:
+    fn poll(&mut self) -> Poll<(), Error> {
+        // First, check new calls from the dispatcher.
         self.manager.dispatch();
 
         // Update the load balancer from service discovery.
-        if let Async::Ready(update) = self.resolve.poll()? {
-            match update {
-                Some(resolved) => self.manager.update_resolved(resolved),
-                None => panic!("resolve stream ended prematurely"),
+        match self.resolve.poll() {
+            Err(_) => error!("unexpected resolver error!"),
+            Ok(Async::NotReady) => {}
+            Ok(Async::Ready(None)) => {
+                return Err(Error::ResolverLost());
+            }
+            Ok(Async::Ready(Some(resolved))) => {
+                self.manager.update_resolved(resolved);
             }
         }
 

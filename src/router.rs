@@ -1,7 +1,7 @@
 use super::{ConfigError, Path};
-use super::lb::{Balancer, BalancerFactory, Dispatcher, Dispatch};
-use super::resolver::{Resolver, Resolve};
-use futures::{Future, Stream, Poll, Async};
+use super::lb::{Balancer, BalancerFactory, Dispatcher};
+use super::resolver::Resolver;
+use futures::{Future, Poll, Async};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
@@ -44,25 +44,20 @@ impl InnerRouter {
             return Route(Some(Ok(route.clone())));
         }
 
-        match self.factory.mk_balancer(&reactor, &dst) {
+        match self.factory.mk_balancer(reactor, dst) {
             Err(e) => Route(Some(Err(e))),
             Ok(Balancer {
                    dispatcher,
                    manager,
                }) => {
                 let resolve = self.resolver.resolve(dst.clone());
-                reactor.spawn(manager.manage(resolve));
+                reactor.spawn(manager.manage(resolve).map_err(|_| {}));
 
                 self.routes.insert(dst.clone(), dispatcher.clone());
                 Route(Some(Ok(dispatcher)))
             }
         }
     }
-}
-
-enum RouteState {
-    Pending(Handle, Resolve, Path, Balancer),
-    Ready(Dispatcher),
 }
 
 /// Materializes a `Balancer`.

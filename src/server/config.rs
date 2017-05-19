@@ -36,27 +36,29 @@ impl ServerConfig {
                      router: Router,
                      buf: Rc<RefCell<Vec<u8>>>)
                      -> Result<Unbound, ConfigError> {
-        match self {
-            &ServerConfig::Tcp {
-                 ref addr,
-                 ref dst_name,
-             } => {
+        match *self {
+            ServerConfig::Tcp {
+                ref addr,
+                ref dst_name,
+            } => {
                 if dst_name.is_none() {
                     return Err("".into());
                 }
                 let dst_name = dst_name.as_ref().unwrap().clone();
                 Ok(super::unbound(*addr, dst_name.into(), router, buf, None))
             }
-            &ServerConfig::Tls {
-                 ref addr,
-                 ref dst_name,
-                 ref alpn_protocols,
-                 ref default_identity,
-                 ref identities,
-             } => {
+            ServerConfig::Tls {
+                ref addr,
+                ref dst_name,
+                //ref alpn_protocols,
+                ref default_identity,
+                ref identities,
+                ..
+            } => {
                 let tls = {
                     let mut tls = rustls::ServerConfig::new();
                     let sni = sni::new(identities, default_identity)?;
+                    // XXX apply SNI, alpn, ...
                     tls.cert_resolver = Box::new(sni);
                     super::Tls { config: Arc::new(tls) }
                 };

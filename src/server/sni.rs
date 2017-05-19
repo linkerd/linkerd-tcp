@@ -19,9 +19,9 @@ pub fn new(identities: &Option<HashMap<String, TlsServerIdentityConfig>>,
         identities: {
             let mut ids = HashMap::with_capacity(n_identities);
             if let Some(identities) = identities.as_ref() {
-                for (ref k, ref c) in identities {
+                for (k, c) in identities {
                     let k: String = (*k).clone();
-                    let v = ServerIdentity::load(*c);
+                    let v = ServerIdentity::load(c);
                     ids.insert(k, v);
                 }
             }

@@ -1,38 +1,34 @@
-use super::manager::Waiter;
-use super::super::{DstConnection, Path};
-use super::super::connector::Connector;
-use super::super::resolver::Resolve;
-use futures::{Future, Stream, Poll, Async};
+use super::super::DstConnection;
+use futures::{Future, Poll, Async};
 use futures::unsync::{mpsc, oneshot};
-use rand::{self, Rng};
-use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::io;
-use std::rc::Rc;
-use tokio_core::reactor::Handle;
 
-pub fn new(waiters: mpsc::UnboundedSender<Waiter>) -> Dispatcher {
+pub fn new(waiters: mpsc::UnboundedSender<Dispatchee>) -> Dispatcher {
     Dispatcher(waiters)
 }
 
-// TODO we should limit max waiteers probably.
+// TODO limit max waiters.
 #[derive(Clone)]
-pub struct Dispatcher(mpsc::UnboundedSender<Waiter>);
+pub struct Dispatcher(mpsc::UnboundedSender<Dispatchee>);
+
+/// The response-side of a request from a `Dispatcher` for a `DstConnection`.
+pub type Dispatchee = oneshot::Sender<DstConnection>;
+
 impl Dispatcher {
-    /// Obtain an established connection immediately or wait until one becomes available.
+    /// Obtains a connection to the destination.
     pub fn dispatch(&self) -> Dispatch {
-        // Add a waiter to the pool. When the Manager is able to obtain
         let (waiter, pending) = oneshot::channel();
-        if let Err(_) = self.0.send(waiter) {
+        let result = match self.0.send(waiter) {
             // XXX what should we actually do here?
-            Dispatch(Some(Err(io::ErrorKind::Other.into())))
-        } else {
-            Dispatch(Some(Ok(pending)))
-        }
+            Err(_) => Err(io::ErrorKind::Other.into()),
+            Ok(_) => Ok(pending),
+        };
+        Dispatch(Some(result))
     }
 }
 
 pub struct Dispatch(Option<io::Result<oneshot::Receiver<DstConnection>>>);
+
 impl Future for Dispatch {
     type Item = DstConnection;
     type Error = io::Error;

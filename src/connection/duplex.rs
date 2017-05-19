@@ -1,7 +1,7 @@
 use super::half_duplex::{self, HalfDuplex};
-use super::super::connection::ConnectionCtx;
-use super::super::lb::{EndpointCtx, DstConnection};
-use super::super::server::{ServerCtx, SrcConnection};
+use super::super::connection::{ConnectionCtx, ctx};
+use super::super::lb::{DstCtx, DstConnection};
+use super::super::server::SrcConnection;
 use futures::{Async, Future, Poll};
 use std::cell::RefCell;
 use std::io;
@@ -10,8 +10,8 @@ use std::rc::Rc;
 //use tacho;
 
 pub struct DuplexCtx {
-    pub src: ConnectionCtx<ServerCtx>,
-    pub dst: ConnectionCtx<EndpointCtx>,
+    pub src: ConnectionCtx<ctx::Null>,
+    pub dst: ConnectionCtx<DstCtx>,
 }
 
 pub struct Summary {
@@ -38,8 +38,8 @@ impl Duplex {
         let dst_socket = Rc::new(RefCell::new(dst.socket));
         Duplex {
             ctx: Some(DuplexCtx {
-                          src: src.context,
-                          dst: dst.context,
+                          src: src.ctx,
+                          dst: dst.ctx,
                       }),
 
             to_dst: Some(half_duplex::new(src_socket.clone(), src_socket.clone(), buf.clone())),

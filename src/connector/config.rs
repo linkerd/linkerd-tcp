@@ -5,7 +5,6 @@ use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
 use std::time;
-use tokio_core::reactor::Handle;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "kind")]

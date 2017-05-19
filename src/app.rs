@@ -6,7 +6,7 @@ use super::{resolver, router, server};
 use super::ConfigError;
 use super::connector::ConnectorFactoryConfig;
 use super::lb::BalancerFactory;
-use futures::future;
+use futures::{Future, future};
 use futures::sync::oneshot;
 use serde_json;
 use serde_yaml;
@@ -19,7 +19,7 @@ use tokio_core::reactor::{Core, Handle};
 
 const DEFAULT_BUFFER_SIZE_BYTES: usize = 16 * 1024;
 const DEFAULT_MINIMUM_CONNECTIONS: usize = 1;
-const DEFAULT_MAXIMUM_WAITERS: usize = 128;
+//TODO const DEFAULT_MAXIMUM_WAITERS: usize = 128;
 
 /// Holds the configuration for a linkerd-tcp instance.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -50,8 +50,7 @@ impl AppConfig {
     /// Build an AppSpawner from a configuration.
     pub fn into_app(mut self) -> Result<AppSpawner, ConfigError> {
         let buf = {
-            let sz = self.buffer_size_bytes
-                .unwrap_or(DEFAULT_BUFFER_SIZE_BYTES);
+            let sz = self.buffer_size_bytes.unwrap_or(DEFAULT_BUFFER_SIZE_BYTES);
             Rc::new(RefCell::new(vec![0 as u8; sz]))
         };
 
@@ -69,7 +68,7 @@ impl AppConfig {
         }
 
         let admin = AdminRunner {
-            metrics: metrics_rx,
+            _metrics: metrics_rx,
             resolvers: resolvers,
         };
 
@@ -141,14 +140,15 @@ pub struct RouterSpawner {
 impl RouterSpawner {
     pub fn spawn(mut self, reactor: &Handle) -> Result<(), ConfigError> {
         while let Some(unbound) = self.servers.pop_front() {
-            let bound = unbound.bind(reactor);
+            let bound = unbound.bind(reactor).expect("failed to bind");
+            reactor.spawn(bound.map_err(|_| {}));
         }
-        unimplemented!();
+        Ok(())
     }
 }
 
 pub struct AdminRunner {
-    metrics: tacho::Reporter,
+    _metrics: tacho::Reporter,
     resolvers: VecDeque<resolver::Executor>,
 }
 

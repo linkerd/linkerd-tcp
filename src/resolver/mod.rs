@@ -1,6 +1,6 @@
 use super::{DstAddr, Path};
-use futures::{Future, Sink, Stream, Poll, Async};
-use futures::sync::{mpsc, oneshot};
+use futures::{Future, Stream, Poll, Async};
+use futures::sync::mpsc;
 use tokio_core::reactor::Handle;
 use tokio_timer::TimerError;
 
@@ -18,7 +18,7 @@ pub enum Error {
 }
 
 impl<T> From<mpsc::SendError<T>> for Error {
-    fn from(e: mpsc::SendError<T>) -> Error {
+    fn from(_e: mpsc::SendError<T>) -> Error {
         Error::Rejected
     }
 }
@@ -71,6 +71,7 @@ pub struct Resolve {
     pending: Option<::std::result::Result<Option<Result<Vec<DstAddr>>>, ()>>,
     stream: Option<mpsc::UnboundedReceiver<Result<Vec<DstAddr>>>>,
 }
+
 impl Stream for Resolve {
     type Item = Result<Vec<DstAddr>>;
     type Error = ();
@@ -86,16 +87,17 @@ impl Stream for Resolve {
         match self.stream.take() {
             None => Ok(Async::Ready(None)),
             Some(mut stream) => {
-                let mut most_recent_result: Option<Result<Vec<DstAddr>>> = None;
+                let mut last_result: Option<Result<Vec<DstAddr>>> = None;
                 loop {
                     match stream.poll() {
                         Ok(Async::Ready(Some(result))) => {
                             // Note the most recent result
-                            most_recent_result = Some(result);
+                            last_result = Some(result);
+                            continue;
                         }
                         Err(e) => {
                             self.stream = Some(stream);
-                            match most_recent_result {
+                            match last_result {
                                 None => {
                                     return Err(e);
                                 }
@@ -107,13 +109,13 @@ impl Stream for Resolve {
                         }
                         Ok(Async::NotReady) => {
                             self.stream = Some(stream);
-                            return match most_recent_result {
+                            return match last_result {
                                        None => Ok(Async::NotReady),
                                        Some(result) => Ok(Async::Ready(Some(result))),
                                    };
                         }
                         Ok(Async::Ready(None)) => {
-                            match most_recent_result {
+                            match last_result {
                                 None => {
                                     return Ok(Async::Ready(None));
                                 }

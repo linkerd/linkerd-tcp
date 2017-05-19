@@ -1,28 +1,30 @@
 use super::{Path, Socket};
 use std::net;
 
+pub mod ctx;
 mod duplex;
 mod half_duplex;
 
+pub use self::ctx::Ctx;
 pub use self::duplex::{Duplex, Summary};
 
-pub struct ConnectionCtx<E> {
+pub struct ConnectionCtx<C> {
     local_addr: net::SocketAddr,
     peer_addr: net::SocketAddr,
     dst_name: Path,
-    endpoint: E,
+    ctx: C,
 }
-impl<E> ConnectionCtx<E> {
+impl<C: Ctx> ConnectionCtx<C> {
     pub fn new(local: net::SocketAddr,
                peer: net::SocketAddr,
                dst: Path,
-               ep: E)
-               -> ConnectionCtx<E> {
+               ctx: C)
+               -> ConnectionCtx<C> {
         ConnectionCtx {
             local_addr: local,
             peer_addr: peer,
             dst_name: dst,
-            endpoint: ep,
+            ctx: ctx,
         }
     }
 
@@ -38,28 +40,29 @@ impl<E> ConnectionCtx<E> {
         &self.dst_name
     }
 
-    pub fn endpoint(&self) -> &E {
-        &self.endpoint
+    pub fn ctx(&self) -> &C {
+        &self.ctx
     }
 }
 
 /// A src or dst connection.
-pub struct Connection<E> {
-    pub context: ConnectionCtx<E>,
+pub struct Connection<C> {
+    pub ctx: ConnectionCtx<C>,
     pub socket: Socket,
 }
-impl<E> Connection<E> {
-    pub fn new(dst: Path, sock: Socket, ctx: E) -> Connection<E> {
+impl<C: Ctx> Connection<C> {
+    pub fn new(dst: Path, sock: Socket, ctx: C) -> Connection<C> {
         Connection {
-            context: ConnectionCtx::new(sock.local_addr(), sock.peer_addr(), dst, ctx),
+            ctx: ConnectionCtx::new(sock.local_addr(), sock.peer_addr(), dst, ctx),
             socket: sock,
         }
     }
 
     pub fn peer_addr(&self) -> net::SocketAddr {
-        self.context.peer_addr
+        self.ctx.peer_addr
     }
+
     pub fn local_addr(&self) -> net::SocketAddr {
-        self.context.local_addr
+        self.ctx.local_addr
     }
 }

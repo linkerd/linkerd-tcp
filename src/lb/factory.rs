@@ -1,5 +1,5 @@
-use super::{DstAddr, Balancer};
-use super::super::{ConfigError, Path, resolver};
+use super::Balancer;
+use super::super::{ConfigError, Path};
 use super::super::connector::ConnectorFactory;
 use std::cell::RefCell;
 use std::rc::Rc;
