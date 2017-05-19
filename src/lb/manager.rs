@@ -289,6 +289,8 @@ impl Endpoint {
     fn mk_ctx(&mut self, local_addr: net::SocketAddr) -> DstCtx {
         let (tx, rx) = oneshot::channel();
         self.completing.push_back(rx);
+        // Later, we should attach something to the ctx to get a clue about throughput to
+        // the endpoint.
         DstCtx::new(self.dst_name.clone(), local_addr, self.peer_addr, tx)
     }
 

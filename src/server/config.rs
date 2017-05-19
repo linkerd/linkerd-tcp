@@ -1,5 +1,4 @@
-use super::Unbound;
-use super::sni::{self, Sni};
+use super::{Unbound, sni};
 use super::super::ConfigError;
 use super::super::router::Router;
 use rustls;
@@ -50,7 +49,7 @@ impl ServerConfig {
             ServerConfig::Tls {
                 ref addr,
                 ref dst_name,
-                //ref alpn_protocols,
+                ref alpn_protocols,
                 ref default_identity,
                 ref identities,
                 ..
@@ -58,7 +57,9 @@ impl ServerConfig {
                 let tls = {
                     let mut tls = rustls::ServerConfig::new();
                     let sni = sni::new(identities, default_identity)?;
-                    // XXX apply SNI, alpn, ...
+                    if let Some(protos) = alpn_protocols.as_ref() {
+                        tls.set_protocols(protos);
+                    }
                     tls.cert_resolver = Box::new(sni);
                     super::Tls { config: Arc::new(tls) }
                 };
