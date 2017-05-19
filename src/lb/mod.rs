@@ -53,6 +53,7 @@ impl Balancer {
     }
 }
 
+#[derive(Debug)]
 struct Summary {
     _name: Path,
     local_addr: net::SocketAddr,
@@ -63,6 +64,7 @@ struct Summary {
     write_bytes: usize,
 }
 
+// TODO update metrics directly.
 pub struct DstCtx {
     summary: Option<Summary>,
     tx: Option<oneshot::Sender<Summary>>,
