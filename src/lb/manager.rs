@@ -4,14 +4,12 @@ use super::super::Path;
 use super::super::connection::Connection;
 use super::super::connector::{Connector, Connecting};
 use super::super::resolver::{self, Resolve};
-use futures::{Future, Stream, Poll, Async, AsyncSink};
+use futures::{Future, Stream, Poll, Async};
 use futures::unsync::{mpsc, oneshot};
 use ordermap::OrderMap;
 use rand::{self, Rng};
 use std::{cmp, net};
-use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::rc::Rc;
 use tokio_core::reactor::Handle;
 
 pub fn new(dst: Path,
@@ -227,7 +225,6 @@ impl Manager {
                     } else if ep.is_idle() {
                         drop(ep);
                     } else {
-                        let mut ep = ep;
                         // self.pending_connections -= ep.connecting.len();
                         // self.established_connections -= ep.connected.len();
                         self.retired.insert(addr, ep);
@@ -244,18 +241,7 @@ impl Manager {
             for (addr, weight) in dsts.drain(..) {
                 let mut ep = self.available
                     .entry(addr)
-                    .or_insert_with(|| {
-                        Endpoint {
-                            dst_name: name.clone(),
-                            peer_addr: addr,
-                            weight: weight,
-                            load: ::std::f32::MAX,
-                            connecting: VecDeque::default(),
-                            connected: VecDeque::default(),
-                            dispatchees: VecDeque::default(),
-                            completing: VecDeque::default(),
-                        }
-                    });
+                    .or_insert_with(|| Endpoint::new(name.clone(), addr, weight));
                 ep.weight = weight;
             }
         }
@@ -293,7 +279,6 @@ impl Endpoint {
             peer_addr: addr,
             weight: weight,
             load: ::std::f32::MAX,
-            //ctx: EndpointCtx::new(addr, dst),
             connecting: VecDeque::default(),
             connected: VecDeque::default(),
             dispatchees: VecDeque::default(),
@@ -312,15 +297,16 @@ impl Endpoint {
         self.connecting.is_empty() && self.dispatchees.is_empty()
     }
 
-    fn send_to_dispatchee(&mut self, conn: DstConnection) -> Result<(), DstConnection> {
-        if let Some(waiter) = self.dispatchees.pop_front() {
-            return match waiter.send(conn) {
-                       Err(conn) => self.send_to_dispatchee(conn),
-                       Ok(()) => Ok(()),
-                   };
-        }
-        Err(conn)
-    }
+    // XXX
+    // fn send_to_dispatchee(&mut self, conn: DstConnection) -> Result<(), DstConnection> {
+    //     if let Some(waiter) = self.dispatchees.pop_front() {
+    //         return match waiter.send(conn) {
+    //                    Err(conn) => self.send_to_dispatchee(conn),
+    //                    Ok(()) => Ok(()),
+    //                };
+    //     }
+    //     Err(conn)
+    // }
 
     fn dispatch(&mut self, d: Dispatchee) {
         match self.connected.pop_front() {
@@ -332,87 +318,6 @@ impl Endpoint {
                 }
             }
         }
-    }
-}
-
-/// The state of a load balaner endpoint.
-#[derive(Clone, Debug)]
-pub struct EndpointCtx(Rc<RefCell<InnerEndpointCtx>>);
-
-#[derive(Debug)]
-struct InnerEndpointCtx {
-    peer_addr: net::SocketAddr,
-    dst_name: Path,
-    connect_attempts: usize,
-    connect_failures: usize,
-    connect_successes: usize,
-    disconnects: usize,
-    bytes_to_dst: usize,
-    bytes_to_src: usize,
-}
-
-impl EndpointCtx {
-    pub fn new(addr: net::SocketAddr, dst: Path) -> EndpointCtx {
-        let inner = InnerEndpointCtx {
-            peer_addr: addr,
-            dst_name: dst,
-            connect_attempts: 0,
-            connect_failures: 0,
-            connect_successes: 0,
-            disconnects: 0,
-            bytes_to_dst: 0,
-            bytes_to_src: 0,
-        };
-        EndpointCtx(Rc::new(RefCell::new(inner)))
-    }
-
-    pub fn dst_name(&self) -> Path {
-        self.0.borrow().dst_name.clone()
-    }
-
-    pub fn peer_addr(&self) -> net::SocketAddr {
-        let s = self.0.borrow();
-        (*s).peer_addr
-    }
-
-    pub fn active(&self) -> usize {
-        let InnerEndpointCtx {
-            connect_successes,
-            disconnects,
-            ..
-        } = *self.0.borrow();
-
-        connect_successes - disconnects
-    }
-
-    pub fn connect_init(&self) {
-        let mut s = self.0.borrow_mut();
-        (*s).connect_attempts += 1;
-    }
-
-    pub fn connect_ok(&self) {
-        let mut s = self.0.borrow_mut();
-        (*s).connect_successes += 1;
-    }
-
-    pub fn connect_fail(&self) {
-        let mut s = self.0.borrow_mut();
-        (*s).connect_failures += 1;
-    }
-
-    pub fn disconnect(&self) {
-        let mut s = self.0.borrow_mut();
-        (*s).disconnects += 1;
-    }
-
-    pub fn dst_write(&self, sz: usize) {
-        let mut s = self.0.borrow_mut();
-        (*s).bytes_to_dst += sz;
-    }
-
-    pub fn src_write(&self, sz: usize) {
-        let mut s = self.0.borrow_mut();
-        (*s).bytes_to_dst += sz;
     }
 }
 

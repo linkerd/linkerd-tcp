@@ -13,7 +13,7 @@ pub use self::dispatcher::{Dispatcher, Dispatch};
 //use self::endpoint::Endpoint;
 //pub use self::endpoint::EndpointCtx;
 pub use self::factory::BalancerFactory;
-pub use self::manager::{Manager, Managing, EndpointCtx};
+pub use self::manager::{Manager, Managing};
 //use self::pool::Pool;
 
 pub type DstConnection = super::Connection<DstCtx>;
