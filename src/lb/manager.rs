@@ -26,6 +26,7 @@ pub fn new(dst: Path,
         available: OrderMap::default(),
         retired: OrderMap::default(),
         selects: selects,
+        meta: ManagerMeta::default(),
     }
 }
 
@@ -46,6 +47,15 @@ pub struct Manager {
 
     /// Requests from a `Selector` for a `DstConnection`.
     selects: mpsc::UnboundedReceiver<SelectRequest>,
+
+    meta: ManagerMeta,
+}
+
+#[derive(Debug, Default)]
+struct ManagerMeta {
+    connecting: usize,
+    connected: usize,
+    completing: usize,
 }
 
 type Completing = oneshot::Receiver<Summary>;
@@ -58,7 +68,7 @@ impl Manager {
         }
     }
 
-    fn dispatch(&mut self) {
+    fn dispatch_selects(&mut self) {
         // If there are no endpoints to select from, we can't do anything.
         if self.available.is_empty() {
             // XXX we could fail these waiters here.  I'd prefer to rely on a timeout in
@@ -129,18 +139,17 @@ impl Manager {
         }
     }
 
-    fn poll_endpoints(&mut self) -> ConnectionPollSummary {
-        let mut summary = ConnectionPollSummary::default();
+    fn poll_endpoints(&mut self) {
+        let mut connecting = 0;
+        let mut connected = 0;
+        let mut completing = 0;
 
         // Poll all of the pending connections to see if they're done.
         for mut ep in self.available.values_mut().chain(self.retired.values_mut()) {
             for _ in 0..ep.connecting.len() {
                 let mut fut = ep.connecting.pop_front().unwrap();
                 match fut.poll() {
-                    Err(e) => {
-                        info!("conneection failed: {}: {}", ep.peer_addr, e);
-                        summary.failed += 1;
-                    }
+                    Err(e) => info!("conneection failed: {}: {}", ep.peer_addr, e),
                     Ok(Async::NotReady) => ep.connecting.push_back(fut),
                     Ok(Async::Ready(sock)) => {
                         let ctx = ep.mk_ctx(sock.local_addr());
@@ -156,50 +165,80 @@ impl Manager {
                     Ok(Async::NotReady) => ep.completing.push_back(fut),
                     Ok(Async::Ready(conn_summary)) => {
                         debug!("connection complete: {:?}", conn_summary);
-                        summary.completed += 1;
                     }
                     Err(_) => {
                         error!("lost connection to {}", ep.peer_addr);
-                        summary.completed += 1;
                     }
                 }
             }
 
-            summary.pending += ep.connecting.len();;
-            summary.connected += ep.connected.len();
+            connecting += ep.connecting.len();;
+            connected += ep.connected.len();
+            completing += ep.completing.len();
         }
 
-        summary
+        self.meta.connecting = connecting;
+        self.meta.connected = connected;
+        self.meta.completing = completing;
     }
 
-    // while !self.available.is_empty() &&
-    //       summary.connected + summary.pending < self.minimum_connections {
-    //     for mut ep in self.available.values_mut() {
-    //         let mut fut = self.connector.connect(&ep.peer_addr, &self.reactor);
-    //         // Poll the new connection immediately so that task notification is
-    //         // established.
-    //         match fut.poll() {
-    //             Ok(Async::NotReady) => {
-    //                 // XXX ep.connecting.push_back(fut);
-    //                 summary.pending += 1;
-    //             }
-    //             Ok(Async::Ready(sock)) => {
-    //                 // XXX ep.ctx.connect_ok();
-    //                 summary.connected += 1;
-    //                 let ctx = ep.mk_ctx(sock.local_addr());
-    //                 let conn = Connection::new(self.dst_name.clone(), sock, ctx);
-    //                 ep.connected.push_back(conn)
-    //             }
-    //             Err(_) => {
-    //                 // XXX ep.ctx.connect_fail();
-    //                 summary.failed += 1
-    //             }
-    //         }
-    //         if summary.connected + summary.pending == self.minimum_connections {
-    //             break;
-    //         }
-    //     }
-    // }
+    pub fn init_connects(&mut self) {
+        if self.available.is_empty() {
+            return;
+        }
+
+        // Ensure that each endpoint has enough connections for all of its pending selecitons.
+        for mut ep in self.available.values_mut().chain(self.retired.values_mut()) {
+            let needed = ep.waiters.len() - (ep.connecting.len() + ep.connected.len());
+            for _ in 0..needed {
+                let mut conn = self.connector.connect(&ep.peer_addr, &self.reactor);
+                // Poll the new connection immediately so that task notification is
+                // established.
+                match conn.poll() {
+                    Ok(Async::NotReady) => {
+                        ep.connecting.push_back(conn);
+                        self.meta.connecting += 1;
+                    }
+                    Ok(Async::Ready(sock)) => {
+                        self.meta.connected += 1;
+                        let ctx = ep.mk_ctx(sock.local_addr());
+                        let conn = Connection::new(self.dst_name.clone(), sock, ctx);
+                        ep.connected.push_back(conn);
+                    }
+                    Err(e) => {
+                        // TODO track consecutive failures.
+                        error!("connection failed: {}: {}", ep.peer_addr, e);
+                    }
+                }
+            }
+        }
+
+        while self.meta.connecting + self.meta.connected < self.minimum_connections {
+            for mut ep in self.available.values_mut() {
+                let mut fut = self.connector.connect(&ep.peer_addr, &self.reactor);
+                // Poll the new connection immediately so that task notification is
+                // established.
+                match fut.poll() {
+                    Ok(Async::NotReady) => {
+                        ep.connecting.push_back(fut);
+                        self.meta.connecting += 1;
+                    }
+                    Ok(Async::Ready(sock)) => {
+                        self.meta.connecting += 1;
+                        let ctx = ep.mk_ctx(sock.local_addr());
+                        let conn = Connection::new(self.dst_name.clone(), sock, ctx);
+                        ep.connected.push_back(conn);
+                    }
+                    Err(_) => {
+                        self.meta.connecting += 1;
+                    }
+                }
+                if self.meta.connecting + self.meta.connected == self.minimum_connections {
+                    break;
+                }
+            }
+        }
+    }
 
     pub fn update_resolved(&mut self, resolved: resolver::Result<Vec<DstAddr>>) {
         if let Ok(ref resolved) = resolved {
@@ -277,7 +316,7 @@ struct Endpoint {
     connected: VecDeque<DstConnection>,
 
     /// Queues dispatch requests for connections.
-    selects: VecDeque<SelectRequest>,
+    waiters: VecDeque<SelectRequest>,
 
     /// Holds a future that will be completed when streaming is complete.
     ///
@@ -297,7 +336,7 @@ impl Endpoint {
             load: ::std::f32::MAX,
             connecting: VecDeque::default(),
             connected: VecDeque::default(),
-            selects: VecDeque::default(),
+            waiters: VecDeque::default(),
             completing: VecDeque::default(),
         }
     }
@@ -312,7 +351,7 @@ impl Endpoint {
 
     fn is_idle(&self) -> bool {
         // XXX this should
-        self.connecting.is_empty() && self.selects.is_empty()
+        self.connecting.is_empty() && self.waiters.is_empty()
     }
 
     // XXX
@@ -328,7 +367,7 @@ impl Endpoint {
 
     fn dispatch(&mut self, d: SelectRequest) {
         match self.connected.pop_front() {
-            None => self.selects.push_back(d),
+            None => self.waiters.push_back(d),
             Some(conn) => {
                 if let Err(conn) = d.send(conn) {
                     // SelectRequest no longer waiting. save the connection for later.
@@ -350,25 +389,38 @@ impl Future for Managing {
 
     fn poll(&mut self) -> Poll<(), Error> {
         // TODO track a stat for execution time.
+
+        // Check pending and active conncetions for updates
+        self.manager.poll_endpoints();
+
         loop {
-            // Check pending and active conncetions for updates
-            self.manager.poll_endpoints();
-
-            //
-            self.manager.dispatch();
-
             // Update the load balancer from service discovery.
             match self.resolve.poll() {
-                Err(_) => error!("unexpected resolver error!"),
-                Ok(Async::NotReady) => {}
+                Err(_) => {
+                    // TODO increment a stat.
+                    error!("unexpected resolver error!");
+                    // TODO technically we should continue to poll until not ready, but...
+                    break;
+                }
+                Ok(Async::NotReady) => {
+                    break;
+                }
                 Ok(Async::Ready(None)) => {
-                    return Err(Error::ResolverLost());
+                    error!("resolver lost");
+                    // TODO increment a stat.
+                    break;
                 }
                 Ok(Async::Ready(Some(resolved))) => {
                     self.manager.update_resolved(resolved);
+                    continue;
                 }
             }
         }
+
+        self.manager.dispatch_selects();
+        self.manager.init_connects();
+
+        Ok(Async::NotReady)
     }
 }
 
