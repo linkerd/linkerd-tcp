@@ -1,5 +1,5 @@
-use super::Path;
-use super::lb::{Balancer, BalancerFactory, Dispatcher};
+use super::{ConfigError, Path};
+use super::lb::{Balancer, BalancerFactory, Dispatcher, Dispatch};
 use super::resolver::{Resolver, Resolve};
 use futures::{Future, Stream, Poll, Async};
 use std::cell::RefCell;
@@ -32,7 +32,7 @@ impl Router {
 }
 
 struct InnerRouter {
-    routes: HashMap<Path, Rc<RefCell<Option<RouteState>>>>,
+    routes: HashMap<Path, Dispatcher>,
     resolver: Resolver,
     factory: BalancerFactory,
 }
@@ -40,23 +40,28 @@ struct InnerRouter {
 impl InnerRouter {
     fn route(&mut self, dst: &Path, reactor: &Handle) -> Route {
         // Try to get a balancer from the cache.
-        if let Some(state) = self.routes.get(dst) {
-            return Route(Some(state.clone()));
+        if let Some(route) = self.routes.get(dst) {
+            return Route(Some(Ok(route.clone())));
         }
 
-        let new_route = {
-            let resolve = self.resolver.resolve(dst.clone());
-            let factory = self.factory.clone();
-            let s = RouteState::Pending(reactor.clone(), resolve, dst.clone(), factory);
-            Rc::new(RefCell::new(Some(s)))
-        };
-        self.routes.insert(dst.clone(), new_route.clone());
-        Route(Some(new_route))
+        match self.factory.mk_balancer(&reactor, &dst) {
+            Err(e) => Route(Some(Err(e))),
+            Ok(Balancer {
+                   dispatcher,
+                   manager,
+               }) => {
+                let resolve = self.resolver.resolve(dst.clone());
+                reactor.spawn(manager.manage(resolve));
+
+                self.routes.insert(dst.clone(), dispatcher.clone());
+                Route(Some(Ok(dispatcher)))
+            }
+        }
     }
 }
 
 enum RouteState {
-    Pending(Handle, Resolve, Path, BalancerFactory),
+    Pending(Handle, Resolve, Path, Balancer),
     Ready(Dispatcher),
 }
 
@@ -64,44 +69,17 @@ enum RouteState {
 ///
 ///
 #[derive(Clone)]
-pub struct Route(Option<Rc<RefCell<Option<RouteState>>>>);
-
+pub struct Route(Option<Result<Dispatcher, ConfigError>>);
 impl Future for Route {
     type Item = Dispatcher;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let state_ref = self.0.take().expect("route polled after completion");
-        let mut state = state_ref.borrow_mut();
-        match state.take() {
-            None => Err(io::Error::new(io::ErrorKind::Other, "route nullified")),
-            Some(RouteState::Pending(reactor, mut resolve, dst, factory)) => {
-                match resolve.poll() {
-                    Ok(Async::NotReady) => Ok(Async::NotReady),
-                    Err(()) => Err(io::Error::new(io::ErrorKind::Other, "resolution error")),
-                    Ok(Async::Ready(None)) => {
-                        Err(io::Error::new(io::ErrorKind::Other,
-                                           "resolution stream ended prematurely"))
-                    }
-                    Ok(Async::Ready(Some(result))) => {
-                        match factory.mk_balancer(&reactor, &dst, result) {
-                            Err(e) => {
-                                Err(io::Error::new(io::ErrorKind::Other,
-                                                   format!("failed to build balancer: {}", e)))
-                            }
-                            Ok(Balancer {
-                                   dispatcher,
-                                   manager,
-                               }) => {
-                                reactor.spawn(manager.manage(resolve));
-                                *state = Some(RouteState::Ready(dispatcher.clone()));
-                                Ok(Async::Ready(dispatcher))
-                            }
-                        }
-                    }
-                }
-            }
-            Some(RouteState::Ready(bal)) => Ok(Async::Ready(bal.clone())),
+        match self.0
+                  .take()
+                  .expect("route must not be polled more than once") {
+            Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("config error: {}", e))),
+            Ok(dispatcher) => Ok(Async::Ready(dispatcher)),
         }
     }
 }

@@ -98,7 +98,7 @@ pub struct RouterConfig {
     pub client: Option<ConnectorFactoryConfig>,
 
     pub minimum_connections: Option<usize>,
-    pub maximum_waiters: Option<usize>,
+    // TODO pub maximum_waiters: Option<usize>,
 }
 
 impl RouterConfig {
@@ -115,9 +115,8 @@ impl RouterConfig {
         let balancer = {
             let min_conns = self.minimum_connections
                 .unwrap_or(DEFAULT_MINIMUM_CONNECTIONS);
-            let max_waiters = self.maximum_waiters.unwrap_or(DEFAULT_MAXIMUM_WAITERS);
             let client = self.client.unwrap_or_default().mk_connector_factory()?;
-            BalancerFactory::new(min_conns, max_waiters, client)
+            BalancerFactory::new(min_conns, client)
         };
         let router = router::new(resolver, balancer);
 

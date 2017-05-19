@@ -5,30 +5,29 @@ use std::collections::VecDeque;
 use std::net;
 use std::rc::Rc;
 
-pub struct Endpoint {
-    pub weight: f32,
-    pub load: f32,
-    pub ctx: EndpointCtx,
-    pub connecting: VecDeque<Connecting>,
-    pub connected: VecDeque<Connection<EndpointCtx>>,
-}
+// pub struct Endpoint {
+//     pub ctx: EndpointCtx,
+//     pub connecting: VecDeque<Connecting>,
+//     pub connected: VecDeque<Connection<EndpointCtx>>,
+//     pub waiters: VecDeque<Waiter>,
+// }
 
-impl Endpoint {
-    pub fn new(dst: Path, addr: net::SocketAddr, weight: f32) -> Endpoint {
-        Endpoint {
-            weight: weight,
-            load: 0.0,
-            ctx: EndpointCtx::new(addr, dst),
-            connecting: VecDeque::default(),
-            connected: VecDeque::default(),
-        }
-    }
+// impl Endpoint {
+//     pub fn new(dst: Path, addr: net::SocketAddr, weight: f32) -> Endpoint {
+//         Endpoint {
+//             weight: weight,
+//             load: 0.0,
+//             ctx: EndpointCtx::new(addr, dst),
+//             connecting: VecDeque::default(),
+//             connected: VecDeque::default(),
+//         }
+//     }
 
-    pub fn clear_connections(&mut self) {
-        self.connecting.clear();
-        self.connected.clear();
-    }
-}
+//     pub fn clear_connections(&mut self) {
+//         self.connecting.clear();
+//         self.connected.clear();
+//     }
+// }
 
 
 /// The state of a load balaner endpoint.
