@@ -1,5 +1,5 @@
 use super::{ConfigError, Path};
-use super::lb::{Balancer, BalancerFactory, Dispatcher};
+use super::lb::{Balancer, BalancerFactory, Selector};
 use super::resolver::Resolver;
 use futures::{Future, Poll, Async};
 use std::cell::RefCell;
@@ -32,7 +32,7 @@ impl Router {
 }
 
 struct InnerRouter {
-    routes: HashMap<Path, Dispatcher>,
+    routes: HashMap<Path, Selector>,
     resolver: Resolver,
     factory: BalancerFactory,
 }
@@ -46,15 +46,12 @@ impl InnerRouter {
 
         match self.factory.mk_balancer(reactor, dst) {
             Err(e) => Route(Some(Err(e))),
-            Ok(Balancer {
-                   dispatcher,
-                   manager,
-               }) => {
+            Ok(Balancer { selector, manager }) => {
                 let resolve = self.resolver.resolve(dst.clone());
                 reactor.spawn(manager.manage(resolve).map_err(|_| {}));
 
-                self.routes.insert(dst.clone(), dispatcher.clone());
-                Route(Some(Ok(dispatcher)))
+                self.routes.insert(dst.clone(), selector.clone());
+                Route(Some(Ok(selector)))
             }
         }
     }
@@ -64,9 +61,9 @@ impl InnerRouter {
 ///
 ///
 #[derive(Clone)]
-pub struct Route(Option<Result<Dispatcher, ConfigError>>);
+pub struct Route(Option<Result<Selector, ConfigError>>);
 impl Future for Route {
-    type Item = Dispatcher;
+    type Item = Selector;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -74,7 +71,7 @@ impl Future for Route {
                   .take()
                   .expect("route must not be polled more than once") {
             Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("config error: {}", e))),
-            Ok(dispatcher) => Ok(Async::Ready(dispatcher)),
+            Ok(selector) => Ok(Async::Ready(selector)),
         }
     }
 }

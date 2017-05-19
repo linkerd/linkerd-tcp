@@ -96,7 +96,7 @@ impl Future for Bound {
                                  })
                     };
 
-                    // Obtain a dispatcher.
+                    // Obtain a selector.
                     let dst = self.meta.router.route(&self.meta.dst_name, &self.reactor);
 
                     // Once the incoming connection is ready and we have a balancer ready, obtain an
@@ -107,8 +107,9 @@ impl Future for Bound {
                         let buf = self.meta.buf.clone();
                         src.join(dst)
                             .and_then(move |(src, dst)| {
-                                          dst.dispatch()
-                                              .and_then(move |dst| Duplex::new(src, dst, buf))
+                                          dst.select().and_then(move |dst| {
+                                                                    Duplex::new(src, dst, buf)
+                                                                })
                                       })
                     };
 

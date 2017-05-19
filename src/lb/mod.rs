@@ -5,15 +5,16 @@ use futures::unsync::{mpsc, oneshot};
 use std::net;
 use tokio_core::reactor::Handle;
 
-mod dispatcher;
+mod selector;
 mod factory;
 mod manager;
 
-pub use self::dispatcher::{Dispatcher, Dispatch};
 //use self::endpoint::Endpoint;
 //pub use self::endpoint::EndpointCtx;
+
 pub use self::factory::BalancerFactory;
 pub use self::manager::{Manager, Managing};
+pub use self::selector::{Selector, Select};
 //use self::pool::Pool;
 
 pub type DstConnection = super::Connection<DstCtx>;
@@ -40,7 +41,7 @@ impl DstAddr {
 
 pub struct Balancer {
     pub manager: Manager,
-    pub dispatcher: Dispatcher,
+    pub selector: Selector,
 }
 
 impl Balancer {
@@ -48,7 +49,7 @@ impl Balancer {
         let (tx, rx) = mpsc::unbounded();
         Balancer {
             manager: manager::new(dst, reactor, conn, min_conns, rx),
-            dispatcher: dispatcher::new(tx),
+            selector: selector::new(tx),
         }
     }
 }

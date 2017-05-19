@@ -1,5 +1,5 @@
 use super::{DstAddr, DstConnection, DstCtx, Summary, Error};
-use super::dispatcher::Dispatchee;
+use super::selector::SelectRequest;
 use super::super::Path;
 use super::super::connection::Connection;
 use super::super::connector::{Connector, Connecting};
@@ -16,7 +16,7 @@ pub fn new(dst: Path,
            reactor: Handle,
            conn: Connector,
            min_conns: usize,
-           dispatchees: mpsc::UnboundedReceiver<Dispatchee>)
+           selects: mpsc::UnboundedReceiver<SelectRequest>)
            -> Manager {
     Manager {
         dst_name: dst,
@@ -25,7 +25,7 @@ pub fn new(dst: Path,
         minimum_connections: min_conns,
         available: OrderMap::default(),
         retired: OrderMap::default(),
-        dispatchees: dispatchees,
+        selects: selects,
     }
 }
 
@@ -44,8 +44,8 @@ pub struct Manager {
     /// Endpointsthat are still actvie but considered unavailable for new connections.
     retired: OrderMap<net::SocketAddr, Endpoint>,
 
-    /// Requests from a `Dispatcher` for a `DstConnection`.
-    dispatchees: mpsc::UnboundedReceiver<Dispatchee>,
+    /// Requests from a `Selector` for a `DstConnection`.
+    selects: mpsc::UnboundedReceiver<SelectRequest>,
 }
 
 type Completing = oneshot::Receiver<Summary>;
@@ -66,7 +66,7 @@ impl Manager {
             return;
         }
         loop {
-            match self.dispatchees.poll() {
+            match self.selects.poll() {
                 Err(_) |
                 Ok(Async::NotReady) |
                 Ok(Async::Ready(None)) => return,
@@ -153,15 +153,15 @@ impl Manager {
             for _ in 0..ep.completing.len() {
                 let mut fut = ep.completing.pop_front().unwrap();
                 match fut.poll() {
-                    Err(_) => {
-                        summary.completed += 1;
-                        error!("lost connection to {}", ep.peer_addr);
-                    }
-                    Ok(Async::Ready(summary)) => {
-                        summary.completed += 1;
-                        debug!("connection complete: {:?}", summary);
-                    }
                     Ok(Async::NotReady) => ep.completing.push_back(fut),
+                    Ok(Async::Ready(conn_summary)) => {
+                        debug!("connection complete: {:?}", conn_summary);
+                        summary.completed += 1;
+                    }
+                    Err(_) => {
+                        error!("lost connection to {}", ep.peer_addr);
+                        summary.completed += 1;
+                    }
                 }
             }
 
@@ -277,7 +277,7 @@ struct Endpoint {
     connected: VecDeque<DstConnection>,
 
     /// Queues dispatch requests for connections.
-    dispatchees: VecDeque<Dispatchee>,
+    selects: VecDeque<SelectRequest>,
 
     /// Holds a future that will be completed when streaming is complete.
     ///
@@ -297,7 +297,7 @@ impl Endpoint {
             load: ::std::f32::MAX,
             connecting: VecDeque::default(),
             connected: VecDeque::default(),
-            dispatchees: VecDeque::default(),
+            selects: VecDeque::default(),
             completing: VecDeque::default(),
         }
     }
@@ -312,12 +312,12 @@ impl Endpoint {
 
     fn is_idle(&self) -> bool {
         // XXX this should
-        self.connecting.is_empty() && self.dispatchees.is_empty()
+        self.connecting.is_empty() && self.selects.is_empty()
     }
 
     // XXX
     // fn send_to_dispatchee(&mut self, conn: DstConnection) -> Result<(), DstConnection> {
-    //     if let Some(waiter) = self.dispatchees.pop_front() {
+    //     if let Some(waiter) = self.selects.pop_front() {
     //         return match waiter.send(conn) {
     //                    Err(conn) => self.send_to_dispatchee(conn),
     //                    Ok(()) => Ok(()),
@@ -326,12 +326,12 @@ impl Endpoint {
     //     Err(conn)
     // }
 
-    fn dispatch(&mut self, d: Dispatchee) {
+    fn dispatch(&mut self, d: SelectRequest) {
         match self.connected.pop_front() {
-            None => self.dispatchees.push_back(d),
+            None => self.selects.push_back(d),
             Some(conn) => {
                 if let Err(conn) = d.send(conn) {
-                    // Dispatchee no longer waiting. save the connection for later.
+                    // SelectRequest no longer waiting. save the connection for later.
                     self.connected.push_front(conn);
                 }
             }
@@ -377,5 +377,6 @@ struct ConnectionPollSummary {
     pending: usize,
     connected: usize,
     dispatched: usize,
+    completed: usize,
     failed: usize,
 }

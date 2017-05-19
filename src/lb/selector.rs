@@ -3,33 +3,33 @@ use futures::{Future, Poll, Async};
 use futures::unsync::{mpsc, oneshot};
 use std::io;
 
-pub fn new(waiters: mpsc::UnboundedSender<Dispatchee>) -> Dispatcher {
-    Dispatcher(waiters)
+pub fn new(waiters: mpsc::UnboundedSender<SelectRequest>) -> Selector {
+    Selector(waiters)
 }
 
 // TODO limit max waiters.
 #[derive(Clone)]
-pub struct Dispatcher(mpsc::UnboundedSender<Dispatchee>);
+pub struct Selector(mpsc::UnboundedSender<SelectRequest>);
 
-/// The response-side of a request from a `Dispatcher` for a `DstConnection`.
-pub type Dispatchee = oneshot::Sender<DstConnection>;
+/// The response-side of a request from a `Selector` for a `DstConnection`.
+pub type SelectRequest = oneshot::Sender<DstConnection>;
 
-impl Dispatcher {
+impl Selector {
     /// Obtains a connection to the destination.
-    pub fn dispatch(&self) -> Dispatch {
+    pub fn select(&self) -> Select {
         let (waiter, pending) = oneshot::channel();
         let result = match self.0.send(waiter) {
             // XXX what should we actually do here?
             Err(_) => Err(io::ErrorKind::Other.into()),
             Ok(_) => Ok(pending),
         };
-        Dispatch(Some(result))
+        Select(Some(result))
     }
 }
 
-pub struct Dispatch(Option<io::Result<oneshot::Receiver<DstConnection>>>);
+pub struct Select(Option<io::Result<oneshot::Receiver<DstConnection>>>);
 
-impl Future for Dispatch {
+impl Future for Select {
     type Item = DstConnection;
     type Error = io::Error;
 
