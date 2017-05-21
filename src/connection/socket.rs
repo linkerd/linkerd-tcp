@@ -8,15 +8,27 @@ use tokio_core::net::TcpStream;
 use tokio_io::AsyncWrite;
 
 pub fn plain(tcp: TcpStream) -> Socket {
-    Socket(Kind::Plain(tcp))
+    Socket {
+        local_addr: tcp.local_addr().expect("tcp stream has no local address"),
+        peer_addr: tcp.peer_addr().expect("tcp stream has no peer address"),
+        kind: Kind::Plain(tcp),
+    }
 }
 
 pub fn secure_client(tls: SecureStream<ClientSession>) -> Socket {
-    Socket(Kind::SecureClient(Box::new(tls)))
+    Socket {
+        local_addr: tls.local_addr(),
+        peer_addr: tls.peer_addr(),
+        kind: Kind::SecureClient(Box::new(tls)),
+    }
 }
 
 pub fn secure_server(tls: SecureStream<ServerSession>) -> Socket {
-    Socket(Kind::SecureServer(Box::new(tls)))
+    Socket {
+        local_addr: tls.local_addr(),
+        peer_addr: tls.peer_addr(),
+        kind: Kind::SecureServer(Box::new(tls)),
+    }
 }
 
 /// Hides the implementation details of socket I/O.
@@ -24,10 +36,13 @@ pub fn secure_server(tls: SecureStream<ServerSession>) -> Socket {
 /// Plaintext and encrypted (client and server) streams have different type signatures.
 /// Exposing these types to the rest of the application is painful, so `Socket` provides
 /// an opaque container for the various types of sockets supported by this proxy.
-#[derive(Debug)]
-pub struct Socket(Kind);
+pub struct Socket {
+    local_addr: SocketAddr,
+    peer_addr: SocketAddr,
+    kind: Kind,
+}
 
-// Since the rustls types are much larger than the plain types, they are boxed. Because
+// Since the rustls types are much larger than the plain type, they are boxed. Because
 // clippy says so.
 enum Kind {
     Plain(TcpStream),
@@ -35,25 +50,25 @@ enum Kind {
     SecureServer(Box<SecureStream<ServerSession>>),
 }
 
-impl fmt::Debug for Kind {
+impl fmt::Debug for Socket {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            Kind::Plain(ref s) => {
+        match self.kind {
+            Kind::Plain(_) => {
                 f.debug_struct("Plain")
-                    .field("peer", &s.peer_addr().unwrap())
-                    .field("local", &s.local_addr().unwrap())
+                    .field("peer", &self.peer_addr)
+                    .field("local", &self.local_addr)
                     .finish()
             }
-            Kind::SecureClient(ref s) => {
+            Kind::SecureClient(_) => {
                 f.debug_struct("SecureClient")
-                    .field("peer", &s.peer_addr())
-                    .field("local", &s.local_addr())
+                    .field("peer", &self.peer_addr)
+                    .field("local", &self.local_addr)
                     .finish()
             }
-            Kind::SecureServer(ref s) => {
+            Kind::SecureServer(_) => {
                 f.debug_struct("SecureServer")
-                    .field("peer", &s.peer_addr())
-                    .field("local", &s.local_addr())
+                    .field("peer", &self.peer_addr)
+                    .field("local", &self.local_addr)
                     .finish()
             }
         }
@@ -63,7 +78,7 @@ impl fmt::Debug for Kind {
 impl Socket {
     pub fn tcp_shutdown(&mut self, how: Shutdown) -> io::Result<()> {
         trace!("{:?}.tcp_shutdown({:?})", self, how);
-        match self.0 {
+        match self.kind {
             Kind::Plain(ref mut stream) => TcpStream::shutdown(stream, how),
             Kind::SecureClient(ref mut stream) => stream.tcp_shutdown(how),
             Kind::SecureServer(ref mut stream) => stream.tcp_shutdown(how),
@@ -71,19 +86,11 @@ impl Socket {
     }
 
     pub fn local_addr(&self) -> SocketAddr {
-        match self.0 {
-            Kind::Plain(ref stream) => stream.local_addr().unwrap(),
-            Kind::SecureClient(ref stream) => stream.local_addr(),
-            Kind::SecureServer(ref stream) => stream.local_addr(),
-        }
+        self.local_addr
     }
 
     pub fn peer_addr(&self) -> SocketAddr {
-        match self.0 {
-            Kind::Plain(ref stream) => stream.peer_addr().unwrap(),
-            Kind::SecureClient(ref stream) => stream.peer_addr(),
-            Kind::SecureServer(ref stream) => stream.peer_addr(),
-        }
+        self.peer_addr
     }
 }
 
@@ -91,7 +98,7 @@ impl Socket {
 impl Read for Socket {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         trace!("{:?}.read({})", self, buf.len());
-        match self.0 {
+        match self.kind {
             Kind::Plain(ref mut stream) => stream.read(buf),
             Kind::SecureClient(ref mut stream) => stream.read(buf),
             Kind::SecureServer(ref mut stream) => stream.read(buf),
@@ -103,7 +110,7 @@ impl Read for Socket {
 impl Write for Socket {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         trace!("{:?}.write({})", self, buf.len());
-        match self.0 {
+        match self.kind {
             Kind::Plain(ref mut stream) => stream.write(buf),
             Kind::SecureClient(ref mut stream) => stream.write(buf),
             Kind::SecureServer(ref mut stream) => stream.write(buf),
@@ -112,7 +119,7 @@ impl Write for Socket {
 
     fn flush(&mut self) -> io::Result<()> {
         trace!("{:?}.flush()", self);
-        match self.0 {
+        match self.kind {
             Kind::Plain(ref mut stream) => stream.flush(),
             Kind::SecureClient(ref mut stream) => stream.flush(),
             Kind::SecureServer(ref mut stream) => stream.flush(),
@@ -124,7 +131,7 @@ impl Write for Socket {
 impl AsyncWrite for Socket {
     fn shutdown(&mut self) -> Poll<(), io::Error> {
         trace!("{:?}.shutdown()", self);
-        match self.0 {
+        match self.kind {
             Kind::Plain(ref mut stream) => AsyncWrite::shutdown(stream),
             Kind::SecureClient(ref mut stream) => stream.shutdown(),
             Kind::SecureServer(ref mut stream) => stream.shutdown(),

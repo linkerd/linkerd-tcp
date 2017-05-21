@@ -1,5 +1,5 @@
 admin:
-  addr: 0.0.0.0:9989
+  port: 9989
   metricsIntervalSecs: 10
 
 routers:
@@ -8,6 +8,8 @@ routers:
     servers:
       - kind: io.l5d.tcp
         port: 7474
+        dst_name: /svc/default
+
       # - kind: io.l5d.tls
       #   port: 7575
       #   identities:

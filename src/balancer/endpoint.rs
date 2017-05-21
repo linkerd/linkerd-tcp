@@ -89,53 +89,14 @@ impl Endpoint {
         self.load() / self.weight
     }
 
-    /// Accepts a request for a connection to be provided.
-    ///
-    /// The request is satisfied immediately if possible. If there are no available
-    /// connections, the request is saved to be satisfied later when there is an available
-    /// connection.
-    pub fn dispatch_connection(&mut self, select: DstConnectionRequest) {
-        match self.connected.pop_front() {
-            None => self.waiting.push_back(select),
-            Some(sock) => {
-                let (conn, done) = self.mk_connection(sock);
-                match select.send(conn) {
-                    Ok(_) => self.completing.push_back(done),
-                    // DstConnectionRequest no longer waiting. save the connection for later.
-                    Err(conn) => self.connected.push_front(conn.socket),
-                }
-            }
-        }
-    }
-
-
-    pub fn poll(&mut self) {
-        self.poll_connecting();
-        self.poll_completing();
-        self.poll_waiting();
-    }
-
     pub fn init_connecting(&mut self,
                            count: usize,
                            connector: &Connector,
                            reactor: &Handle,
                            timer: &Timer) {
         for _ in 0..count {
-            let mut conn = connector.connect(&self.peer_addr, reactor, timer);
-
-            // Poll the new connection immediately so that task notification is
-            // established.
-            match conn.poll() {
-                Ok(Async::NotReady) => self.connecting.push_back(conn),
-                Ok(Async::Ready(sock)) => {
-                    self.connected.push_back(sock);
-                    self.consecutive_failures = 0;
-                }
-                Err(e) => {
-                    error!("{}: connection failed: {}", self.peer_addr, e);
-                    self.consecutive_failures += 1;
-                }
-            }
+            let conn = connector.connect(&self.peer_addr, reactor, timer);
+            self.track_connecting(conn);
         }
     }
 
@@ -147,46 +108,80 @@ impl Endpoint {
     }
 
     pub fn is_idle(&self) -> bool {
-        self.connecting.is_empty() && self.waiting.is_empty()
+        self.waiting.is_empty() && self.completing.is_empty()
     }
 
-    fn poll_connecting(&mut self) {
-        for _ in 0..self.connecting.len() {
-            let mut fut = self.connecting.pop_front().unwrap();
-            match fut.poll() {
-                Ok(Async::NotReady) => self.connecting.push_back(fut),
-                Ok(Async::Ready(sock)) => self.connected.push_back(sock),
-                Err(e) => error!("{}: connection failed: {}", self.peer_addr, e),
-            }
-        }
-    }
-
-    fn poll_completing(&mut self) {
-        for _ in 0..self.completing.len() {
-            let mut fut = self.completing.pop_front().unwrap();
-            match fut.poll() {
-                Ok(Async::NotReady) => self.completing.push_back(fut),
-                Ok(Async::Ready(conn_summary)) => {
-                    debug!("{}: connection complete: {:?}",
-                           self.peer_addr,
-                           conn_summary)
+    /// Accepts a request for a connection to be provided.
+    ///
+    /// The request is satisfied immediately if possible. If there are no available
+    /// connections, the request is saved to be satisfied later when there is an available
+    /// connection.
+    pub fn track_waiting(&mut self, w: DstConnectionRequest) {
+        match self.connected.pop_front() {
+            None => self.waiting.push_back(w),
+            Some(sock) => {
+                let (conn, done) = self.mk_connection(sock);
+                match w.send(conn) {
+                    // DstConnectionRequest no longer waiting. save the connection for later.
+                    Err(conn) => self.connected.push_front(conn.socket),
+                    Ok(_) => self.track_completing(done),
                 }
-                Err(_) => error!("{}: lost connection", self.peer_addr),
             }
         }
     }
 
-    fn poll_waiting(&mut self) {
+    fn track_connecting(&mut self, mut c: Connecting) {
+        match c.poll() {
+            Ok(Async::NotReady) => self.connecting.push_back(c),
+            Ok(Async::Ready(sock)) => {
+                self.connected.push_back(sock);
+                self.consecutive_failures = 0;
+            }
+            Err(_) => {
+                self.consecutive_failures += 1;
+                error!("{}: connection failed (#{})",
+                       self.peer_addr,
+                       self.consecutive_failures);
+            }
+        }
+    }
+
+    fn track_completing(&mut self, mut c: Completing) {
+        match c.poll() {
+            Err(_) => error!("{}: connection lost", self.peer_addr),
+            Ok(Async::NotReady) => self.completing.push_back(c),
+            Ok(Async::Ready(summary)) => {
+                debug!("{}: connection finished: {:?}", self.peer_addr, summary);
+            }
+        }
+    }
+
+    pub fn poll_connecting(&mut self) {
+        for _ in 0..self.connecting.len() {
+            let c = self.connecting.pop_front().unwrap();
+            self.track_connecting(c);
+        }
+    }
+
+    pub fn poll_completing(&mut self) {
+        for _ in 0..self.completing.len() {
+            let c = self.completing.pop_front().unwrap();
+            self.track_completing(c);
+        }
+    }
+
+    pub fn dispatch_waiting(&mut self) {
         while let Some(sock) = self.connected.pop_front() {
             let (conn, done) = self.mk_connection(sock);
             if let Err(conn) = self.dispatch_to_next_waiter(conn) {
                 self.connected.push_front(conn.socket);
                 return;
             } else {
-                self.completing.push_back(done);
+                self.track_completing(done);
             }
         }
     }
+
     fn dispatch_to_next_waiter(&mut self, conn: DstConnection) -> Result<(), DstConnection> {
         if let Some(waiter) = self.waiting.pop_front() {
             return match waiter.send(conn) {

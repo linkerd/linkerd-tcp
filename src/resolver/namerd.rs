@@ -127,11 +127,11 @@ impl Stream for Addrs {
                     match fut.poll() {
                         Err(e) => {
                             self.state = Some(State::Waiting(int));
-                            return Ok(Some(Err(e)).into());
+                            return Ok(Async::Ready(Some(Err(e))));
                         }
                         Ok(Async::Ready(addrs)) => {
                             self.state = Some(State::Waiting(int));
-                            return Ok(Some(Ok(addrs)).into());
+                            return Ok(Async::Ready(Some(Ok(addrs))));
                         }
                         Ok(Async::NotReady) => {
                             self.state = Some(State::Pending(fut, int));

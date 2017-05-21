@@ -41,6 +41,7 @@ fn main() {
             .expect("failed to read config");
         txt.parse().expect("configuration error")
     };
+    debug!("parsed config: {:?}", config);
 
     let mut core = Core::new().expect("failed to initialize admin reactor");
 
@@ -50,6 +51,7 @@ fn main() {
     // both admin and serving work.
     let AppSpawner { mut routers, admin } =
         config.into_app().expect("failed to load configuration");
+    debug!("loaded app");
 
     let (closer, closed) = app::closer();
 
@@ -65,6 +67,7 @@ fn main() {
             .name("admin".into())
             .spawn(move || {
                        let mut core = Core::new().expect("failed to initialize admin reactor");
+                       debug!("running admin server");
                        admin
                            .run(closer, &mut core, &timer)
                            .expect("failed to run the admin server");
@@ -75,10 +78,12 @@ fn main() {
     // Schedule all routers on the main thread.
     let handle = core.handle();
     while let Some(r) = routers.pop_front() {
+        debug!("spawning router");
         r.spawn(&handle, &timer).expect("failed to spawn router");
     }
 
     // Run until the admin thread closes the application.
+    debug!("running until admin server closes");
     core.run(closed).expect("failed to run");
 
     // Wait until the admin thread completes.

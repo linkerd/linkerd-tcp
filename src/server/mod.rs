@@ -45,12 +45,21 @@ struct Meta {
 
 pub struct Unbound(Meta);
 impl Unbound {
+    pub fn listen_addr(&self) -> net::SocketAddr {
+        self.0.listen_addr
+    }
+
+    pub fn dst_name(&self) -> &Path {
+        &self.0.dst_name
+    }
+
     pub fn bind(self, reactor: &Handle, timer: &Timer) -> io::Result<Bound> {
+        debug!("routing on {} to {}", self.0.listen_addr, self.0.dst_name);
         let listen = TcpListener::bind(&self.0.listen_addr, reactor)?;
         Ok(Bound {
                reactor: reactor.clone(),
                timer: timer.clone(),
-               _bound_addr: listen.local_addr().unwrap(),
+               bound_addr: listen.local_addr().unwrap(),
                incoming: listen.incoming(),
                meta: self.0,
            })
@@ -62,7 +71,7 @@ pub struct Bound {
     timer: Timer,
     incoming: Incoming,
     meta: Meta,
-    _bound_addr: net::SocketAddr,
+    bound_addr: net::SocketAddr,
 }
 impl Future for Bound {
     type Item = ();
@@ -72,14 +81,19 @@ impl Future for Bound {
         // Accept all inbound connections from the listener and spawn their work into the
         // router. This should perhaps yield control back to the reactor periodically.
         loop {
+            trace!("{}: polling incoming", self.bound_addr);
             match self.incoming.poll()? {
                 Async::NotReady => {
                     return Ok(Async::NotReady);
                 }
                 Async::Ready(None) => {
+                    trace!("{}: incoming stream closed", self.bound_addr);
                     return Ok(Async::Ready(()));
                 }
                 Async::Ready(Some((tcp, _))) => {
+                    trace!("{}: incoming stream from {}",
+                           self.bound_addr,
+                           tcp.peer_addr().unwrap());
                     // Finish accepting the connection from the server.
                     //
                     // TODO we should be able to get metadata from a TLS handshake but we can't!

@@ -53,9 +53,9 @@ impl ::std::str::FromStr for AppConfig {
     fn from_str(txt: &str) -> Result<AppConfig, ConfigError> {
         let txt = txt.trim_left();
         if txt.starts_with('{') {
-            serde_json::from_str(txt).map_err(|e| format!("{}", e).into())
+            serde_json::from_str(txt).map_err(|e| format!("json error: {}", e).into())
         } else {
-            serde_yaml::from_str(txt).map_err(|e| format!("{}", e).into())
+            serde_yaml::from_str(txt).map_err(|e| format!("yaml error: {}", e).into())
         }
     }
 }
@@ -86,7 +86,12 @@ impl AppConfig {
                 let ip = self.admin
                     .as_ref()
                     .and_then(|a| a.ip)
-                    .or_else(|| "0.0.0.0".parse::<net::Ipv4Addr>().ok().map(net::IpAddr::V4))
+                    .or_else(|| {
+                                 "127.0.0.1"
+                                     .parse::<net::Ipv4Addr>()
+                                     .ok()
+                                     .map(net::IpAddr::V4)
+                             })
                     .unwrap();
                 let port = self.admin
                     .as_ref()
@@ -128,6 +133,8 @@ pub struct AppSpawner {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RouterConfig {
+    pub label: String,
+
     /// The configuration for one or more servers.
     pub servers: Vec<server::ServerConfig>,
 
@@ -186,6 +193,9 @@ pub struct RouterSpawner {
 impl RouterSpawner {
     pub fn spawn(mut self, reactor: &Handle, timer: &Timer) -> Result<(), ConfigError> {
         while let Some(unbound) = self.servers.pop_front() {
+            info!("routing on {} to {}",
+                  unbound.listen_addr(),
+                  unbound.dst_name());
             let bound = unbound.bind(reactor, timer).expect("failed to bind");
             reactor.spawn(bound.map_err(|_| {}));
         }

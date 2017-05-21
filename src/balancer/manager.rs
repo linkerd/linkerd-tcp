@@ -91,7 +91,7 @@ impl Manager {
                 Async::Ready(None) => return,
                 Async::Ready(Some(get_conn)) => {
                     if let Some(ep) = self.select_endpoint() {
-                        ep.dispatch_connection(get_conn);
+                        ep.track_waiting(get_conn);
                     } else {
                         //
                     }
@@ -158,13 +158,17 @@ impl Manager {
         let mut meta = EndpointsMeta::default();
 
         for mut ep in self.available.values_mut() {
-            ep.poll();
+            ep.poll_connecting();
+            ep.poll_completing();
+            ep.dispatch_waiting();
             meta.connecting += ep.connecting();;
             meta.connected += ep.connected();
             meta.completing += ep.completing();
         }
         for mut ep in self.retired.values_mut() {
-            ep.poll();
+            ep.poll_connecting();
+            ep.poll_completing();
+            ep.dispatch_waiting();
         }
 
         self.available_meta = meta;

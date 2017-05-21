@@ -44,11 +44,15 @@ impl ServerConfig {
                 ref dst_name,
             } => {
                 if dst_name.is_none() {
-                    return Err("".into());
+                    return Err("`dst_name` required".into());
                 }
                 let addr = {
-                    let ip =
-                        ip.or_else(|| "0.0.0.0".parse::<net::Ipv4Addr>().ok().map(net::IpAddr::V4));
+                    let ip = ip.or_else(|| {
+                                            "127.0.0.1"
+                                                .parse::<net::Ipv4Addr>()
+                                                .ok()
+                                                .map(net::IpAddr::V4)
+                                        });
                     net::SocketAddr::new(ip.unwrap(), port)
                 };
                 let dst_name = dst_name.as_ref().unwrap().clone();
