@@ -54,11 +54,12 @@ impl Namerd {
         }
     }
 
-    pub fn resolve(&self, handle: &Handle, target: &str) -> Addrs {
+    pub fn resolve(&self, handle: &Handle, timer: &Timer, target: &str) -> Addrs {
         let client = Rc::new(Client::new(handle));
-        let url = Url::parse_with_params(&self.base_url, &[("path", &target)]).expect("invalid namerd url");
+        let url = Url::parse_with_params(&self.base_url, &[("path", &target)])
+            .expect("invalid namerd url");
         let init = request(client.clone(), url.clone(), self.stats.clone());
-        let interval = Timer::default().interval(self.period);
+        let interval = timer.interval(self.period);
         Addrs {
             client: client.clone(),
             url: url,
@@ -172,9 +173,9 @@ fn parse_body(body: Body) -> AddrsFuture {
         .then(|res| match res {
                   Ok(ref chunks) => parse_chunks(chunks),
                   Err(e) => {
-            info!("error: {}", e);
-            Err(Error::Hyper(e))
-        }
+                      info!("error: {}", e);
+                      Err(Error::Hyper(e))
+                  }
               })
         .boxed()
 }

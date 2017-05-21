@@ -56,7 +56,6 @@ pub struct ConnectorConfig {
     prefix: Option<String>,
     tls: Option<TlsConnectorFactoryConfig>,
     connect_timeout_ms: Option<u64>,
-    idle_timeout_ms: Option<u64>,
     // TODO fail_fast: Option<Boolean>
     // TODO requeue_budget: Option<RequeueBudget>
 }
@@ -68,8 +67,7 @@ impl ConnectorConfig {
             Some(ref tls) => Some(tls.mk_tls()?),
         };
         let connect_timeout = self.connect_timeout_ms.map(time::Duration::from_millis);
-        let idle_timeout = self.idle_timeout_ms.map(time::Duration::from_millis);
-        Ok(super::new(connect_timeout, idle_timeout, tls))
+        Ok(super::new(connect_timeout, tls))
     }
 
     pub fn update(&mut self, other: &ConnectorConfig) {
@@ -78,9 +76,6 @@ impl ConnectorConfig {
         }
         if let Some(ct) = other.connect_timeout_ms {
             self.connect_timeout_ms = Some(ct);
-        }
-        if let Some(ct) = other.idle_timeout_ms {
-            self.idle_timeout_ms = Some(ct);
         }
     }
 }

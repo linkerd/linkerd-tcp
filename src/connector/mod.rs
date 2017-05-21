@@ -5,6 +5,7 @@ use std::{net, time};
 use std::sync::Arc;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
+use tokio_timer::Timer;
 
 mod config;
 mod connecting;
@@ -63,13 +64,9 @@ impl Tls {
     }
 }
 
-fn new(connect_timeout: Option<time::Duration>,
-       idle_timeout: Option<time::Duration>,
-       tls: Option<Tls>)
-       -> Connector {
+fn new(connect_timeout: Option<time::Duration>, tls: Option<Tls>) -> Connector {
     Connector {
         connect_timeout: connect_timeout,
-        idle_timeout: idle_timeout,
         tls: tls,
     }
 }
@@ -77,12 +74,12 @@ fn new(connect_timeout: Option<time::Duration>,
 #[derive(Clone)]
 pub struct Connector {
     connect_timeout: Option<time::Duration>,
-    idle_timeout: Option<time::Duration>,
     tls: Option<Tls>,
 }
 impl Connector {
-    pub fn connect(&self, addr: &net::SocketAddr, reactor: &Handle) -> Connecting {
+    pub fn connect(&self, addr: &net::SocketAddr, reactor: &Handle, timer: &Timer) -> Connecting {
         let c = TcpStream::connect(addr, reactor);
-        connecting::new(c, self.tls.clone())
+        let timeout = self.connect_timeout.map(|t| timer.sleep(t));
+        connecting::new(c, self.tls.clone(), timeout)
     }
 }

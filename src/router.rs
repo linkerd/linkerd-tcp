@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::io;
 use std::rc::Rc;
 use tokio_core::reactor::Handle;
+use tokio_timer::Timer;
 
 pub fn new(resolver: Resolver, factory: BalancerFactory) -> Router {
     let inner = InnerRouter {
@@ -26,8 +27,8 @@ pub struct Router(Rc<RefCell<InnerRouter>>);
 
 impl Router {
     /// Obtains a balancer for an inbound connection.
-    pub fn route(&self, dst: &Path, rct: &Handle) -> Route {
-        self.0.borrow_mut().route(dst, rct)
+    pub fn route(&self, dst: &Path, rct: &Handle, tim: &Timer) -> Route {
+        self.0.borrow_mut().route(dst, rct, tim)
     }
 }
 
@@ -38,13 +39,13 @@ struct InnerRouter {
 }
 
 impl InnerRouter {
-    fn route(&mut self, dst: &Path, reactor: &Handle) -> Route {
+    fn route(&mut self, dst: &Path, reactor: &Handle, timer: &Timer) -> Route {
         // Try to get a balancer from the cache.
         if let Some(route) = self.routes.get(dst) {
             return Route(Some(Ok(route.clone())));
         }
 
-        match self.factory.mk_balancer(reactor, dst) {
+        match self.factory.mk_balancer(reactor, timer, dst) {
             Err(e) => Route(Some(Err(e))),
             Ok(Balancer { selector, manager }) => {
                 let resolve = self.resolver.resolve(dst.clone());

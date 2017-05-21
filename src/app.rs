@@ -2,29 +2,42 @@
 
 #![allow(missing_docs)]
 
-use super::{resolver, router, server};
-use super::ConfigError;
+use super::{ConfigError, admin, resolver, router, server};
 use super::balancer::BalancerFactory;
 use super::connector::ConnectorFactoryConfig;
-use futures::{Future, future};
+use futures::{Future, Stream};
 use futures::sync::oneshot;
+use hyper::server::Http;
 use serde_json;
 use serde_yaml;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::net;
 use std::rc::Rc;
-use std::time;
+use std::time::{Duration, Instant};
 use tacho;
+use tokio_core::net::TcpListener;
 use tokio_core::reactor::{Core, Handle};
+use tokio_timer::Timer;
 
 const DEFAULT_BUFFER_SIZE_BYTES: usize = 16 * 1024;
+const DEFAULT_GRACE_SECS: u64 = 10;
+const DEFAULT_METRICS_INTERVAL_SECS: u64 = 60;
 //TODO const DEFAULT_MINIMUM_CONNECTIONS: usize = 1;
 //TODO const DEFAULT_MAXIMUM_WAITERS: usize = 128;
+
+pub type Closer = oneshot::Sender<Instant>;
+pub type Closed = oneshot::Receiver<Instant>;
+pub fn closer() -> (Closer, Closed) {
+    oneshot::channel()
+}
 
 /// Holds the configuration for a linkerd-tcp instance.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AppConfig {
+    pub admin: Option<AdminConfig>,
+
     /// The configuration for one or more routers.
     pub routers: Vec<RouterConfig>,
 
@@ -54,7 +67,7 @@ impl AppConfig {
             Rc::new(RefCell::new(vec![0 as u8; sz]))
         };
 
-        let (metrics_tx, metrics_rx) = tacho::new();
+        let (metrics_tx, reporter) = tacho::new();
 
         let mut routers = VecDeque::with_capacity(self.routers.len());
         let mut resolvers = VecDeque::with_capacity(self.routers.len());
@@ -67,9 +80,27 @@ impl AppConfig {
             resolvers.push_back(e);
         }
 
-        let admin = AdminRunner {
-            _metrics: metrics_rx, // TODO
-            resolvers: resolvers,
+        let admin = {
+            let addr = self.admin
+                .as_ref()
+                .and_then(|a| a.addr)
+                .unwrap_or_else(|| "0.0.0.0:9989".parse().unwrap());
+            let grace = Duration::from_secs(self.admin
+                                                .as_ref()
+                                                .and_then(|admin| admin.grace_secs)
+                                                .unwrap_or(DEFAULT_GRACE_SECS));
+            let metrics_interval =
+                Duration::from_secs(self.admin
+                                        .as_ref()
+                                        .and_then(|admin| admin.metrics_interval_secs)
+                                        .unwrap_or(DEFAULT_METRICS_INTERVAL_SECS));
+            AdminRunner {
+                addr,
+                reporter,
+                resolvers,
+                grace,
+                metrics_interval,
+            }
         };
 
         Ok(AppSpawner {
@@ -108,7 +139,7 @@ impl RouterConfig {
         let (resolver, resolver_exec) = {
             // FIXME
             let n = resolver::Namerd::new("http://localhost:4180".into(),
-                                          time::Duration::from_secs(10),
+                                          Duration::from_secs(10),
                                           "default".into(),
                                           metrics);
             resolver::new(n)
@@ -142,31 +173,81 @@ pub struct RouterSpawner {
 }
 
 impl RouterSpawner {
-    pub fn spawn(mut self, reactor: &Handle) -> Result<(), ConfigError> {
+    pub fn spawn(mut self, reactor: &Handle, timer: &Timer) -> Result<(), ConfigError> {
         while let Some(unbound) = self.servers.pop_front() {
-            let bound = unbound.bind(reactor).expect("failed to bind");
+            let bound = unbound.bind(reactor, timer).expect("failed to bind");
             reactor.spawn(bound.map_err(|_| {}));
         }
         Ok(())
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AdminConfig {
+    pub addr: Option<net::SocketAddr>,
+    pub metrics_interval_secs: Option<u64>,
+    pub grace_secs: Option<u64>,
+}
+
 pub struct AdminRunner {
-    _metrics: tacho::Reporter,
+    addr: net::SocketAddr,
+    reporter: tacho::Reporter,
     resolvers: VecDeque<resolver::Executor>,
+    grace: Duration,
+    metrics_interval: Duration,
 }
 
 impl AdminRunner {
-    pub fn run(mut self,
-               closer: oneshot::Sender<()>,
-               mut reactor: Core)
-               -> Result<(), ConfigError> {
+    pub fn run(self, closer: Closer, reactor: &mut Core, timer: &Timer) -> Result<(), ConfigError> {
+        let AdminRunner {
+            addr,
+            grace,
+            metrics_interval,
+            mut reporter,
+            mut resolvers,
+        } = self;
+
         let handle = reactor.handle();
-        while let Some(r) = self.resolvers.pop_front() {
-            let e = r.execute(&handle);
-            handle.spawn(e);
+        {
+            while let Some(resolver) = resolvers.pop_front() {
+                handle.spawn(resolver.execute(&handle, timer));
+            }
         }
-        let _ = closer.send(());
-        reactor.run(future::ok(()))
+
+        let prometheus = Rc::new(RefCell::new(String::new()));
+        let reporting = {
+            let prometheus = prometheus.clone();
+            timer
+                .interval(metrics_interval)
+                .map_err(|_| {})
+                .for_each(move |_| {
+                              let report = reporter.take();
+                              let mut export = prometheus.borrow_mut();
+                              *export = tacho::prometheus::format(&report);
+                              Ok(())
+                          })
+        };
+        handle.spawn(reporting);
+
+        let serving = {
+            let listener = {
+                println!("Listening on http://{}.", addr);
+                TcpListener::bind(&addr, &handle).expect("unable to listen")
+            };
+
+            let server =
+                admin::Admin::new(prometheus, closer, grace, handle.clone(), timer.clone());
+            let http = Http::new();
+            listener
+                .incoming()
+                .for_each(move |(tcp, src)| {
+                              http.bind_connection(&handle, tcp, src, server.clone());
+                              Ok(())
+                          })
+        };
+        reactor.run(serving).unwrap();
+
+        Ok(())
     }
 }

@@ -7,9 +7,10 @@ use std::{io, net};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+//use tacho::Scope;
 use tokio_core::net::{TcpListener, Incoming};
 use tokio_core::reactor::Handle;
-//use tacho::Scope;
+use tokio_timer::Timer;
 
 mod config;
 mod sni;
@@ -44,10 +45,11 @@ struct Meta {
 
 pub struct Unbound(Meta);
 impl Unbound {
-    pub fn bind(self, reactor: &Handle) -> io::Result<Bound> {
+    pub fn bind(self, reactor: &Handle, timer: &Timer) -> io::Result<Bound> {
         let listen = TcpListener::bind(&self.0.listen_addr, reactor)?;
         Ok(Bound {
                reactor: reactor.clone(),
+               timer: timer.clone(),
                _bound_addr: listen.local_addr().unwrap(),
                incoming: listen.incoming(),
                meta: self.0,
@@ -57,6 +59,7 @@ impl Unbound {
 
 pub struct Bound {
     reactor: Handle,
+    timer: Timer,
     incoming: Incoming,
     meta: Meta,
     _bound_addr: net::SocketAddr,
@@ -98,7 +101,9 @@ impl Future for Bound {
                     };
 
                     // Obtain a selector.
-                    let dst = self.meta.router.route(&self.meta.dst_name, &self.reactor);
+                    let dst = self.meta
+                        .router
+                        .route(&self.meta.dst_name, &self.reactor, &self.timer);
 
                     // Once the incoming connection is ready and we have a balancer ready, obtain an
                     // outbound connection and begin streaming. We obtain an outbound connection after

@@ -8,6 +8,7 @@ use futures::unsync::oneshot;
 use std::collections::VecDeque;
 use std::net;
 use tokio_core::reactor::Handle;
+use tokio_timer::Timer;
 
 type Completing = oneshot::Receiver<Summary>;
 
@@ -114,9 +115,13 @@ impl Endpoint {
         self.poll_waiting();
     }
 
-    pub fn init_connecting(&mut self, count: usize, connector: &Connector, reactor: &Handle) {
+    pub fn init_connecting(&mut self,
+                           count: usize,
+                           connector: &Connector,
+                           reactor: &Handle,
+                           timer: &Timer) {
         for _ in 0..count {
-            let mut conn = connector.connect(&self.peer_addr, reactor);
+            let mut conn = connector.connect(&self.peer_addr, reactor, timer);
 
             // Poll the new connection immediately so that task notification is
             // established.

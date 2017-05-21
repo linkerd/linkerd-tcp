@@ -4,24 +4,18 @@ use super::connector::Connector;
 use futures::unsync::{mpsc, oneshot};
 use std::net;
 use tokio_core::reactor::Handle;
+use tokio_timer::Timer;
 
 mod endpoint;
 mod factory;
 mod manager;
 mod selector;
 
-//pub use self::endpoint::EndpointCtx;
-
 pub use self::factory::BalancerFactory;
 pub use self::manager::{Manager, Managing};
 pub use self::selector::{Selector, Select};
-//use self::pool::Pool;
 
 pub type DstConnection = super::Connection<DstCtx>;
-
-// pub enum Error {
-//     ResolverLost(),
-// }
 
 /// A weighted concrete destination address.
 #[derive(Clone, Debug)]
@@ -31,7 +25,7 @@ pub struct DstAddr {
 }
 
 impl DstAddr {
-    pub fn new(addr: ::std::net::SocketAddr, weight: f32) -> DstAddr {
+    pub fn new(addr: net::SocketAddr, weight: f32) -> DstAddr {
         DstAddr {
             addr: addr,
             weight: weight,
@@ -46,16 +40,18 @@ pub struct Balancer {
 
 impl Balancer {
     pub fn new(reactor: Handle,
+               timer: Timer,
                dst: Path,
-               /*min_conns: usize,*/
+               //min_conns: usize,
                conn: Connector)
                -> Balancer {
         let (tx, rx) = mpsc::unbounded();
         Balancer {
             manager: manager::new(dst,
                                   reactor,
+                                  timer,
                                   conn,
-                                  /*min_conns,*/
+                                  //min_conns,
                                   rx),
             selector: selector::new(tx),
         }

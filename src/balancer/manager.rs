@@ -11,9 +11,11 @@ use rand::{self, Rng};
 use std::{cmp, net};
 use std::collections::VecDeque;
 use tokio_core::reactor::Handle;
+use tokio_timer::Timer;
 
 pub fn new(dst: Path,
            reactor: Handle,
+           timer: Timer,
            conn: Connector,
            //min_conns: usize,
            selects: mpsc::UnboundedReceiver<DstConnectionRequest>)
@@ -21,6 +23,7 @@ pub fn new(dst: Path,
     Manager {
         dst_name: dst,
         reactor: reactor,
+        timer: timer,
         connector: conn,
         //minimum_connections: min_conns,
         available: OrderMap::default(),
@@ -34,6 +37,7 @@ pub struct Manager {
     dst_name: Path,
 
     reactor: Handle,
+    timer: Timer,
 
     connector: Connector,
 
@@ -170,7 +174,7 @@ impl Manager {
         // Ensure that each endpoint has enough connections for all of its pending selecitons.
         for mut ep in self.available.values_mut().chain(self.retired.values_mut()) {
             let needed = ep.waiting() - (ep.connecting() + ep.connected());
-            ep.init_connecting(needed, &self.connector, &self.reactor);
+            ep.init_connecting(needed, &self.connector, &self.reactor, &self.timer);
         }
     }
 
