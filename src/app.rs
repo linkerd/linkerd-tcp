@@ -18,7 +18,7 @@ use tacho;
 use tokio_core::reactor::{Core, Handle};
 
 const DEFAULT_BUFFER_SIZE_BYTES: usize = 16 * 1024;
-const DEFAULT_MINIMUM_CONNECTIONS: usize = 1;
+//TODO const DEFAULT_MINIMUM_CONNECTIONS: usize = 1;
 //TODO const DEFAULT_MAXIMUM_WAITERS: usize = 128;
 
 /// Holds the configuration for a linkerd-tcp instance.
@@ -68,7 +68,7 @@ impl AppConfig {
         }
 
         let admin = AdminRunner {
-            _metrics: metrics_rx,
+            _metrics: metrics_rx, // TODO
             resolvers: resolvers,
         };
 
@@ -96,7 +96,7 @@ pub struct RouterConfig {
     /// By default, connections are clear TCP.
     pub client: Option<ConnectorFactoryConfig>,
 
-    pub minimum_connections: Option<usize>,
+    //pub minimum_connections: Option<usize>,
     // TODO pub maximum_waiters: Option<usize>,
 }
 
@@ -105,17 +105,21 @@ impl RouterConfig {
                    buf: Rc<RefCell<Vec<u8>>>,
                    metrics: tacho::Scope)
                    -> Result<RouterSpawner, ConfigError> {
-        let n = resolver::Namerd::new("http://localhost:4180".into(),
-                                      time::Duration::from_secs(10),
-                                      "default".into(),
-                                      metrics);
-        let (resolver, resolver_exec) = resolver::new(n);
+        let (resolver, resolver_exec) = {
+            // FIXME
+            let n = resolver::Namerd::new("http://localhost:4180".into(),
+                                          time::Duration::from_secs(10),
+                                          "default".into(),
+                                          metrics);
+            resolver::new(n)
+        };
 
         let balancer = {
-            let min_conns = self.minimum_connections
-                .unwrap_or(DEFAULT_MINIMUM_CONNECTIONS);
+            //let min_conns = self.minimum_connections
+            //    .unwrap_or(DEFAULT_MINIMUM_CONNECTIONS);
             let client = self.client.unwrap_or_default().mk_connector_factory()?;
-            BalancerFactory::new(min_conns, client)
+            BalancerFactory::new(/*min_conns,*/
+                                 client)
         };
         let router = router::new(resolver, balancer);
 

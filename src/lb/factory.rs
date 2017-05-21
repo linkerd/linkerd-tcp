@@ -7,14 +7,16 @@ use tokio_core::reactor::Handle;
 
 #[derive(Clone)]
 pub struct BalancerFactory {
-    minimum_connections: usize,
+    //minimum_connections: usize,
     connector_factory: Rc<RefCell<ConnectorFactory>>,
 }
 
 impl BalancerFactory {
-    pub fn new(min_conns: usize, cf: ConnectorFactory) -> BalancerFactory {
+    pub fn new(/*min_conns: usize,*/
+               cf: ConnectorFactory)
+               -> BalancerFactory {
         BalancerFactory {
-            minimum_connections: min_conns,
+            //minimum_connections: min_conns,
             connector_factory: Rc::new(RefCell::new(cf)),
         }
     }
@@ -23,7 +25,7 @@ impl BalancerFactory {
         let connector = self.connector_factory.borrow().mk_connector(dst_name)?;
         Ok(Balancer::new(reactor.clone(),
                          dst_name.clone(),
-                         self.minimum_connections,
+                         //self.minimum_connections,
                          connector))
     }
 }

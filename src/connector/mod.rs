@@ -77,7 +77,7 @@ pub struct Connector {
     tls: Option<Tls>,
 }
 impl Connector {
-    pub fn connect(&mut self, addr: &net::SocketAddr, reactor: &Handle) -> Connecting {
+    pub fn connect(&self, addr: &net::SocketAddr, reactor: &Handle) -> Connecting {
         let c = TcpStream::connect(addr, reactor);
         connecting::new(c, self.tls.clone())
     }

@@ -2,8 +2,6 @@
 //!
 //! Copyright 2017 Buoyant, Inc.
 
-#![deny(missing_docs)]
-
 extern crate bytes;
 #[macro_use]
 extern crate log;

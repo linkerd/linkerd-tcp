@@ -3,16 +3,17 @@ use futures::{Future, Poll, Async};
 use futures::unsync::{mpsc, oneshot};
 use std::io;
 
-pub fn new(waiters: mpsc::UnboundedSender<SelectRequest>) -> Selector {
+pub fn new(waiters: mpsc::UnboundedSender<DstConnectionRequest>) -> Selector {
     Selector(waiters)
 }
 
+/// Selects
 // TODO limit max waiters.
 #[derive(Clone)]
-pub struct Selector(mpsc::UnboundedSender<SelectRequest>);
+pub struct Selector(mpsc::UnboundedSender<DstConnectionRequest>);
 
 /// The response-side of a request from a `Selector` for a `DstConnection`.
-pub type SelectRequest = oneshot::Sender<DstConnection>;
+pub type DstConnectionRequest = oneshot::Sender<DstConnection>;
 
 impl Selector {
     /// Obtains a connection to the destination.

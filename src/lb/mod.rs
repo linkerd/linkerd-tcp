@@ -5,11 +5,11 @@ use futures::unsync::{mpsc, oneshot};
 use std::net;
 use tokio_core::reactor::Handle;
 
-mod selector;
+mod endpoint;
 mod factory;
 mod manager;
+mod selector;
 
-//use self::endpoint::Endpoint;
 //pub use self::endpoint::EndpointCtx;
 
 pub use self::factory::BalancerFactory;
@@ -19,9 +19,9 @@ pub use self::selector::{Selector, Select};
 
 pub type DstConnection = super::Connection<DstCtx>;
 
-pub enum Error {
-    ResolverLost(),
-}
+// pub enum Error {
+//     ResolverLost(),
+// }
 
 /// A weighted concrete destination address.
 #[derive(Clone, Debug)]
@@ -45,10 +45,18 @@ pub struct Balancer {
 }
 
 impl Balancer {
-    pub fn new(reactor: Handle, dst: Path, min_conns: usize, conn: Connector) -> Balancer {
+    pub fn new(reactor: Handle,
+               dst: Path,
+               /*min_conns: usize,*/
+               conn: Connector)
+               -> Balancer {
         let (tx, rx) = mpsc::unbounded();
         Balancer {
-            manager: manager::new(dst, reactor, conn, min_conns, rx),
+            manager: manager::new(dst,
+                                  reactor,
+                                  conn,
+                                  /*min_conns,*/
+                                  rx),
             selector: selector::new(tx),
         }
     }

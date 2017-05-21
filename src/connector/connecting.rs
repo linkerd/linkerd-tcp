@@ -9,7 +9,7 @@ pub fn new(tcp: TcpStreamNew, tls: Option<Tls>) -> Connecting {
         Some(tls) => Box::new(tcp.and_then(move |tcp| tls.handshake(tcp))),
         None => Box::new(tcp.map(Socket::plain)),
     };
-    Connecting(Box::new(sock))
+    Connecting(sock)
 }
 
 pub struct Connecting(Box<Future<Item = Socket, Error = io::Error>>);
