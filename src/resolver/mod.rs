@@ -79,17 +79,16 @@ pub struct Executor {
 
 impl Executor {
     pub fn execute(self, handle: &Handle, timer: &Timer) -> Execute {
-        let namerd = self.namerd.clone();
         let handle = handle.clone();
-        let timer = timer.clone();
+        let namerd = self.namerd.with_client(&handle, timer);
         let f = self.requests
             .for_each(move |(path, rsp_tx)| {
                 // Stream namerd resolutions to the response channel.
-                let resolve = namerd.resolve(&handle, &timer, path.as_str());
+                let resolve = namerd.resolve(path.as_str());
                 let respond = resolve.forward(rsp_tx).map_err(|_| {}).map(|_| {});
                 // Do all of this work in another task so that we can receive
                 // additional requests.
-                handle.clone().spawn(respond);
+                handle.spawn(respond);
                 Ok(())
             });
         Execute(Box::new(f))

@@ -53,17 +53,32 @@ impl Namerd {
             stats: Stats::new(metrics),
         }
     }
+}
+impl Namerd {
+    pub fn with_client(self, handle: &Handle, timer: &Timer) -> WithClient {
+        WithClient {
+            namerd: self,
+            client: Rc::new(Client::new(handle)),
+            timer: timer.clone(),
+        }
+    }
+}
 
-    pub fn resolve(&self, handle: &Handle, timer: &Timer, target: &str) -> Addrs {
-        let client = Rc::new(Client::new(handle));
-        let url = Url::parse_with_params(&self.base_url, &[("path", &target)])
+pub struct WithClient {
+    namerd: Namerd,
+    client: Rc<HttpConnectorFactory>,
+    timer: Timer,
+}
+impl WithClient {
+    pub fn resolve(&self, target: &str) -> Addrs {
+        let url = Url::parse_with_params(&self.namerd.base_url, &[("path", &target)])
             .expect("invalid namerd url");
-        let init = request(client.clone(), url.clone(), self.stats.clone());
-        let interval = timer.interval(self.period);
+        let init = request(self.client.clone(), url.clone(), self.namerd.stats.clone());
+        let interval = self.timer.interval(self.namerd.period);
         Addrs {
-            client: client.clone(),
+            client: self.client.clone(),
             url: url,
-            stats: self.stats.clone(),
+            stats: self.namerd.stats.clone(),
             state: Some(State::Pending(init, interval)),
         }
     }
