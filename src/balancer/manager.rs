@@ -184,11 +184,8 @@ impl Manager {
 
     // TODO: we need to do some sort of probation deal to manage endpoints that are
     // retired.
-    pub fn update_resolved(&mut self, resolved: Vec<DstAddr>) {
-        let mut dsts = OrderMap::with_capacity(resolved.len());
-        for &DstAddr { addr, weight } in &resolved {
-            dsts.insert(addr, weight);
-        }
+    pub fn update_resolved(&mut self, resolved: &[DstAddr]) {
+        let mut dsts = normalize_weights(resolved);
 
         let mut temp = {
             let sz = cmp::max(self.available.len(), self.retired.len());
@@ -247,6 +244,18 @@ impl Manager {
     }
 }
 
+fn normalize_weights(resolved: &[DstAddr]) -> OrderMap<net::SocketAddr, f32> {
+    let mut sum = 0.0;
+    for &DstAddr { weight, .. } in resolved {
+        sum += weight;
+    }
+    let mut dsts = OrderMap::with_capacity(resolved.len());
+    for &DstAddr { addr, weight } in resolved {
+        dsts.insert(addr, weight / sum);
+    }
+    dsts
+}
+
 pub struct Managing {
     manager: Manager,
     resolution: Resolve,
@@ -302,7 +311,7 @@ impl Future for Managing {
 
         // Try to resolve a new set of addresses. If there's an update, update the balancer's endpoints so that `available` contains only
         if let Some(Ok(resolution)) = self.resolve() {
-            self.manager.update_resolved(resolution);
+            self.manager.update_resolved(&resolution);
         }
 
         // Dispatch new select requests to available nodes.
