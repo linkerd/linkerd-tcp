@@ -1,5 +1,5 @@
 use super::{ConfigError, Path};
-use super::socket::{Socket, SecureClientHandshake};
+use super::connection::secure;
 use rustls::ClientConfig as RustlsClientConfig;
 use std::{net, time};
 use std::sync::Arc;
@@ -8,15 +8,18 @@ use tokio_core::reactor::Handle;
 
 mod config;
 mod connecting;
+
 pub use self::config::{ConnectorFactoryConfig, ConnectorConfig, TlsConnectorFactoryConfig};
 pub use self::connecting::Connecting;
 
 /// Builds a connector
 pub struct ConnectorFactory(ConnectorFactoryInner);
+
 enum ConnectorFactoryInner {
     Global(Connector),
     Static(StaticConnectorFactory),
 }
+
 impl ConnectorFactory {
     pub fn new_global(conn: Connector) -> ConnectorFactory {
         ConnectorFactory(ConnectorFactoryInner::Global(conn))
@@ -53,9 +56,10 @@ pub struct Tls {
     name: String,
     config: Arc<RustlsClientConfig>,
 }
+
 impl Tls {
-    fn handshake(&self, tcp: TcpStream) -> SecureClientHandshake {
-        Socket::secure_client_handshake(tcp, &self.config, &self.name)
+    fn handshake(&self, tcp: TcpStream) -> secure::ClientHandshake {
+        secure::client_handshake(tcp, &self.config, &self.name)
     }
 }
 

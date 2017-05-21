@@ -31,12 +31,10 @@ mod path;
 mod resolver;
 mod router;
 mod server;
-mod socket;
 
 use balancer::{DstAddr, DstConnection};
 use connection::Connection;
 use path::Path;
-use socket::Socket;
 
 /// Describes a configuratin error.
 #[derive(Clone, Debug)]

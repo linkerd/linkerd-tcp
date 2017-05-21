@@ -1,7 +1,7 @@
 use super::{DstConnection, DstCtx, Summary};
 use super::selector::DstConnectionRequest;
-use super::super::{Path, Socket};
-use super::super::connection::Connection;
+use super::super::Path;
+use super::super::connection::{Connection, Socket};
 use super::super::connector::{Connector, Connecting};
 use futures::{Future, Async};
 use futures::unsync::oneshot;

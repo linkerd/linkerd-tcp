@@ -1,7 +1,6 @@
 use super::Path;
-use super::connection::{Connection, Duplex, ctx};
+use super::connection::{Connection, Duplex, Socket, ctx, secure, socket};
 use super::router::Router;
-use super::socket::Socket;
 use futures::{Async, Future, Poll, Stream, future};
 use rustls;
 use std::{io, net};
@@ -84,9 +83,11 @@ impl Future for Bound {
                     let src = {
                         let sock: Box<Future<Item = Socket,
                                              Error = io::Error>> = match self.meta.tls.as_ref() {
-                            None => Box::new(future::ok(Socket::plain(tcp))),
+                            None => Box::new(future::ok(socket::plain(tcp))),
                             Some(tls) => {
-                                Box::new(Socket::secure_server_handshake(tcp, &tls.config))
+                                let sock = secure::server_handshake(tcp, &tls.config)
+                                    .map(socket::secure_server);
+                                Box::new(sock)
                             }
                         };
                         let dst_name = self.meta.dst_name.clone();

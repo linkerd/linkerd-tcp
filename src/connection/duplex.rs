@@ -15,7 +15,6 @@ pub struct DuplexCtx {
 }
 
 pub struct Summary {
-    pub ctx: DuplexCtx,
     pub to_dst_bytes: u64,
     pub to_src_bytes: u64,
 }
@@ -42,10 +41,10 @@ impl Duplex {
                           dst: dst.ctx,
                       }),
 
-            to_dst: Some(half_duplex::new(src_socket.clone(), src_socket.clone(), buf.clone())),
+            to_dst: Some(half_duplex::new(src_socket.clone(), dst_socket.clone(), buf.clone())),
             to_dst_bytes: 0,
 
-            to_src: Some(half_duplex::new(dst_socket.clone(), src_socket.clone(), buf)),
+            to_src: Some(half_duplex::new(dst_socket, src_socket, buf)),
             to_src_bytes: 0,
         }
     }
@@ -78,7 +77,7 @@ impl Future for Duplex {
                     trace!("dstward complete from {} to {}",
                            self.src_addr(),
                            self.dst_addr());
-                    self.to_dst_bytes += sz;
+                    self.to_dst_bytes = sz;
                 }
                 Async::NotReady => {
                     trace!("dstward not ready");
@@ -96,7 +95,7 @@ impl Future for Duplex {
                     trace!("srcward complete from {} to {}",
                            self.dst_addr(),
                            self.src_addr());
-                    self.to_src_bytes += sz;
+                    self.to_src_bytes = sz;
                 }
                 Async::NotReady => {
                     trace!("srcward not ready");
@@ -109,9 +108,9 @@ impl Future for Duplex {
             trace!("complete");
             // self.tx_bytes_stat.add(self.tx_bytes);
             // self.rx_bytes_stat.add(self.rx_bytes)
-            let ctx = self.ctx.take().expect("missing source");
+            let ctx = self.ctx.take().expect("missing context");
+            drop(ctx);
             let summary = Summary {
-                ctx: ctx,
                 to_dst_bytes: self.to_dst_bytes,
                 to_src_bytes: self.to_src_bytes,
             };

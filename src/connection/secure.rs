@@ -7,142 +7,18 @@ use std::sync::Arc;
 use tokio_core::net::TcpStream;
 use tokio_io::AsyncWrite;
 
-/// Hides the implementation details of socket I/O.
-///
-/// Plaintext and encrypted (client and server) streams have different type signatures.
-/// Exposing these types to the rest of the application is painful, so `Socket` provides
-/// an opaque container for the various types of sockets supported by this proxy.
-#[derive(Debug)]
-pub struct Socket(Inner);
-
-// Since the rustls types are much larger than the plain types, they are boxed. because
-// clippy says so.
-enum Inner {
-    Plain(TcpStream),
-    SecureClient(Box<SecureSocket<ClientSession>>),
-    SecureServer(Box<SecureSocket<ServerSession>>),
+pub fn client_handshake(tcp: TcpStream, config: &Arc<ClientConfig>, name: &str) -> ClientHandshake {
+    let ss = SecureStream::new(tcp, ClientSession::new(config, name));
+    ClientHandshake(Some(ss))
 }
 
-impl fmt::Debug for Inner {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            Inner::Plain(ref s) => {
-                f.debug_struct("Plain")
-                    .field("peer", &s.peer_addr().unwrap())
-                    .field("local", &s.local_addr().unwrap())
-                    .finish()
-            }
-            Inner::SecureClient(ref s) => {
-                f.debug_struct("SecureClient")
-                    .field("peer", &s.peer_addr())
-                    .field("local", &s.local_addr())
-                    .finish()
-            }
-            Inner::SecureServer(ref s) => {
-                f.debug_struct("SecureServer")
-                    .field("peer", &s.peer_addr())
-                    .field("local", &s.local_addr())
-                    .finish()
-            }
-        }
-    }
-}
-
-impl Socket {
-    pub fn plain(stream: TcpStream) -> Socket {
-        Socket(Inner::Plain(stream))
-    }
-
-    pub fn secure_client_handshake(tcp: TcpStream,
-                                   tls: &Arc<ClientConfig>,
-                                   name: &str)
-                                   -> SecureClientHandshake {
-        trace!("initializing client handshake");
-        let s = SecureSocket::new(tcp, ClientSession::new(tls, name));
-        SecureClientHandshake(Some(s))
-    }
-
-    pub fn secure_server_handshake(tcp: TcpStream,
-                                   tls: &Arc<ServerConfig>)
-                                   -> SecureServerHandshake {
-        trace!("initializing server handshake");
-        let s = SecureSocket::new(tcp, ServerSession::new(tls));
-        SecureServerHandshake(Some(s))
-    }
-
-    pub fn tcp_shutdown(&mut self, how: Shutdown) -> io::Result<()> {
-        trace!("{:?}.tcp_shutdown({:?})", self, how);
-        match self.0 {
-            Inner::Plain(ref mut stream) => TcpStream::shutdown(stream, how),
-            Inner::SecureClient(ref mut stream) => stream.tcp_shutdown(how),
-            Inner::SecureServer(ref mut stream) => stream.tcp_shutdown(how),
-        }
-    }
-
-    pub fn local_addr(&self) -> SocketAddr {
-        match self.0 {
-            Inner::Plain(ref stream) => stream.local_addr().unwrap(),
-            Inner::SecureClient(ref stream) => stream.local_addr(),
-            Inner::SecureServer(ref stream) => stream.local_addr(),
-        }
-    }
-
-    pub fn peer_addr(&self) -> SocketAddr {
-        match self.0 {
-            Inner::Plain(ref stream) => stream.peer_addr().unwrap(),
-            Inner::SecureClient(ref stream) => stream.peer_addr(),
-            Inner::SecureServer(ref stream) => stream.peer_addr(),
-        }
-    }
-}
-
-/// Reads the socket without blocking.
-impl Read for Socket {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        trace!("{:?}.read({})", self, buf.len());
-        match self.0 {
-            Inner::Plain(ref mut stream) => stream.read(buf),
-            Inner::SecureClient(ref mut stream) => stream.read(buf),
-            Inner::SecureServer(ref mut stream) => stream.read(buf),
-        }
-    }
-}
-
-/// Writes to the socket without blocking.
-impl Write for Socket {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        trace!("{:?}.write({})", self, buf.len());
-        match self.0 {
-            Inner::Plain(ref mut stream) => stream.write(buf),
-            Inner::SecureClient(ref mut stream) => stream.write(buf),
-            Inner::SecureServer(ref mut stream) => stream.write(buf),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        trace!("{:?}.flush()", self);
-        match self.0 {
-            Inner::Plain(ref mut stream) => stream.flush(),
-            Inner::SecureClient(ref mut stream) => stream.flush(),
-            Inner::SecureServer(ref mut stream) => stream.flush(),
-        }
-    }
-}
-
-/// Closes the write-side of a stream.
-impl AsyncWrite for Socket {
-    fn shutdown(&mut self) -> Poll<(), io::Error> {
-        trace!("{:?}.shutdown()", self);
-        match self.0 {
-            Inner::Plain(ref mut stream) => AsyncWrite::shutdown(stream),
-            Inner::SecureClient(ref mut stream) => stream.shutdown(),
-            Inner::SecureServer(ref mut stream) => stream.shutdown(),
-        }
-    }
+pub fn server_handshake(tcp: TcpStream, config: &Arc<ServerConfig>) -> ServerHandshake {
+    let ss = SecureStream::new(tcp, ServerSession::new(config));
+    ServerHandshake(Some(ss))
 }
 
 /// Securely transmits data.
-struct SecureSocket<I> {
+pub struct SecureStream<I> {
     peer: SocketAddr,
     local: SocketAddr,
     /// The external encrypted side of the socket.
@@ -151,20 +27,20 @@ struct SecureSocket<I> {
     session: I,
 }
 
-impl<S: Session> fmt::Debug for SecureSocket<S> {
+impl<S: Session> fmt::Debug for SecureStream<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("SecureSocket")
+        f.debug_struct("SecureStream")
             .field("peer", &self.peer)
             .field("local", &self.local)
             .finish()
     }
 }
 
-impl<S> SecureSocket<S>
+impl<S> SecureStream<S>
     where S: Session
 {
-    pub fn new(t: TcpStream, s: S) -> SecureSocket<S> {
-        SecureSocket {
+    fn new(t: TcpStream, s: S) -> SecureStream<S> {
+        SecureStream {
             peer: t.peer_addr().unwrap(),
             local: t.local_addr().unwrap(),
             tcp: t,
@@ -228,7 +104,7 @@ impl<S> SecureSocket<S>
     }
 }
 
-impl<S> Read for SecureSocket<S>
+impl<S> Read for SecureStream<S>
     where S: Session
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -252,7 +128,7 @@ impl<S> Read for SecureSocket<S>
     }
 }
 
-impl<S> Write for SecureSocket<S>
+impl<S> Write for SecureStream<S>
     where S: Session
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -281,7 +157,7 @@ impl<S> Write for SecureSocket<S>
     }
 }
 
-impl<S> AsyncWrite for SecureSocket<S>
+impl<S> AsyncWrite for SecureStream<S>
     where S: Session
 {
     fn shutdown(&mut self) -> Poll<(), io::Error> {
@@ -294,11 +170,11 @@ impl<S> AsyncWrite for SecureSocket<S>
 
 /// A future that completes when a server's TLS handshake is complete.
 #[derive(Debug)]
-pub struct SecureServerHandshake(Option<SecureSocket<ServerSession>>);
-impl Future for SecureServerHandshake {
-    type Item = Socket;
+pub struct ServerHandshake(Option<SecureStream<ServerSession>>);
+impl Future for ServerHandshake {
+    type Item = SecureStream<ServerSession>;
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<Socket, io::Error> {
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         trace!("{:?}.poll()", self);
         let mut ss = self.0
             .take()
@@ -361,17 +237,18 @@ impl Future for SecureServerHandshake {
         }
 
         trace!("server handshake: {}: complete", ss.peer);
-        Ok(Socket(Inner::SecureServer(Box::new(ss))).into())
+        Ok(Async::Ready(ss))
     }
 }
 
 /// A future that completes when a client's TLS handshake is complete.
 #[derive(Debug)]
-pub struct SecureClientHandshake(Option<SecureSocket<ClientSession>>);
-impl Future for SecureClientHandshake {
-    type Item = Socket;
+pub struct ClientHandshake(Option<SecureStream<ClientSession>>);
+
+impl Future for ClientHandshake {
+    type Item = SecureStream<ClientSession>;
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<Socket, io::Error> {
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         trace!("{:?}.poll()", self);
         let mut ss = self.0
             .take()
@@ -433,6 +310,6 @@ impl Future for SecureClientHandshake {
         }
 
         trace!("handshake: {}: complete", ss.peer_addr());
-        Ok(Socket(Inner::SecureClient(Box::new(ss))).into())
+        Ok(Async::Ready(ss))
     }
 }

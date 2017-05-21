@@ -1,12 +1,15 @@
-use super::{Path, Socket};
-use std::net;
+use super::Path;
+use std::{fmt, net};
 
 pub mod ctx;
 mod duplex;
 mod half_duplex;
+pub mod secure;
+pub mod socket;
 
 pub use self::ctx::Ctx;
-pub use self::duplex::{Duplex, Summary};
+pub use self::duplex::Duplex;
+pub use self::socket::Socket;
 
 pub struct ConnectionCtx<C> {
     local_addr: net::SocketAddr,
@@ -14,7 +17,23 @@ pub struct ConnectionCtx<C> {
     dst_name: Path,
     ctx: C,
 }
-impl<C: Ctx> ConnectionCtx<C> {
+
+impl<C> fmt::Debug for ConnectionCtx<C>
+    where C: fmt::Debug
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ConnectionCtx")
+            .field("local_addr", &self.local_addr)
+            .field("peer_addr", &self.peer_addr)
+            .field("dst_name", &self.dst_name)
+            .field("ctx", &self.ctx)
+            .finish()
+    }
+}
+
+impl<C> ConnectionCtx<C>
+    where C: Ctx
+{
     pub fn new(local: net::SocketAddr,
                peer: net::SocketAddr,
                dst: Path,
