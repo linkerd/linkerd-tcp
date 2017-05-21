@@ -13,7 +13,8 @@ use std::sync::Arc;
 pub enum ServerConfig {
     #[serde(rename = "io.l5d.tcp")]
     Tcp {
-        addr: net::SocketAddr,
+        port: u16,
+        ip: Option<net::IpAddr>,
         dst_name: Option<String>,
     },
 
@@ -22,7 +23,8 @@ pub enum ServerConfig {
     // TODO supoprt persistence?
     #[serde(rename = "io.l5d.tls", rename_all = "camelCase")]
     Tls {
-        addr: net::SocketAddr,
+        port: u16,
+        ip: Option<net::IpAddr>,
         dst_name: Option<String>,
         alpn_protocols: Option<Vec<String>>,
         default_identity: Option<TlsServerIdentityConfig>,
@@ -37,17 +39,24 @@ impl ServerConfig {
                      -> Result<Unbound, ConfigError> {
         match *self {
             ServerConfig::Tcp {
-                ref addr,
+                port,
+                ref ip,
                 ref dst_name,
             } => {
                 if dst_name.is_none() {
                     return Err("".into());
                 }
+                let addr = {
+                    let ip =
+                        ip.or_else(|| "0.0.0.0".parse::<net::Ipv4Addr>().ok().map(net::IpAddr::V4));
+                    net::SocketAddr::new(ip.unwrap(), port)
+                };
                 let dst_name = dst_name.as_ref().unwrap().clone();
-                Ok(super::unbound(*addr, dst_name.into(), router, buf, None))
+                Ok(super::unbound(addr, dst_name.into(), router, buf, None))
             }
             ServerConfig::Tls {
-                ref addr,
+                port,
+                ref ip,
                 ref dst_name,
                 ref alpn_protocols,
                 ref default_identity,
@@ -63,8 +72,13 @@ impl ServerConfig {
                     tls.cert_resolver = Box::new(sni);
                     super::Tls { config: Arc::new(tls) }
                 };
+                let addr = {
+                    let ip =
+                        ip.or_else(|| "0.0.0.0".parse::<net::Ipv4Addr>().ok().map(net::IpAddr::V4));
+                    net::SocketAddr::new(ip.unwrap(), port)
+                };
                 let dst_name = dst_name.as_ref().unwrap().clone();
-                Ok(super::unbound(*addr, dst_name.into(), router, buf, Some(tls)))
+                Ok(super::unbound(addr, dst_name.into(), router, buf, Some(tls)))
             }
         }
     }

@@ -2,14 +2,14 @@ admin:
   addr: 0.0.0.0:9989
   metricsIntervalSecs: 10
 
-proxies:
+routers:
 
   - label: default
     servers:
       - kind: io.l5d.tcp
-        addr: 0.0.0.0:7474
+        port: 7474
       # - kind: io.l5d.tls
-      #   addr: 0.0.0.0:7575
+      #   port: 7575
       #   identities:
       #     localhost:
       #       privateKey: ../eg-ca/localhost.tls/private.pem
@@ -17,10 +17,10 @@ proxies:
       #         - ../eg-ca/localhost.tls/cert.pem
       #         - ../eg-ca/localhost.tls/ca-chain.cert.pem
 
-    namerd:
-      url: http://127.0.0.1:4180
-      path: /svc/default
-      intervalSecs: 5
+    # namerd:
+    #   url: http://127.0.0.1:4180
+    #   path: /svc/default
+    #   intervalSecs: 5
 
     # client:
     #   tls:

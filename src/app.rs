@@ -20,6 +20,7 @@ use tokio_core::net::TcpListener;
 use tokio_core::reactor::{Core, Handle};
 use tokio_timer::Timer;
 
+const DEFAULT_ADMIN_PORT: u16 = 9989;
 const DEFAULT_BUFFER_SIZE_BYTES: usize = 16 * 1024;
 const DEFAULT_GRACE_SECS: u64 = 10;
 const DEFAULT_METRICS_INTERVAL_SECS: u64 = 60;
@@ -81,10 +82,18 @@ impl AppConfig {
         }
 
         let admin = {
-            let addr = self.admin
-                .as_ref()
-                .and_then(|a| a.addr)
-                .unwrap_or_else(|| "0.0.0.0:9989".parse().unwrap());
+            let addr = {
+                let ip = self.admin
+                    .as_ref()
+                    .and_then(|a| a.ip)
+                    .or_else(|| "0.0.0.0".parse::<net::Ipv4Addr>().ok().map(net::IpAddr::V4))
+                    .unwrap();
+                let port = self.admin
+                    .as_ref()
+                    .and_then(|a| a.port)
+                    .unwrap_or(DEFAULT_ADMIN_PORT);
+                net::SocketAddr::new(ip, port)
+            };
             let grace = Duration::from_secs(self.admin
                                                 .as_ref()
                                                 .and_then(|admin| admin.grace_secs)
@@ -126,6 +135,8 @@ pub struct RouterConfig {
     ///
     /// By default, connections are clear TCP.
     pub client: Option<ConnectorFactoryConfig>,
+
+    //resolver: 
 
     //pub minimum_connections: Option<usize>,
     // TODO pub maximum_waiters: Option<usize>,
@@ -185,7 +196,8 @@ impl RouterSpawner {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AdminConfig {
-    pub addr: Option<net::SocketAddr>,
+    pub port: Option<u16>,
+    pub ip: Option<net::IpAddr>,
     pub metrics_interval_secs: Option<u64>,
     pub grace_secs: Option<u64>,
 }
