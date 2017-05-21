@@ -1,5 +1,5 @@
 use super::{ConfigError, Path};
-use super::lb::{Balancer, BalancerFactory, Selector};
+use super::balancer::{Balancer, BalancerFactory, Selector};
 use super::resolver::Resolver;
 use futures::{Future, Poll, Async};
 use std::cell::RefCell;

@@ -4,8 +4,8 @@
 
 use super::{resolver, router, server};
 use super::ConfigError;
+use super::balancer::BalancerFactory;
 use super::connector::ConnectorFactoryConfig;
-use super::lb::BalancerFactory;
 use futures::{Future, future};
 use futures::sync::oneshot;
 use serde_json;

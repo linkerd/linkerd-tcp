@@ -24,17 +24,17 @@ extern crate tokio_timer;
 extern crate url;
 
 pub mod app;
+mod balancer;
 mod connection;
 mod connector;
-mod lb;
 mod path;
 mod resolver;
 mod router;
 mod server;
 mod socket;
 
+use balancer::{DstAddr, DstConnection};
 use connection::Connection;
-use lb::{DstAddr, DstConnection};
 use path::Path;
 use socket::Socket;
 

@@ -1,6 +1,6 @@
 use super::half_duplex::{self, HalfDuplex};
+use super::super::balancer::{DstCtx, DstConnection};
 use super::super::connection::{ConnectionCtx, ctx};
-use super::super::lb::{DstCtx, DstConnection};
 use super::super::server::SrcConnection;
 use futures::{Async, Future, Poll};
 use std::cell::RefCell;
