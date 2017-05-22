@@ -53,6 +53,10 @@ impl Endpoint {
         }
     }
 
+    pub fn peer_addr(&self) -> net::SocketAddr {
+        self.peer_addr
+    }
+
     pub fn connecting(&self) -> usize {
         self.connecting.len()
     }

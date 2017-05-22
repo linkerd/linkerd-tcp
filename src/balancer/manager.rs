@@ -185,54 +185,64 @@ impl Manager {
     // TODO: we need to do some sort of probation deal to manage endpoints that are
     // retired.
     pub fn update_resolved(&mut self, resolved: &[DstAddr]) {
-        let mut dsts = normalize_weights(resolved);
-
         let mut temp = {
             let sz = cmp::max(self.available.len(), self.retired.len());
             VecDeque::with_capacity(sz)
         };
+        let dsts = normalize_weights(resolved);
+        self.check_retired(&dsts, &mut temp);
+        self.check_available(&dsts, &mut temp);
+        self.update_available_from_new(dsts);
+    }
 
-        // Check retired endpoints.
-        //
-        // Endpoints are either salvaged backed into the active pool, maintained as
-        // retired if still active, or dropped if inactive.
-        {
-            for (addr, ep) in self.retired.drain(..) {
-                if dsts.contains_key(&addr) {
-                    self.available.insert(addr, ep);
-                } else if ep.is_idle() {
-                    drop(ep);
-                } else {
-                    temp.push_back((addr, ep));
-                }
+    /// Checks retired endpoints.
+    ///
+    /// Endpoints are either salvaged backed into the active pool, maintained as
+    /// retired if still active, or dropped if inactive.
+    fn check_retired(&mut self,
+                     dsts: &OrderMap<net::SocketAddr, f32>,
+                     temp: &mut VecDeque<Endpoint>) {
+        for (addr, ep) in self.retired.drain(..) {
+            if dsts.contains_key(&addr) {
+                self.available.insert(addr, ep);
+            } else if ep.is_idle() {
+                drop(ep);
+            } else {
+                temp.push_back(ep);
             }
-            for _ in 0..temp.len() {
-                let (addr, ep) = temp.pop_front().unwrap();
+        }
+
+        for _ in 0..temp.len() {
+            let ep = temp.pop_front().unwrap();
+            self.retired.insert(ep.peer_addr(), ep);
+        }
+    }
+
+    /// Checks active endpoints.
+    ///
+    /// Endpoints are either maintained in the active pool, moved into the retired poll if
+    fn check_available(&mut self,
+                       dsts: &OrderMap<net::SocketAddr, f32>,
+                       temp: &mut VecDeque<Endpoint>) {
+        for (addr, ep) in self.available.drain(..) {
+            if dsts.contains_key(&addr) {
+                temp.push_back(ep);
+            } else if ep.is_idle() {
+                drop(ep);
+            } else {
+                // self.pending_connections -= ep.connecting.len();
+                // self.established_connections -= ep.connected.len();
                 self.retired.insert(addr, ep);
             }
         }
 
-        // Check active endpoints.
-        //
-        // Endpoints are either maintained in the active pool, moved into the retired poll if
-        {
-            for (addr, ep) in self.available.drain(..) {
-                if dsts.contains_key(&addr) {
-                    temp.push_back((addr, ep));
-                } else if ep.is_idle() {
-                    drop(ep);
-                } else {
-                    // self.pending_connections -= ep.connecting.len();
-                    // self.established_connections -= ep.connected.len();
-                    self.retired.insert(addr, ep);
-                }
-            }
-            for _ in 0..temp.len() {
-                let (addr, ep) = temp.pop_front().unwrap();
-                self.available.insert(addr, ep);
-            }
+        for _ in 0..temp.len() {
+            let ep = temp.pop_front().unwrap();
+            self.available.insert(ep.peer_addr(), ep);
         }
+    }
 
+    fn update_available_from_new(&mut self, mut dsts: OrderMap<net::SocketAddr, f32>) {
         // Add new endpoints or update the base weights of existing endpoints.
         let name = self.dst_name.clone();
         for (addr, weight) in dsts.drain(..) {
@@ -262,7 +272,7 @@ pub struct Managing {
 }
 
 impl Managing {
-    /// Polls
+    /// Obtains the most recent successful resolution.
     fn resolve(&mut self) -> Option<resolver::Result<Vec<DstAddr>>> {
         let mut resolution = None;
         loop {
