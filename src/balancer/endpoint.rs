@@ -40,11 +40,11 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    pub fn new(dst: Path, addr: net::SocketAddr, weight: f32) -> Endpoint {
+    pub fn new(dst_name: Path, peer_addr: net::SocketAddr, weight: f32) -> Endpoint {
         Endpoint {
-            dst_name: dst,
-            peer_addr: addr,
-            weight: weight,
+            dst_name,
+            peer_addr,
+            weight,
             consecutive_failures: 0,
             connecting: VecDeque::default(),
             connected: VecDeque::default(),

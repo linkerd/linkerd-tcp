@@ -11,9 +11,9 @@ use tokio_timer::Timer;
 
 pub fn new(resolver: Resolver, factory: BalancerFactory) -> Router {
     let inner = InnerRouter {
+        resolver,
+        factory,
         routes: HashMap::default(),
-        resolver: resolver,
-        factory: factory,
     };
     Router(Rc::new(RefCell::new(inner)))
 }

@@ -39,12 +39,12 @@ impl<S: Session> fmt::Debug for SecureStream<S> {
 impl<S> SecureStream<S>
     where S: Session
 {
-    fn new(t: TcpStream, s: S) -> SecureStream<S> {
+    fn new(tcp: TcpStream, session: S) -> SecureStream<S> {
         SecureStream {
-            peer: t.peer_addr().unwrap(),
-            local: t.local_addr().unwrap(),
-            tcp: t,
-            session: s,
+            peer: tcp.peer_addr().unwrap(),
+            local: tcp.local_addr().unwrap(),
+            tcp,
+            session,
         }
     }
 

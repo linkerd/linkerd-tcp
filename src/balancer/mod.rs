@@ -26,10 +26,7 @@ pub struct DstAddr {
 
 impl DstAddr {
     pub fn new(addr: net::SocketAddr, weight: f32) -> DstAddr {
-        DstAddr {
-            addr: addr,
-            weight: weight,
-        }
+        DstAddr { addr, weight }
     }
 }
 

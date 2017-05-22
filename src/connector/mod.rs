@@ -66,8 +66,8 @@ impl Tls {
 
 fn new(connect_timeout: Option<time::Duration>, tls: Option<Tls>) -> Connector {
     Connector {
-        connect_timeout: connect_timeout,
-        tls: tls,
+        connect_timeout,
+        tls,
     }
 }
 

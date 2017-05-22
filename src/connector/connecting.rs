@@ -6,7 +6,7 @@ use tokio_core::net::TcpStreamNew;
 use tokio_timer::Sleep;
 
 pub fn new(tcp: TcpStreamNew, tls: Option<Tls>, timeout: Option<Sleep>) -> Connecting {
-    let sock: Box<Future<Item = Socket, Error = io::Error>> = match tls {
+    let socket: Box<Future<Item = Socket, Error = io::Error>> = match tls {
         None => Box::new(tcp.map(socket::plain)),
         Some(tls) => {
             let sock = tcp.and_then(move |tcp| tls.handshake(tcp))
@@ -14,10 +14,7 @@ pub fn new(tcp: TcpStreamNew, tls: Option<Tls>, timeout: Option<Sleep>) -> Conne
             Box::new(sock)
         }
     };
-    Connecting {
-        socket: sock,
-        timeout: timeout,
-    }
+    Connecting { socket, timeout }
 }
 
 pub struct Connecting {

@@ -34,16 +34,16 @@ impl<C> fmt::Debug for ConnectionCtx<C>
 impl<C> ConnectionCtx<C>
     where C: Ctx
 {
-    pub fn new(local: net::SocketAddr,
-               peer: net::SocketAddr,
-               dst: Path,
+    pub fn new(local_addr: net::SocketAddr,
+               peer_addr: net::SocketAddr,
+               dst_name: Path,
                ctx: C)
                -> ConnectionCtx<C> {
         ConnectionCtx {
-            local_addr: local,
-            peer_addr: peer,
-            dst_name: dst,
-            ctx: ctx,
+            local_addr,
+            peer_addr,
+            dst_name,
+            ctx,
         }
     }
 
@@ -70,11 +70,9 @@ pub struct Connection<C> {
     pub socket: Socket,
 }
 impl<C: Ctx> Connection<C> {
-    pub fn new(dst: Path, sock: Socket, ctx: C) -> Connection<C> {
-        Connection {
-            ctx: ConnectionCtx::new(sock.local_addr(), sock.peer_addr(), dst, ctx),
-            socket: sock,
-        }
+    pub fn new(dst: Path, socket: Socket, ctx: C) -> Connection<C> {
+        let ctx = ConnectionCtx::new(socket.local_addr(), socket.peer_addr(), dst, ctx);
+        Connection { socket, ctx }
     }
 
     pub fn peer_addr(&self) -> net::SocketAddr {

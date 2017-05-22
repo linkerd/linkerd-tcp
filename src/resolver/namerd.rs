@@ -48,12 +48,13 @@ impl Namerd {
                -> Namerd {
         Namerd {
             base_url: format!("{}/api/1/resolve/{}", base_url, namespace),
-            period: period,
-            namespace: namespace,
             stats: Stats::new(metrics),
+            namespace,
+            period,
         }
     }
 }
+
 impl Namerd {
     pub fn with_client(self, handle: &Handle, timer: &Timer) -> WithClient {
         WithClient {
@@ -77,9 +78,9 @@ impl WithClient {
         let interval = self.timer.interval(self.namerd.period);
         Addrs {
             client: self.client.clone(),
-            url: url,
             stats: self.namerd.stats.clone(),
             state: Some(State::Pending(init, interval)),
+            url,
         }
     }
 }

@@ -7,16 +7,19 @@ use std::rc::Rc;
 //use tacho;
 use tokio_io::AsyncWrite;
 
-pub fn new(r: Rc<RefCell<Socket>>, w: Rc<RefCell<Socket>>, b: Rc<RefCell<Vec<u8>>>) -> HalfDuplex {
+pub fn new(reader: Rc<RefCell<Socket>>,
+           writer: Rc<RefCell<Socket>>,
+           buf: Rc<RefCell<Vec<u8>>>)
+           -> HalfDuplex {
     HalfDuplex {
-        reader: r,
-        writer: w,
-        buf: b,
+        reader,
+        writer,
+        buf,
         pending: None,
         bytes_total: 0,
         completed: false,
-            // bytes_total_count: metrics.counter("bytes_total".into()),
-            // allocs_count: metrics.counter("allocs_count".into()),
+        // bytes_total_count: metrics.counter("bytes_total".into()),
+        // allocs_count: metrics.counter("allocs_count".into()),
     }
 }
 
