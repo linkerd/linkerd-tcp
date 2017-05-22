@@ -5,7 +5,8 @@
 ## Getting Help ##
 
 If you have a question about linkerd-tcp or have encountered problems using it,
-you may [file an issue][issue] or join us on [Slack][slack].
+you may [file an issue][issue], join us on [Slack][slack], or ask questions in
+our [Discourse instance][discourse]
 
 ## Submitting a Pull Request ##
 
@@ -81,3 +82,4 @@ changes should include before- and after- benchmark results.
 [issue]: https://github.com/linkerd/linkerd-tcp/issues/new
 [members]: https://github.com/orgs/linkerd/people
 [slack]: http://slack.linkerd.io/
+[discourse]: https://discourse.linkerd.io
