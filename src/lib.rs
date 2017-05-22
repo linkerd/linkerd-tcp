@@ -1,4 +1,6 @@
-//! A TCP/TLS load balancer.
+//! linkerd-tcp: A load-balancing TCP/TLS stream routing proxy.
+//!
+//!
 //!
 //! Copyright 2017 Buoyant, Inc.
 
@@ -20,7 +22,6 @@ extern crate tokio_core;
 #[macro_use]
 extern crate tokio_io;
 extern crate tokio_timer;
-//extern crate twox_hash;
 extern crate url;
 
 mod admin;
