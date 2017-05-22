@@ -1,7 +1,5 @@
 use super::half_duplex::{self, HalfDuplex};
-use super::super::balancer::{DstCtx, DstConnection};
-use super::super::connection::{ConnectionCtx, ctx};
-use super::super::server::SrcConnection;
+use super::super::connection::{Connection, ConnectionCtx, ctx};
 use futures::{Async, Future, Poll};
 use std::cell::RefCell;
 use std::io;
@@ -9,9 +7,9 @@ use std::net;
 use std::rc::Rc;
 //use tacho;
 
-pub struct DuplexCtx {
-    pub src: ConnectionCtx<ctx::Null>,
-    pub dst: ConnectionCtx<DstCtx>,
+pub struct DuplexCtx<S, D> {
+    pub src: ConnectionCtx<S>,
+    pub dst: ConnectionCtx<D>,
 }
 
 pub struct Summary {
@@ -19,9 +17,29 @@ pub struct Summary {
     pub to_src_bytes: u64,
 }
 
+pub fn new<S, D>(src: Connection<S>, dst: Connection<D>, buf: Rc<RefCell<Vec<u8>>>) -> Duplex<S, D>
+    where S: ctx::Ctx,
+          D: ctx::Ctx
+{
+    let src_socket = Rc::new(RefCell::new(src.socket));
+    let dst_socket = Rc::new(RefCell::new(dst.socket));
+    Duplex {
+        ctx: Some(DuplexCtx {
+                      src: src.ctx,
+                      dst: dst.ctx,
+                  }),
+
+        to_dst: Some(half_duplex::new(src_socket.clone(), dst_socket.clone(), buf.clone())),
+        to_dst_bytes: 0,
+
+        to_src: Some(half_duplex::new(dst_socket, src_socket, buf)),
+        to_src_bytes: 0,
+    }
+}
+
 /// Joins src and dst transfers into a single Future.
-pub struct Duplex {
-    ctx: Option<DuplexCtx>,
+pub struct Duplex<S, D> {
+    ctx: Option<DuplexCtx<S, D>>,
     to_dst: Option<HalfDuplex>,
     to_src: Option<HalfDuplex>,
 
@@ -31,24 +49,7 @@ pub struct Duplex {
     //rx_bytes_stat: tacho::Stat,
 }
 
-impl Duplex {
-    pub fn new(src: SrcConnection, dst: DstConnection, buf: Rc<RefCell<Vec<u8>>>) -> Duplex {
-        let src_socket = Rc::new(RefCell::new(src.socket));
-        let dst_socket = Rc::new(RefCell::new(dst.socket));
-        Duplex {
-            ctx: Some(DuplexCtx {
-                          src: src.ctx,
-                          dst: dst.ctx,
-                      }),
-
-            to_dst: Some(half_duplex::new(src_socket.clone(), dst_socket.clone(), buf.clone())),
-            to_dst_bytes: 0,
-
-            to_src: Some(half_duplex::new(dst_socket, src_socket, buf)),
-            to_src_bytes: 0,
-        }
-    }
-
+impl<S: ctx::Ctx, D: ctx::Ctx> Duplex<S, D> {
     fn src_addr(&self) -> net::SocketAddr {
         match self.ctx {
             None => panic!("missing context"),
@@ -64,7 +65,7 @@ impl Duplex {
     }
 }
 
-impl Future for Duplex {
+impl<S: ctx::Ctx, D: ctx::Ctx> Future for Duplex<S, D> {
     type Item = Summary;
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Summary, io::Error> {

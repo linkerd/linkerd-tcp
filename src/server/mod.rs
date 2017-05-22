@@ -1,5 +1,5 @@
 use super::Path;
-use super::connection::{Connection, Duplex, Socket, ctx, secure, socket};
+use super::connection::{Connection, Socket, ctx, secure, socket};
 use super::router::Router;
 use futures::{Async, Future, Poll, Stream, future};
 use rustls;
@@ -15,9 +15,6 @@ use tokio_timer::Timer;
 mod config;
 mod sni;
 pub use self::config::ServerConfig;
-
-/// An incoming connection.
-pub type SrcConnection = Connection<ctx::Null>;
 
 fn unbound(addr: net::SocketAddr,
            dst: Path,
@@ -87,13 +84,14 @@ impl Future for Bound {
                     return Ok(Async::NotReady);
                 }
                 Async::Ready(None) => {
-                    trace!("{}: incoming stream closed", self.bound_addr);
+                    trace!("{}: listener closed", self.bound_addr);
                     return Ok(Async::Ready(()));
                 }
                 Async::Ready(Some((tcp, _))) => {
                     trace!("{}: incoming stream from {}",
                            self.bound_addr,
                            tcp.peer_addr().unwrap());
+
                     // Finish accepting the connection from the server.
                     //
                     // TODO we should be able to get metadata from a TLS handshake but we can't!
@@ -115,7 +113,7 @@ impl Future for Bound {
                     };
 
                     // Obtain a selector.
-                    let dst = self.meta
+                    let balancer = self.meta
                         .router
                         .route(&self.meta.dst_name, &self.reactor, &self.timer);
 
@@ -125,11 +123,11 @@ impl Future for Bound {
                     // on failed inbound connections.
                     let duplex = {
                         let buf = self.meta.buf.clone();
-                        src.join(dst)
-                            .and_then(move |(src, dst)| {
-                                          dst.select().and_then(move |dst| {
-                                                                    Duplex::new(src, dst, buf)
-                                                                })
+                        src.join(balancer)
+                            .and_then(move |(src, balancer)| {
+                                          balancer
+                                              .select()
+                                              .and_then(move |dst| src.into_duplex(dst, buf))
                                       })
                     };
 

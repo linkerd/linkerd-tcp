@@ -1,5 +1,7 @@
 use super::Path;
 use std::{fmt, net};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub mod ctx;
 mod duplex;
@@ -81,5 +83,12 @@ impl<C: Ctx> Connection<C> {
 
     pub fn local_addr(&self) -> net::SocketAddr {
         self.ctx.local_addr
+    }
+
+    pub fn into_duplex<D: Ctx>(self,
+                               other: Connection<D>,
+                               buf: Rc<RefCell<Vec<u8>>>)
+                               -> Duplex<C, D> {
+        duplex::new(self, other, buf)
     }
 }
