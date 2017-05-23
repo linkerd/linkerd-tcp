@@ -230,13 +230,19 @@ fn parse_chunks(chunks: &[Chunk]) -> Result<Vec<DstAddr>> {
 
 fn to_weighted_addrs(namerd_addrs: &[NamerdAddr]) -> Vec<DstAddr> {
     // We never intentionally clear the EndpointMap.
-    let mut weighted_addrs: Vec<DstAddr> = Vec::new();
+    let mut dsts: Vec<DstAddr> = Vec::new();
+    let mut sum = 0.0;
     for na in namerd_addrs {
         let addr = net::SocketAddr::new(na.ip.parse().unwrap(), na.port);
         let w = na.meta.endpoint_addr_weight.unwrap_or(1.0);
-        weighted_addrs.push(DstAddr::new(addr, w));
+        sum += w;
+        dsts.push(DstAddr::new(addr, w));
     }
-    weighted_addrs
+    // Normalize weights on [0.0, 0.1].
+    for mut dst in &mut dsts {
+        dst.weight /= sum;
+    }
+    dsts
 }
 
 #[derive(Debug, Deserialize)]

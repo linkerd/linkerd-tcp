@@ -189,7 +189,7 @@ impl Manager {
             let sz = cmp::max(self.available.len(), self.retired.len());
             VecDeque::with_capacity(sz)
         };
-        let dsts = normalize_weights(resolved);
+        let dsts = dsts_by_addr(resolved);
         self.check_retired(&dsts, &mut temp);
         self.check_available(&dsts, &mut temp);
         self.update_available_from_new(dsts);
@@ -254,16 +254,12 @@ impl Manager {
     }
 }
 
-fn normalize_weights(resolved: &[DstAddr]) -> OrderMap<net::SocketAddr, f32> {
-    let mut sum = 0.0;
-    for &DstAddr { weight, .. } in resolved {
-        sum += weight;
+fn dsts_by_addr(dsts: &[DstAddr]) -> OrderMap<net::SocketAddr, f32> {
+    let mut by_addr = OrderMap::with_capacity(dsts.len());
+    for &DstAddr { addr, weight } in dsts {
+        by_addr.insert(addr, weight);
     }
-    let mut dsts = OrderMap::with_capacity(resolved.len());
-    for &DstAddr { addr, weight } in resolved {
-        dsts.insert(addr, weight / sum);
-    }
-    dsts
+    by_addr
 }
 
 pub struct Managing {
