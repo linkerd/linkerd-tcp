@@ -7,7 +7,7 @@
 use super::{DstAddr, Result, Error};
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
 use futures::{Async, Future, IntoFuture, Poll, Stream, future};
-use hyper::{Body, Chunk, Client};
+use hyper::{Body, Chunk, Client, Uri};
 use hyper::client::{Connect as HyperConnect, HttpConnector};
 use hyper::status::StatusCode;
 use serde_json as json;
@@ -72,15 +72,18 @@ pub struct WithClient {
 }
 impl WithClient {
     pub fn resolve(&self, target: &str) -> Addrs {
-        let url = Url::parse_with_params(&self.namerd.base_url, &[("path", &target)])
-            .expect("invalid namerd url");
-        let init = request(self.client.clone(), url.clone(), self.namerd.stats.clone());
+        let uri = Url::parse_with_params(&self.namerd.base_url, &[("path", &target)])
+            .expect("invalid namerd url")
+            .as_str()
+            .parse::<Uri>()
+            .expect("Could not parse namerd URI");
+        let init = request(self.client.clone(), uri.clone(), self.namerd.stats.clone());
         let interval = self.timer.interval(self.namerd.period);
         Addrs {
             client: self.client.clone(),
             stats: self.namerd.stats.clone(),
             state: Some(State::Pending(init, interval)),
-            url,
+            uri,
         }
     }
 }
@@ -88,7 +91,7 @@ impl WithClient {
 pub struct Addrs {
     state: Option<State>,
     client: Rc<HttpConnectorFactory>,
-    url: Url,
+    uri: Uri,
     stats: Stats,
 }
 
@@ -116,7 +119,7 @@ impl Stream for Addrs {
                         Ok(Async::Ready(_)) => {
                             let fut = {
                                 let c = self.client.clone();
-                                let u = self.url.clone();
+                                let u = self.uri.clone();
                                 let s = self.stats.clone();
                                 request(c, u, s)
                             };
@@ -145,12 +148,12 @@ impl Stream for Addrs {
     }
 }
 
-fn request<C: HyperConnect>(client: Rc<Client<C>>, url: Url, stats: Stats) -> AddrsFuture {
-    debug!("Polling namerd at {}", url.to_string());
+fn request<C: HyperConnect>(client: Rc<Client<C>>, uri: Uri, stats: Stats) -> AddrsFuture {
+    debug!("Polling namerd at {}", uri.to_string());
     let mut stats = stats;
     let rsp = future::lazy(|| Ok(tacho::Timing::start())).and_then(move |start_t| {
         client
-            .get(url)
+            .get(uri)
             .then(handle_response)
             .then(move |rsp| {
                 stats.request_latency_ms.add(start_t.elapsed_ms());
@@ -168,7 +171,7 @@ fn request<C: HyperConnect>(client: Rc<Client<C>>, url: Url, stats: Stats) -> Ad
 fn handle_response(result: ::hyper::Result<::hyper::client::Response>) -> AddrsFuture {
     match result {
         Ok(rsp) => {
-            match *rsp.status() {
+            match rsp.status() {
                 StatusCode::Ok => parse_body(rsp.body()),
                 status => {
                     info!("error: bad response: {}", status);
