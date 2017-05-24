@@ -4,7 +4,9 @@ use futures::sync::mpsc;
 use tokio_core::reactor::Handle;
 use tokio_timer::{Timer, TimerError};
 
+mod config;
 mod namerd;
+pub use self::config::NamerdConfig;
 pub use self::namerd::{Namerd, Addrs};
 
 #[derive(Debug)]

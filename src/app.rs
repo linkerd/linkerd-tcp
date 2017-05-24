@@ -1,10 +1,7 @@
-//! Loads a configuration and runs it.
-
-#![allow(missing_docs)]
-
 use super::{ConfigError, admin, resolver, router, server};
 use super::balancer::BalancerFactory;
 use super::connector::ConnectorFactoryConfig;
+use super::resolver::NamerdConfig;
 use futures::{Future, Stream};
 use futures::sync::oneshot;
 use hyper::server::Http;
@@ -27,8 +24,13 @@ const DEFAULT_METRICS_INTERVAL_SECS: u64 = 60;
 //TODO const DEFAULT_MINIMUM_CONNECTIONS: usize = 1;
 //TODO const DEFAULT_MAXIMUM_WAITERS: usize = 128;
 
+/// Signals a receiver to shutdown by the provided deadline.
 pub type Closer = oneshot::Sender<Instant>;
+
+/// Signals that the receiver should release its resources by the provided deadline.
 pub type Closed = oneshot::Receiver<Instant>;
+
+/// Creates a thread-safe shutdown latch.
 pub fn closer() -> (Closer, Closed) {
     oneshot::channel()
 }
@@ -37,12 +39,13 @@ pub fn closer() -> (Closer, Closed) {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AppConfig {
+    /// Configures the processes's admin server.
     pub admin: Option<AdminConfig>,
 
-    /// The configuration for one or more routers.
+    /// Configures one or more routers.
     pub routers: Vec<RouterConfig>,
 
-    /// The size of the shared buffer used for transferring data.
+    /// Configures the shared buffer used for transferring data.
     pub buffer_size_bytes: Option<usize>,
 }
 
@@ -61,19 +64,25 @@ impl ::std::str::FromStr for AppConfig {
 }
 
 impl AppConfig {
-    /// Build an AppSpawner from a configuration.
-    pub fn into_app(mut self) -> Result<AppSpawner, ConfigError> {
+    /// Build an App from a configuration.
+    pub fn into_app(mut self) -> Result<App, ConfigError> {
+        // Create a shared transfer buffer to be used for all stream proxying.
         let buf = {
             let sz = self.buffer_size_bytes.unwrap_or(DEFAULT_BUFFER_SIZE_BYTES);
             Rc::new(RefCell::new(vec![0 as u8; sz]))
         };
 
-        let (metrics_tx, reporter) = tacho::new();
+        let (metrics, reporter) = tacho::new();
 
+        // Load all router configurations.
+        //
+        // Separate resolver tasks are created to be executed in the admin thread's
+        // reactor so that service discovery lookups are performed out of the serving
+        // thread.
         let mut routers = VecDeque::with_capacity(self.routers.len());
         let mut resolvers = VecDeque::with_capacity(self.routers.len());
         for config in self.routers.drain(..) {
-            let mut r = config.into_router(buf.clone(), metrics_tx.clone())?;
+            let mut r = config.into_router(buf.clone(), &metrics)?;
             let e = r.resolver_executor
                 .take()
                 .expect("router missing resolver executor");
@@ -81,6 +90,7 @@ impl AppConfig {
             resolvers.push_back(e);
         }
 
+        // Read the admin server configuration and bundle it an AdminRunner.
         let admin = {
             let addr = {
                 let ip = self.admin
@@ -117,15 +127,18 @@ impl AppConfig {
             }
         };
 
-        Ok(AppSpawner {
+        Ok(App {
                routers: routers,
                admin: admin,
            })
     }
 }
 
-pub struct AppSpawner {
+/// Holds configuraed tasks to be spawned.
+pub struct App {
+    /// Executes configured routers.
     pub routers: VecDeque<RouterSpawner>,
+    /// Executes the admin server.
     pub admin: AdminRunner,
 }
 
@@ -133,6 +146,7 @@ pub struct AppSpawner {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RouterConfig {
+    /// A descriptive name for this router. For stats reporting.
     pub label: String,
 
     /// The configuration for one or more servers.
@@ -143,24 +157,24 @@ pub struct RouterConfig {
     /// By default, connections are clear TCP.
     pub client: Option<ConnectorFactoryConfig>,
 
-    //resolver: 
+    pub interpreter: NamerdConfig,
 
     //pub minimum_connections: Option<usize>,
     // TODO pub maximum_waiters: Option<usize>,
 }
 
 impl RouterConfig {
+    /// Consumes and validates this configuration to produce a router initializer.
     fn into_router(mut self,
                    buf: Rc<RefCell<Vec<u8>>>,
-                   metrics: tacho::Scope)
+                   metrics: &tacho::Scope)
                    -> Result<RouterSpawner, ConfigError> {
+
+        // Each router has its own resolver/executor pair. The resolver is used by the
+        // router. The resolver executor is used to drive exececution in another thread.
         let (resolver, resolver_exec) = {
-            // FIXME
-            let n = resolver::Namerd::new("http://localhost:4180".into(),
-                                          Duration::from_secs(10),
-                                          "default".into(),
-                                          metrics);
-            resolver::new(n)
+            let namerd = self.interpreter.into_namerd(&metrics)?;
+            resolver::new(namerd)
         };
 
         let balancer = {

@@ -65,6 +65,7 @@ impl Namerd {
     }
 }
 
+/// A name
 pub struct WithClient {
     namerd: Namerd,
     client: Rc<HttpConnectorFactory>,
@@ -88,6 +89,7 @@ impl WithClient {
     }
 }
 
+/// Polls
 pub struct Addrs {
     state: Option<State>,
     client: Rc<HttpConnectorFactory>,
@@ -103,6 +105,7 @@ enum State {
 impl Stream for Addrs {
     type Item = Result<Vec<DstAddr>>;
     type Error = Error;
+
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         loop {
             match self.state.take().expect("polled after completion") {
@@ -127,6 +130,7 @@ impl Stream for Addrs {
                         }
                     }
                 }
+
                 State::Pending(mut fut, int) => {
                     match fut.poll() {
                         Err(e) => {
