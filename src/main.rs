@@ -8,8 +8,8 @@ extern crate pretty_env_logger;
 extern crate tokio_core;
 extern crate tokio_timer;
 
-use clap::{Arg, App};
-use linkerd_tcp::app::{self, AppConfig, AppSpawner, AdminRunner, RouterSpawner};
+use clap::{Arg, App as ClapApp};
+use linkerd_tcp::app::{self, AppConfig, App, AdminRunner, RouterSpawner};
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;
@@ -27,7 +27,7 @@ fn main() {
     drop(pretty_env_logger::init());
 
     // Load command-line options.
-    let opts = App::new(crate_name!())
+    let opts = ClapApp::new(crate_name!())
         .version(crate_version!())
         .about(crate_description!())
         .arg(Arg::with_name(CONFIG_PATH_ARG)
@@ -55,7 +55,7 @@ fn main() {
     // connected by synchronization primitives as needed, but no work is being done yet.
     // Next, we'll attach each of these to a reactor in an independent thread, driving
     // both admin and serving work.
-    let AppSpawner { routers, admin } = config.into_app().expect("failed to load configuration");
+    let App { routers, admin } = config.into_app().expect("failed to load configuration");
     debug!("loaded app");
 
     let (closer, closed) = app::closer();

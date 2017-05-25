@@ -1,3 +1,5 @@
+//! Provides all of the utilities needed to load a configuration and run a process.
+
 use super::{ConfigError, admin, resolver, router, server};
 use super::balancer::BalancerFactory;
 use super::connector::ConnectorFactoryConfig;
@@ -174,7 +176,7 @@ impl RouterConfig {
         // Each router has its own resolver/executor pair. The resolver is used by the
         // router. The resolver executor is used to drive exececution in another thread.
         let (resolver, resolver_exec) = {
-            let namerd = self.interpreter.into_namerd(&metrics)?;
+            let namerd = self.interpreter.into_namerd(metrics)?;
             resolver::new(namerd)
         };
 
@@ -207,6 +209,9 @@ pub struct RouterSpawner {
 }
 
 impl RouterSpawner {
+    /// Spawns a router by spawning all of its serving interfaces.
+    ///
+    /// Returns successfully if all servers have been bound and spawned correctly.
     pub fn spawn(mut self, reactor: &Handle, timer: &Timer) -> Result<(), ConfigError> {
         while let Some(unbound) = self.servers.pop_front() {
             info!("routing on {} to {}",
@@ -225,12 +230,19 @@ impl RouterSpawner {
 pub struct AdminConfig {
     /// The port on which the admin server listens.
     pub port: Option<u16>,
+
     /// The IP address on which the admin server listens.
     pub ip: Option<net::IpAddr>,
+
+    /// The interval at which metrics should be snapshot (and reset) for export.
     pub metrics_interval_secs: Option<u64>,
+
+    /// The amount of time to wait for connections to complete between the /admin/shutdown
+    /// endpoint being triggered and the process exiting.
     pub grace_secs: Option<u64>,
 }
 
+/// Spawns resolvers before running .
 pub struct AdminRunner {
     addr: net::SocketAddr,
     reporter: tacho::Reporter,
@@ -240,6 +252,10 @@ pub struct AdminRunner {
 }
 
 impl AdminRunner {
+    /// Runs the admin server on the provided reactor.
+    ///
+    /// When the _shutdown_ endpoint is triggered, a shutdown deadline is sent on
+    /// `closer`.
     pub fn run(self, closer: Closer, reactor: &mut Core, timer: &Timer) -> Result<(), ConfigError> {
         let AdminRunner {
             addr,
