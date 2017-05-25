@@ -157,6 +157,7 @@ pub struct RouterConfig {
     /// By default, connections are clear TCP.
     pub client: Option<ConnectorFactoryConfig>,
 
+    /// Interprets request destinations into a stream of address pool updates.
     pub interpreter: NamerdConfig,
 
     //pub minimum_connections: Option<usize>,
@@ -199,6 +200,7 @@ impl RouterConfig {
     }
 }
 
+/// Spawns a router by spawning all of its serving interfaces.
 pub struct RouterSpawner {
     servers: VecDeque<server::Unbound>,
     resolver_executor: Option<resolver::Executor>,
@@ -217,10 +219,13 @@ impl RouterSpawner {
     }
 }
 
+/// Configures the admin server.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AdminConfig {
+    /// The port on which the admin server listens.
     pub port: Option<u16>,
+    /// The IP address on which the admin server listens.
     pub ip: Option<net::IpAddr>,
     pub metrics_interval_secs: Option<u64>,
     pub grace_secs: Option<u64>,
