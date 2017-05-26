@@ -89,7 +89,7 @@ impl WithClient {
     }
 }
 
-/// Polls
+/// Streams
 pub struct Addrs {
     state: Option<State>,
     client: Rc<HttpConnectorFactory>,
@@ -283,11 +283,10 @@ pub struct Stats {
 }
 impl Stats {
     fn new(metrics: tacho::Scope) -> Stats {
-        let metrics = metrics.labeled("service".into(), "namerd".into());
         Stats {
-            request_latency_ms: metrics.stat("namerd_request_latency_ms".into()),
-            success_count: metrics.counter("namerd_success_count".into()),
-            failure_count: metrics.counter("namerd_failure_count".into()),
+            request_latency_ms: metrics.stat("request_latency_ms".into()),
+            success_count: metrics.counter("success_count".into()),
+            failure_count: metrics.counter("failure_count".into()),
         }
     }
 }

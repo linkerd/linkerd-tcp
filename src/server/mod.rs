@@ -7,7 +7,7 @@ use std::{io, net};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-//use tacho::Scope;
+use tacho;
 use tokio_core::net::{TcpListener, Incoming};
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
@@ -16,18 +16,23 @@ mod config;
 mod sni;
 pub use self::config::ServerConfig;
 
-fn unbound(addr: net::SocketAddr,
-           dst: Path,
+fn unbound(listen_addr: net::SocketAddr,
+           dst_name: Path,
            router: Router,
            buf: Rc<RefCell<Vec<u8>>>,
-           tls: Option<Tls>)
+           tls: Option<Tls>,
+           metrics: &tacho::Scope)
            -> Unbound {
+    let metrics = metrics
+        .clone()
+        .labeled("listen_addr".into(), format!("{}", listen_addr));
     let meta = Meta {
-        listen_addr: addr,
-        dst_name: dst,
-        router: Rc::new(router),
-        buf: buf,
-        tls: tls,
+        listen_addr,
+        dst_name,
+        router,
+        buf,
+        tls,
+        metrics,
     };
     Unbound(meta)
 }
@@ -35,9 +40,10 @@ fn unbound(addr: net::SocketAddr,
 struct Meta {
     pub listen_addr: net::SocketAddr,
     pub dst_name: Path,
-    pub router: Rc<Router>,
+    pub router: Router,
     pub buf: Rc<RefCell<Vec<u8>>>,
     pub tls: Option<Tls>,
+    pub metrics: tacho::Scope,
 }
 
 pub struct Unbound(Meta);

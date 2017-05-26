@@ -98,28 +98,27 @@ impl AppConfig {
                 let ip = self.admin
                     .as_ref()
                     .and_then(|a| a.ip)
-                    .or_else(|| {
-                                 "127.0.0.1"
-                                     .parse::<net::Ipv4Addr>()
-                                     .ok()
-                                     .map(net::IpAddr::V4)
-                             })
-                    .unwrap();
+                    .unwrap_or_else(localhost_addr);
                 let port = self.admin
                     .as_ref()
                     .and_then(|a| a.port)
                     .unwrap_or(DEFAULT_ADMIN_PORT);
                 net::SocketAddr::new(ip, port)
             };
-            let grace = Duration::from_secs(self.admin
-                                                .as_ref()
-                                                .and_then(|admin| admin.grace_secs)
-                                                .unwrap_or(DEFAULT_GRACE_SECS));
-            let metrics_interval =
-                Duration::from_secs(self.admin
-                                        .as_ref()
-                                        .and_then(|admin| admin.metrics_interval_secs)
-                                        .unwrap_or(DEFAULT_METRICS_INTERVAL_SECS));
+            let grace = {
+                let s = self.admin
+                    .as_ref()
+                    .and_then(|admin| admin.grace_secs)
+                    .unwrap_or(DEFAULT_GRACE_SECS);
+                Duration::from_secs(s)
+            };
+            let metrics_interval = {
+                let s = self.admin
+                    .as_ref()
+                    .and_then(|admin| admin.metrics_interval_secs)
+                    .unwrap_or(DEFAULT_METRICS_INTERVAL_SECS);
+                Duration::from_secs(s)
+            };
             AdminRunner {
                 addr,
                 reporter,
@@ -134,6 +133,11 @@ impl AppConfig {
                admin: admin,
            })
     }
+}
+
+
+fn localhost_addr() -> net::IpAddr {
+    net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1))
 }
 
 /// Holds configuraed tasks to be spawned.
@@ -173,10 +177,12 @@ impl RouterConfig {
                    metrics: &tacho::Scope)
                    -> Result<RouterSpawner, ConfigError> {
 
+        let metrics = metrics.clone().labeled("router".into(), self.label.clone());
+
         // Each router has its own resolver/executor pair. The resolver is used by the
-        // router. The resolver executor is used to drive exececution in another thread.
+        // router. The resolver executor is used to drive execution in another thread.
         let (resolver, resolver_exec) = {
-            let namerd = self.interpreter.into_namerd(metrics)?;
+            let namerd = self.interpreter.into_namerd(&metrics)?;
             resolver::new(namerd)
         };
 
@@ -185,13 +191,14 @@ impl RouterConfig {
             //    .unwrap_or(DEFAULT_MINIMUM_CONNECTIONS);
             let client = self.client.unwrap_or_default().mk_connector_factory()?;
             BalancerFactory::new(/*min_conns,*/
-                                 client)
+                                 client,
+                                 &metrics)
         };
-        let router = router::new(resolver, balancer);
+        let router = router::new(resolver, balancer, &metrics);
 
         let mut servers = VecDeque::with_capacity(self.servers.len());
         for config in self.servers.drain(..) {
-            let server = config.mk_server(router.clone(), buf.clone())?;
+            let server = config.mk_server(router.clone(), buf.clone(), &metrics)?;
             servers.push_back(server);
         }
 

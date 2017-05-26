@@ -36,17 +36,17 @@ pub struct Balancer {
 }
 
 impl Balancer {
-    pub fn new(reactor: Handle,
-               timer: Timer,
-               dst: Path,
+    pub fn new(reactor: &Handle,
+               timer: &Timer,
+               dst: &Path,
                //min_conns: usize,
                conn: Connector)
                -> Balancer {
         let (tx, rx) = mpsc::unbounded();
         Balancer {
-            manager: manager::new(dst,
-                                  reactor,
-                                  timer,
+            manager: manager::new(dst.clone(),
+                                  reactor.clone(),
+                                  timer.clone(),
                                   conn,
                                   //min_conns,
                                   rx),

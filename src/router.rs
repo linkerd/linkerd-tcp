@@ -6,14 +6,16 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::rc::Rc;
+use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
-pub fn new(resolver: Resolver, factory: BalancerFactory) -> Router {
+pub fn new(resolver: Resolver, factory: BalancerFactory, metrics: &tacho::Scope) -> Router {
     let inner = InnerRouter {
         resolver,
         factory,
         routes: HashMap::default(),
+        metrics: metrics.clone(),
     };
     Router(Rc::new(RefCell::new(inner)))
 }
@@ -36,6 +38,7 @@ struct InnerRouter {
     routes: HashMap<Path, Selector>,
     resolver: Resolver,
     factory: BalancerFactory,
+    metrics: tacho::Scope,
 }
 
 impl InnerRouter {

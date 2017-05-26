@@ -23,7 +23,10 @@ impl NamerdConfig {
             return Err(format!("invalid base_url {}: {}", self.base_url, e).into());
         }
 
-        let namerd = Namerd::new(self.base_url, period, self.namespace, metrics.clone());
+        let metrics = metrics
+            .clone()
+            .labeled("resolver".into(), self.namespace.clone());
+        let namerd = Namerd::new(self.base_url, period, self.namespace, metrics);
         Ok(namerd)
     }
 }

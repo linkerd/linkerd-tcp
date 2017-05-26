@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::net;
 use std::rc::Rc;
 use std::sync::Arc;
+use tacho;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "kind")]
@@ -35,7 +36,8 @@ pub enum ServerConfig {
 impl ServerConfig {
     pub fn mk_server(&self,
                      router: Router,
-                     buf: Rc<RefCell<Vec<u8>>>)
+                     buf: Rc<RefCell<Vec<u8>>>,
+                     metrics: &tacho::Scope)
                      -> Result<Unbound, ConfigError> {
         match *self {
             ServerConfig::Tcp {
@@ -47,16 +49,12 @@ impl ServerConfig {
                     return Err("`dst_name` required".into());
                 }
                 let addr = {
-                    let ip = ip.or_else(|| {
-                                            "127.0.0.1"
-                                                .parse::<net::Ipv4Addr>()
-                                                .ok()
-                                                .map(net::IpAddr::V4)
-                                        });
-                    net::SocketAddr::new(ip.unwrap(), port)
+                    let ip =
+                        ip.unwrap_or_else(|| net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1)));
+                    net::SocketAddr::new(ip, port)
                 };
                 let dst_name = dst_name.as_ref().unwrap().clone();
-                Ok(super::unbound(addr, dst_name.into(), router, buf, None))
+                Ok(super::unbound(addr, dst_name.into(), router, buf, None, metrics))
             }
             ServerConfig::Tls {
                 port,
@@ -82,7 +80,7 @@ impl ServerConfig {
                     net::SocketAddr::new(ip.unwrap(), port)
                 };
                 let dst_name = dst_name.as_ref().unwrap().clone();
-                Ok(super::unbound(addr, dst_name.into(), router, buf, Some(tls)))
+                Ok(super::unbound(addr, dst_name.into(), router, buf, Some(tls), metrics))
             }
         }
     }
