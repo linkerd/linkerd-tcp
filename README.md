@@ -103,6 +103,18 @@ Try running the image with:
 docker run -v `pwd`/example.yml:/example.yml linkerd/linkerd-tcp:latest /example.yml
 ```
 
+To build linkerd/linkerd-tcp stand-alone binaries for Linux (requires docker), run:
+
+```bash
+make linux
+```
+
+To build linkerd/linkerd-tcp stand-alone binaries for macOS (requires macOS host), run:
+
+```bash
+make darwin
+```
+
 ## Code of Conduct ##
 
 This project is for everyone. We ask that our users and contributors take a few minutes to
