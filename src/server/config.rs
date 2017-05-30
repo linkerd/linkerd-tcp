@@ -72,7 +72,7 @@ impl ServerConfig {
                         tls.set_protocols(protos);
                     }
                     tls.cert_resolver = Box::new(sni);
-                    super::Tls { config: Arc::new(tls) }
+                    super::UnboundTls { config: Arc::new(tls) }
                 };
                 let addr = {
                     let ip =

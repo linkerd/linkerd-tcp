@@ -22,7 +22,7 @@ fn unbound(listen_addr: net::SocketAddr,
            dst_name: Path,
            router: Router,
            buf: Rc<RefCell<Vec<u8>>>,
-           tls: Option<Tls>,
+           tls: Option<UnboundTls>,
            metrics: &tacho::Scope)
            -> Unbound {
     let metrics = metrics
@@ -43,7 +43,7 @@ pub struct Unbound {
     dst_name: Path,
     router: Router,
     buf: Rc<RefCell<Vec<u8>>>,
-    tls: Option<Tls>,
+    tls: Option<UnboundTls>,
     metrics: tacho::Scope,
 }
 impl Unbound {
@@ -67,9 +67,6 @@ impl Unbound {
                timer: timer.clone(),
                dst_name: self.dst_name,
                incoming: listen.incoming(),
-               accepts: metrics.counter(ACCEPTS_KEY),
-               router: self.router,
-               buf: self.buf,
                tls: self.tls
                    .map(|tls| {
                             BoundTls {
@@ -77,6 +74,11 @@ impl Unbound {
                                 handshake_ms: metrics.stat(TLS_HANDSHAKE_MS_KEY),
                             }
                         }),
+               router: self.router,
+               buf: self.buf,
+               accepts: metrics.counter(ACCEPTS_KEY),
+               closes: metrics.counter(CLOSES_KEY),
+               connections: metrics.gauge(CONNECTIONS_KEY),
            })
     }
 }
@@ -84,14 +86,21 @@ impl Unbound {
 pub struct Bound {
     reactor: Handle,
     timer: Timer,
+
+    bound_addr: net::SocketAddr,
     incoming: Incoming,
+    tls: Option<BoundTls>,
+
     dst_name: Path,
     router: Router,
-    tls: Option<BoundTls>,
-    bound_addr: net::SocketAddr,
-    accepts: tacho::Counter,
+
     buf: Rc<RefCell<Vec<u8>>>,
+
+    accepts: tacho::Counter,
+    closes: tacho::Counter,
+    connections: tacho::Gauge,
 }
+
 impl Future for Bound {
     type Item = ();
     type Error = io::Error;
@@ -110,10 +119,14 @@ impl Future for Bound {
                     return Ok(Async::Ready(()));
                 }
                 Async::Ready(Some((tcp, _))) => {
-                    self.accepts.incr(1);
                     trace!("{}: incoming stream from {}",
                            self.bound_addr,
                            tcp.peer_addr().unwrap());
+
+                    let closes = self.closes.clone();
+                    let conns_open = self.connections.clone();
+                    self.accepts.incr(1);
+                    conns_open.incr(1);
 
                     // Finish accepting the connection from the server.
                     //
@@ -157,12 +170,17 @@ impl Future for Bound {
                                               .and_then(move |dst| src.into_duplex(dst, buf))
                                       })
                     };
+                    let done = duplex.then(move |_| {
+                                               closes.incr(1);
+                                               conns_open.decr(1);
+                                               Ok(())
+                                           });
 
                     // Do all of this work in a single, separate task so that we may process
                     // additional connections while this connection is open.
                     //
                     // TODO: implement some sort of backpressure here?
-                    self.reactor.spawn(duplex.map(|_| {}).map_err(|_| {}));
+                    self.reactor.spawn(done);
                 }
             }
         }
@@ -170,7 +188,7 @@ impl Future for Bound {
 }
 
 #[derive(Clone)]
-pub struct Tls {
+pub struct UnboundTls {
     config: Arc<rustls::ServerConfig>,
 }
 
@@ -181,5 +199,7 @@ pub struct BoundTls {
 }
 
 static ACCEPTS_KEY: &'static str = "accepts";
+static CLOSES_KEY: &'static str = "closes";
+static CONNECTIONS_KEY: &'static str = "connections";
 static SRV_ADDR_KEY: &'static str = "srv_addr";
 static TLS_HANDSHAKE_MS_KEY: &'static str = "tls_handshake_ms";
