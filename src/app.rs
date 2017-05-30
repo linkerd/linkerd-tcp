@@ -177,7 +177,7 @@ impl RouterConfig {
                    metrics: &tacho::Scope)
                    -> Result<RouterSpawner, ConfigError> {
 
-        let metrics = metrics.clone().labeled("router".into(), self.label.clone());
+        let metrics = metrics.clone().labeled("router", self.label.clone());
 
         // Each router has its own resolver/executor pair. The resolver is used by the
         // router. The resolver executor is used to drive execution in another thread.

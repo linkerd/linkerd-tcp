@@ -6,16 +6,24 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::rc::Rc;
-use tacho;
+use tacho::{self, Timing};
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
+
+static ROUTE_CREATE_KEY: &'static str = "route_create";
+static ROUTE_ERROR_KEY: &'static str = "route_error";
+static ROUTE_FOUND_KEY: &'static str = "route_found";
+static ROUTE_TIME_US_KEY: &'static str = "route_time_us";
 
 pub fn new(resolver: Resolver, factory: BalancerFactory, metrics: &tacho::Scope) -> Router {
     let inner = InnerRouter {
         resolver,
         factory,
         routes: HashMap::default(),
-        metrics: metrics.clone(),
+        route_create: metrics.counter(ROUTE_CREATE_KEY),
+        route_error: metrics.counter(ROUTE_ERROR_KEY),
+        route_found: metrics.counter(ROUTE_FOUND_KEY),
+        route_time_us: metrics.stat(ROUTE_TIME_US_KEY),
     };
     Router(Rc::new(RefCell::new(inner)))
 }
@@ -38,24 +46,42 @@ struct InnerRouter {
     routes: HashMap<Path, Selector>,
     resolver: Resolver,
     factory: BalancerFactory,
-    metrics: tacho::Scope,
+    route_create: tacho::Counter,
+    route_error: tacho::Counter,
+    route_found: tacho::Counter,
+    route_time_us: tacho::Stat,
 }
 
 impl InnerRouter {
     fn route(&mut self, dst: &Path, reactor: &Handle, timer: &Timer) -> Route {
+        let t = tacho::Timing::start();
+        let r = self.do_route(dst, reactor, timer);
+        self.route_time_us.add(t.elapsed_us());
+        Route(Some(r))
+    }
+
+    fn do_route(&mut self,
+                dst: &Path,
+                reactor: &Handle,
+                timer: &Timer)
+                -> Result<Selector, ConfigError> {
         // Try to get a balancer from the cache.
         if let Some(route) = self.routes.get(dst) {
-            return Route(Some(Ok(route.clone())));
+            self.route_found.incr(1);
+            return Ok(route.clone());
         }
 
         match self.factory.mk_balancer(reactor, timer, dst) {
-            Err(e) => Route(Some(Err(e))),
+            Err(e) => {
+                self.route_error.incr(1);
+                Err(e)
+            }
             Ok(Balancer { selector, manager }) => {
+                self.route_create.incr(1);
                 let resolve = self.resolver.resolve(dst.clone());
                 reactor.spawn(manager.manage(resolve).map_err(|_| {}));
-
                 self.routes.insert(dst.clone(), selector.clone());
-                Route(Some(Ok(selector)))
+                Ok(selector)
             }
         }
     }

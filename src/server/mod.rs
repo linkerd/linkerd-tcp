@@ -1,3 +1,5 @@
+//! TODO `dst_name` should be chosen dynamically.
+
 use super::Path;
 use super::connection::{Connection, Socket, ctx, secure, socket};
 use super::router::Router;
@@ -7,7 +9,7 @@ use std::{io, net};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use tacho;
+use tacho::{self, Timing};
 use tokio_core::net::{TcpListener, Incoming};
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
@@ -26,45 +28,55 @@ fn unbound(listen_addr: net::SocketAddr,
     let metrics = metrics
         .clone()
         .labeled("listen_addr".into(), format!("{}", listen_addr));
-    let meta = Meta {
+    Unbound {
         listen_addr,
         dst_name,
         router,
         buf,
         tls,
         metrics,
-    };
-    Unbound(meta)
+    }
 }
 
-struct Meta {
-    pub listen_addr: net::SocketAddr,
-    pub dst_name: Path,
-    pub router: Router,
-    pub buf: Rc<RefCell<Vec<u8>>>,
-    pub tls: Option<Tls>,
-    pub metrics: tacho::Scope,
+pub struct Unbound {
+    listen_addr: net::SocketAddr,
+    dst_name: Path,
+    router: Router,
+    buf: Rc<RefCell<Vec<u8>>>,
+    tls: Option<Tls>,
+    metrics: tacho::Scope,
 }
-
-pub struct Unbound(Meta);
 impl Unbound {
     pub fn listen_addr(&self) -> net::SocketAddr {
-        self.0.listen_addr
+        self.listen_addr
     }
 
     pub fn dst_name(&self) -> &Path {
-        &self.0.dst_name
+        &self.dst_name
     }
 
     pub fn bind(self, reactor: &Handle, timer: &Timer) -> io::Result<Bound> {
-        debug!("routing on {} to {}", self.0.listen_addr, self.0.dst_name);
-        let listen = TcpListener::bind(&self.0.listen_addr, reactor)?;
+        debug!("routing on {} to {}", self.listen_addr, self.dst_name);
+        let listen = TcpListener::bind(&self.listen_addr, reactor)?;
+        let bound_addr = listen.local_addr().unwrap();
+        let metrics = self.metrics
+            .labeled(SRV_ADDR_KEY, format!("{}", bound_addr));
         Ok(Bound {
+               bound_addr,
                reactor: reactor.clone(),
                timer: timer.clone(),
-               bound_addr: listen.local_addr().unwrap(),
+               dst_name: self.dst_name,
                incoming: listen.incoming(),
-               meta: self.0,
+               accepts: metrics.counter(ACCEPTS_KEY),
+               router: self.router,
+               buf: self.buf,
+               tls: self.tls
+                   .map(|tls| {
+                            BoundTls {
+                                config: tls.config,
+                                handshake_ms: metrics.stat(TLS_HANDSHAKE_MS_KEY),
+                            }
+                        }),
            })
     }
 }
@@ -73,8 +85,12 @@ pub struct Bound {
     reactor: Handle,
     timer: Timer,
     incoming: Incoming,
-    meta: Meta,
+    dst_name: Path,
+    router: Router,
+    tls: Option<BoundTls>,
     bound_addr: net::SocketAddr,
+    accepts: tacho::Counter,
+    buf: Rc<RefCell<Vec<u8>>>,
 }
 impl Future for Bound {
     type Item = ();
@@ -94,6 +110,7 @@ impl Future for Bound {
                     return Ok(Async::Ready(()));
                 }
                 Async::Ready(Some((tcp, _))) => {
+                    self.accepts.incr(1);
                     trace!("{}: incoming stream from {}",
                            self.bound_addr,
                            tcp.peer_addr().unwrap());
@@ -103,15 +120,20 @@ impl Future for Bound {
                     // TODO we should be able to get metadata from a TLS handshake but we can't!
                     let src = {
                         let sock: Box<Future<Item = Socket,
-                                             Error = io::Error>> = match self.meta.tls.as_ref() {
+                                             Error = io::Error>> = match self.tls.as_ref() {
                             None => Box::new(future::ok(socket::plain(tcp))),
                             Some(tls) => {
+                                let t = Timing::start();
+                                let hs_ms = tls.handshake_ms.clone();
                                 let sock = secure::server_handshake(tcp, &tls.config)
-                                    .map(socket::secure_server);
+                                    .map(move |sess| {
+                                             hs_ms.add(t.elapsed_ms());
+                                             socket::secure_server(sess)
+                                         });
                                 Box::new(sock)
                             }
                         };
-                        let dst_name = self.meta.dst_name.clone();
+                        let dst_name = self.dst_name.clone();
                         sock.map(move |sock| {
                                      let ctx = ctx::null(sock.local_addr(), sock.peer_addr());
                                      Connection::new(dst_name, sock, ctx)
@@ -119,16 +141,15 @@ impl Future for Bound {
                     };
 
                     // Obtain a selector.
-                    let balancer = self.meta
-                        .router
-                        .route(&self.meta.dst_name, &self.reactor, &self.timer);
+                    let balancer = self.router
+                        .route(&self.dst_name, &self.reactor, &self.timer);
 
                     // Once the incoming connection is ready and we have a balancer ready, obtain an
                     // outbound connection and begin streaming. We obtain an outbound connection after
                     // the incoming handshake is complete so that we don't waste outbound connections
                     // on failed inbound connections.
                     let duplex = {
-                        let buf = self.meta.buf.clone();
+                        let buf = self.buf.clone();
                         src.join(balancer)
                             .and_then(move |(src, balancer)| {
                                           balancer
@@ -152,3 +173,13 @@ impl Future for Bound {
 pub struct Tls {
     config: Arc<rustls::ServerConfig>,
 }
+
+#[derive(Clone)]
+pub struct BoundTls {
+    config: Arc<rustls::ServerConfig>,
+    handshake_ms: tacho::Stat,
+}
+
+static ACCEPTS_KEY: &'static str = "accepts";
+static SRV_ADDR_KEY: &'static str = "srv_addr";
+static TLS_HANDSHAKE_MS_KEY: &'static str = "tls_handshake_ms";

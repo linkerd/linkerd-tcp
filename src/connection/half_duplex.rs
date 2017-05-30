@@ -1,4 +1,4 @@
-use super::Socket;
+use super::{Connection, ctx};
 use futures::{Async, Future, Poll};
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
@@ -7,10 +7,13 @@ use std::rc::Rc;
 //use tacho;
 use tokio_io::AsyncWrite;
 
-pub fn new(reader: Rc<RefCell<Socket>>,
-           writer: Rc<RefCell<Socket>>,
-           buf: Rc<RefCell<Vec<u8>>>)
-           -> HalfDuplex {
+pub fn new<R, W>(reader: Rc<RefCell<Connection<R>>>,
+                 writer: Rc<RefCell<Connection<W>>>,
+                 buf: Rc<RefCell<Vec<u8>>>)
+                 -> HalfDuplex<R, W>
+    where R: ctx::Ctx,
+          W: ctx::Ctx
+{
     HalfDuplex {
         reader,
         writer,
@@ -28,9 +31,9 @@ pub fn new(reader: Rc<RefCell<Socket>>,
 ///
 /// In the typical case, nothing allocations are required.  If the write side exhibits
 /// backpressure, however, a buffer is allocated to
-pub struct HalfDuplex {
-    reader: Rc<RefCell<Socket>>,
-    writer: Rc<RefCell<Socket>>,
+pub struct HalfDuplex<R, W> {
+    reader: Rc<RefCell<Connection<R>>>,
+    writer: Rc<RefCell<Connection<W>>>,
 
     // Holds transient data when copying between the reader and writer.
     buf: Rc<RefCell<Vec<u8>>>,
@@ -47,7 +50,10 @@ pub struct HalfDuplex {
     // allocs_count: tacho::Counter,
 }
 
-impl Future for HalfDuplex {
+impl<R, W> Future for HalfDuplex<R, W>
+    where R: ctx::Ctx,
+          W: ctx::Ctx
+{
     type Item = u64;
     type Error = io::Error;
 
@@ -61,8 +67,8 @@ impl Future for HalfDuplex {
         let mut reader = self.reader.borrow_mut();
         loop {
             if self.completed {
-                try_nb!(writer.shutdown());
-                writer.tcp_shutdown(Shutdown::Write)?;
+                try_nb!(writer.socket.shutdown());
+                writer.socket.tcp_shutdown(Shutdown::Write)?;
                 trace!("completed");
                 return Ok(self.bytes_total.into());
             }
@@ -72,7 +78,7 @@ impl Future for HalfDuplex {
                 let psz = pending.len();
                 trace!("writing {} pending bytes", psz);
 
-                let wsz = writer.write(&pending)?;
+                let wsz = writer.socket.write(&pending)?;
                 trace!("wrote {} bytes", wsz);
 
                 {
@@ -93,20 +99,20 @@ impl Future for HalfDuplex {
 
             // Read some data into our shared buffer.
             let mut buf = self.buf.borrow_mut();
-            let rsz = try_nb!(reader.read(&mut buf));
+            let rsz = try_nb!(reader.socket.read(&mut buf));
             if rsz == 0 {
                 // Nothing left to read, return the total number of bytes transferred.
                 trace!("completing: {}B", self.bytes_total);
                 self.completed = true;
-                try_nb!(writer.shutdown());
-                writer.tcp_shutdown(Shutdown::Write)?;
+                try_nb!(writer.socket.shutdown());
+                writer.socket.tcp_shutdown(Shutdown::Write)?;
                 trace!("completed: {}B", self.bytes_total);
                 return Ok(self.bytes_total.into());
             }
             trace!("read {} bytes", rsz);
 
             // Attempt to write from the shared buffer.
-            match writer.write(&buf[..rsz]) {
+            match writer.socket.write(&buf[..rsz]) {
                 Ok(wsz) => {
                     trace!("wrote {} bytes", wsz);
                     {

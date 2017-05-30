@@ -154,7 +154,6 @@ impl Stream for Addrs {
 
 fn request<C: HyperConnect>(client: Rc<Client<C>>, uri: Uri, stats: Stats) -> AddrsFuture {
     debug!("Polling namerd at {}", uri.to_string());
-    let mut stats = stats;
     let rsp = future::lazy(|| Ok(tacho::Timing::start())).and_then(move |start_t| {
         client
             .get(uri)
