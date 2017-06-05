@@ -164,7 +164,7 @@ pub struct RouterConfig {
     pub client: Option<ConnectorFactoryConfig>,
 
     /// Interprets request destinations into a stream of address pool updates.
-    pub interpreter: NamerdConfig,
+    pub interpreter: InterpreterConfig,
 
     //pub minimum_connections: Option<usize>,
     // TODO pub maximum_waiters: Option<usize>,
@@ -181,9 +181,11 @@ impl RouterConfig {
 
         // Each router has its own resolver/executor pair. The resolver is used by the
         // router. The resolver executor is used to drive execution in another thread.
-        let (resolver, resolver_exec) = {
-            let namerd = self.interpreter.into_namerd(&metrics)?;
-            resolver::new(namerd)
+        let (resolver, resolver_exec) = match self.interpreter {
+            InterpreterConfig::NamerdHttp(config) => {
+                let namerd = config.into_namerd(&metrics)?;
+                resolver::new(namerd)
+            }
         };
 
         let balancer = {
@@ -229,6 +231,17 @@ impl RouterSpawner {
         }
         Ok(())
     }
+}
+
+/// Configures an interpreter.
+///
+/// Currently, only the io.l5d.namerd.http interpreter is supported.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, tag = "kind")]
+pub enum InterpreterConfig {
+    /// Polls namerd for updates.
+    #[serde(rename = "io.l5d.namerd.http")]
+    NamerdHttp(NamerdConfig),
 }
 
 /// Configures the admin server.
@@ -279,7 +292,7 @@ impl AdminRunner {
             }
         }
 
-        let prometheus = Rc::new(RefCell::new(String::new()));
+        let prometheus = Rc::new(RefCell::new(String::with_capacity(8 * 1024)));
         let reporting = {
             let prometheus = prometheus.clone();
             timer
@@ -288,7 +301,8 @@ impl AdminRunner {
                 .for_each(move |_| {
                               let report = reporter.take();
                               let mut export = prometheus.borrow_mut();
-                              *export = tacho::prometheus::format(&report);
+                              tacho::prometheus::format(&mut *export, &report)
+                                  .expect("error foramtting metrics for prometheus");
                               Ok(())
                           })
         };

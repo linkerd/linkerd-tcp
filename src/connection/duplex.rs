@@ -1,74 +1,59 @@
-use super::{Connection, ctx};
+use super::Connection;
+use super::Ctx;
 use super::half_duplex::{self, HalfDuplex};
 use futures::{Async, Future, Poll};
 use std::cell::RefCell;
 use std::io;
 use std::net;
 use std::rc::Rc;
-//use tacho;
-
-pub struct DuplexCtx<S, D> {
-    pub src: Rc<RefCell<Connection<S>>>,
-    pub dst: Rc<RefCell<Connection<D>>>,
-}
 
 pub struct Summary {
-    pub to_dst_bytes: u64,
-    pub to_src_bytes: u64,
+    pub to_dst_bytes: usize,
+    pub to_src_bytes: usize,
 }
 
 pub fn new<S, D>(src: Connection<S>, dst: Connection<D>, buf: Rc<RefCell<Vec<u8>>>) -> Duplex<S, D>
-    where S: ctx::Ctx,
-          D: ctx::Ctx
+    where S: Ctx,
+          D: Ctx
 {
+    let src_addr = src.peer_addr();
+    let dst_addr = dst.peer_addr();
     let src = Rc::new(RefCell::new(src));
     let dst = Rc::new(RefCell::new(dst));
     Duplex {
+        dst_addr,
         to_dst: Some(half_duplex::new(src.clone(), dst.clone(), buf.clone())),
         to_dst_bytes: 0,
 
+        src_addr,
         to_src: Some(half_duplex::new(dst.clone(), src.clone(), buf)),
         to_src_bytes: 0,
-
-        ctx: DuplexCtx { src, dst },
     }
 }
 
 /// Joins src and dst transfers into a single Future.
 pub struct Duplex<S, D> {
+    dst_addr: net::SocketAddr,
+    src_addr: net::SocketAddr,
     to_dst: Option<HalfDuplex<S, D>>,
     to_src: Option<HalfDuplex<D, S>>,
-
-    ctx: DuplexCtx<S, D>,
-    to_dst_bytes: u64,
-    //tx_bytes_stat: tacho::Stat,
-    to_src_bytes: u64,
-    //rx_bytes_stat: tacho::Stat,
+    to_dst_bytes: usize,
+    to_src_bytes: usize,
 }
 
-impl<S: ctx::Ctx, D: ctx::Ctx> Duplex<S, D> {
-    fn src_addr(&self) -> net::SocketAddr {
-        self.ctx.src.borrow().ctx.peer_addr()
-    }
-
-    fn dst_addr(&self) -> net::SocketAddr {
-        self.ctx.dst.borrow().ctx.peer_addr()
-    }
-}
-
-impl<S: ctx::Ctx, D: ctx::Ctx> Future for Duplex<S, D> {
+impl<S: Ctx, D: Ctx> Future for Duplex<S, D> {
     type Item = Summary;
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Summary, io::Error> {
         if let Some(mut to_dst) = self.to_dst.take() {
             trace!("polling dstward from {} to {}",
-                   self.src_addr(),
-                   self.dst_addr());
+                   self.src_addr,
+                   self.dst_addr);
             match to_dst.poll()? {
                 Async::Ready(sz) => {
                     trace!("dstward complete from {} to {}",
-                           self.src_addr(),
-                           self.dst_addr());
+                           self.src_addr,
+                           self.dst_addr);
                     self.to_dst_bytes = sz;
                 }
                 Async::NotReady => {
@@ -80,13 +65,13 @@ impl<S: ctx::Ctx, D: ctx::Ctx> Future for Duplex<S, D> {
 
         if let Some(mut to_src) = self.to_src.take() {
             trace!("polling srcward from {} to {}",
-                   self.dst_addr(),
-                   self.src_addr());
+                   self.dst_addr,
+                   self.src_addr);
             match to_src.poll()? {
                 Async::Ready(sz) => {
                     trace!("srcward complete from {} to {}",
-                           self.dst_addr(),
-                           self.src_addr());
+                           self.dst_addr,
+                           self.src_addr);
                     self.to_src_bytes = sz;
                 }
                 Async::NotReady => {

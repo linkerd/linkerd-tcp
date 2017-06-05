@@ -49,20 +49,32 @@ impl<C> ConnectionCtx<C>
         }
     }
 
-    pub fn local_addr(&self) -> net::SocketAddr {
-        self.local_addr
-    }
-
-    pub fn peer_addr(&self) -> net::SocketAddr {
-        self.peer_addr
-    }
-
     pub fn dst_name(&self) -> &Path {
         &self.dst_name
     }
 
     pub fn ctx(&self) -> &C {
         &self.ctx
+    }
+}
+
+impl<C> Ctx for ConnectionCtx<C>
+    where C: Ctx
+{
+    fn local_addr(&self) -> net::SocketAddr {
+        self.local_addr
+    }
+
+    fn peer_addr(&self) -> net::SocketAddr {
+        self.peer_addr
+    }
+
+    fn read(&mut self, sz: usize) {
+        self.ctx.read(sz);
+    }
+
+    fn wrote(&mut self, sz: usize) {
+        self.ctx.wrote(sz);
     }
 }
 

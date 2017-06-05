@@ -15,10 +15,12 @@ pub trait Ctx {
     }
 }
 
-pub struct Null(net::SocketAddr, net::SocketAddr);
+#[allow(dead_code)]
 pub fn null(l: net::SocketAddr, p: net::SocketAddr) -> Null {
     Null(l, p)
 }
+#[allow(dead_code)]
+pub struct Null(net::SocketAddr, net::SocketAddr);
 impl Ctx for Null {
     fn local_addr(&self) -> net::SocketAddr {
         self.0
@@ -32,9 +34,7 @@ impl Ctx for Null {
     fn wrote(&mut self, _sz: usize) {}
 }
 
-
 pub struct Join<A, B>(A, B);
-
 impl<A: Ctx, B: Ctx> Ctx for Join<A, B> {
     fn local_addr(&self) -> net::SocketAddr {
         self.0.local_addr()

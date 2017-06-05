@@ -10,6 +10,12 @@ routers:
         port: 7474
         dst_name: /svc/default
 
+    interpreter:
+      kind: io.l5d.namerd.http
+      baseUrl: http://localhost:4180
+      namespace: default
+      periodSecs: 20
+
       # - kind: io.l5d.tls
       #   port: 7575
       #   identities:

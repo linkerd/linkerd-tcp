@@ -5,7 +5,7 @@ use super::connection::{Connection, Socket, ctx, secure, socket};
 use super::router::Router;
 use futures::{Async, Future, Poll, Stream, future};
 use rustls;
-use std::{io, net};
+use std::{io, net, time};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -79,6 +79,13 @@ impl Unbound {
                accepts: metrics.counter(ACCEPTS_KEY),
                closes: metrics.counter(CLOSES_KEY),
                connections: metrics.gauge(CONNECTIONS_KEY),
+               conn_metrics: ConnMetrics {
+                   rx_bytes: metrics.counter(RX_BYTES_KEY),
+                   tx_bytes: metrics.counter(TX_BYTES_KEY),
+                   rx_bytes_sum: metrics.stat(CONN_RX_BYTES_KEY),
+                   tx_bytes_sum: metrics.stat(CONN_TX_BYTES_KEY),
+                   lifetime_ms: metrics.stat(CONN_TIME_MS_KEY),
+               },
            })
     }
 }
@@ -99,6 +106,16 @@ pub struct Bound {
     accepts: tacho::Counter,
     closes: tacho::Counter,
     connections: tacho::Gauge,
+    conn_metrics: ConnMetrics,
+}
+
+#[derive(Clone)]
+struct ConnMetrics {
+    rx_bytes: tacho::Counter,
+    tx_bytes: tacho::Counter,
+    rx_bytes_sum: tacho::Stat,
+    tx_bytes_sum: tacho::Stat,
+    lifetime_ms: tacho::Stat,
 }
 
 impl Future for Bound {
@@ -146,11 +163,20 @@ impl Future for Bound {
                                 Box::new(sock)
                             }
                         };
+
                         let dst_name = self.dst_name.clone();
+                        let metrics = self.conn_metrics.clone();
                         sock.map(move |sock| {
-                                     let ctx = ctx::null(sock.local_addr(), sock.peer_addr());
-                                     Connection::new(dst_name, sock, ctx)
-                                 })
+                            let ctx = SrcCtx {
+                                local: sock.local_addr(),
+                                peer: sock.peer_addr(),
+                                rx_bytes_total: 0,
+                                tx_bytes_total: 0,
+                                start: Timing::start(),
+                                metrics,
+                            };
+                            Connection::new(dst_name, sock, ctx)
+                        })
                     };
 
                     // Obtain a selector.
@@ -203,3 +229,43 @@ static CLOSES_KEY: &'static str = "closes";
 static CONNECTIONS_KEY: &'static str = "connections";
 static SRV_ADDR_KEY: &'static str = "srv_addr";
 static TLS_HANDSHAKE_MS_KEY: &'static str = "tls_handshake_ms";
+static RX_BYTES_KEY: &'static str = "rx_bytes";
+static TX_BYTES_KEY: &'static str = "tx_bytes";
+static CONN_RX_BYTES_KEY: &'static str = "connection_rx_bytes";
+static CONN_TX_BYTES_KEY: &'static str = "connection_tx_bytes";
+static CONN_TIME_MS_KEY: &'static str = "connection_time_ms";
+
+pub struct SrcCtx {
+    local: net::SocketAddr,
+    peer: net::SocketAddr,
+    rx_bytes_total: usize,
+    tx_bytes_total: usize,
+    start: time::Instant,
+    metrics: ConnMetrics,
+}
+impl ctx::Ctx for SrcCtx {
+    fn local_addr(&self) -> net::SocketAddr {
+        self.local
+    }
+
+    fn peer_addr(&self) -> net::SocketAddr {
+        self.peer
+    }
+
+    fn read(&mut self, sz: usize) {
+        self.rx_bytes_total += sz;
+        self.metrics.rx_bytes.incr(sz);
+    }
+
+    fn wrote(&mut self, sz: usize) {
+        self.tx_bytes_total += sz;
+        self.metrics.tx_bytes.incr(sz);
+    }
+}
+impl Drop for SrcCtx {
+    fn drop(&mut self) {
+        self.metrics.lifetime_ms.add(self.start.elapsed_ms());
+        self.metrics.rx_bytes_sum.add(self.rx_bytes_total as u64);
+        self.metrics.tx_bytes_sum.add(self.tx_bytes_total as u64);
+    }
+}

@@ -1,4 +1,5 @@
-use super::{Connection, ctx};
+use super::Connection;
+use super::Ctx;
 use futures::{Async, Future, Poll};
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
@@ -11,8 +12,8 @@ pub fn new<R, W>(reader: Rc<RefCell<Connection<R>>>,
                  writer: Rc<RefCell<Connection<W>>>,
                  buf: Rc<RefCell<Vec<u8>>>)
                  -> HalfDuplex<R, W>
-    where R: ctx::Ctx,
-          W: ctx::Ctx
+    where R: Ctx,
+          W: Ctx
 {
     HalfDuplex {
         reader,
@@ -20,7 +21,7 @@ pub fn new<R, W>(reader: Rc<RefCell<Connection<R>>>,
         buf,
         pending: None,
         bytes_total: 0,
-        completed: false,
+        should_shutdown: false,
         // bytes_total_count: metrics.counter("bytes_total".into()),
         // allocs_count: metrics.counter("allocs_count".into()),
     }
@@ -42,109 +43,95 @@ pub struct HalfDuplex<R, W> {
     pending: Option<Vec<u8>>,
 
     // The number of bytes we've written so far.
-    bytes_total: u64,
+    bytes_total: usize,
 
-    completed: bool,
+    // Indicates that that the reader has returned 0 and the writer should be shut down.
+    should_shutdown: bool,
 
     // bytes_total_count: tacho::Counter,
     // allocs_count: tacho::Counter,
 }
 
 impl<R, W> Future for HalfDuplex<R, W>
-    where R: ctx::Ctx,
-          W: ctx::Ctx
+    where R: Ctx,
+          W: Ctx
 {
-    type Item = u64;
+    type Item = usize;
     type Error = io::Error;
 
     /// Reads from from the `reader` into a shared buffer before writing to `writer`.
     ///
     /// If all data cannot be written, the unwritten data is stored in a newly-allocated
     /// buffer. This pending data is flushed before any more data is read.
-    fn poll(&mut self) -> Poll<u64, io::Error> {
+    fn poll(&mut self) -> Poll<usize, io::Error> {
         trace!("poll");
         let mut writer = self.writer.borrow_mut();
         let mut reader = self.reader.borrow_mut();
+
+        // Because writer.socket.shutdown may return WouldBlock, we may already be
+        // shutting down and need to resume graceful shutdown.
+        if self.should_shutdown {
+            try_nb!(writer.socket.shutdown());
+            writer.socket.tcp_shutdown(Shutdown::Write)?;
+            return Ok(Async::Ready(self.bytes_total));
+        }
+
+        // If we've read more than we were able to write previously, then write all of it
+        // until the write would block.
+        if let Some(mut pending) = self.pending.take() {
+            trace!("writing {} pending bytes", pending.len());
+            while !pending.is_empty() {
+                match writer.socket.write(&pending) {
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        self.pending = Some(pending);
+                        return Ok(Async::NotReady);
+                    }
+                    Err(e) => return Err(e),
+                    Ok(wsz) => {
+                        // Drop the portion of the buffer that we've already written.
+                        // There may or may not be more pending data remaining.
+                        pending.drain(0..wsz);
+                        self.bytes_total += wsz;
+                        writer.ctx.wrote(wsz);
+                    }
+                }
+            }
+        }
+
+        // Read and write data until one of the endpoints is not ready. All data is read
+        // into a thread-global transfer buffer and then written from this buffer. If all
+        // data cannot be written, it is copied into a newly-allocated local buffer to be
+        // flushed later.
         loop {
-            if self.completed {
-                try_nb!(writer.socket.shutdown());
-                writer.socket.tcp_shutdown(Shutdown::Write)?;
-                trace!("completed");
-                return Ok(self.bytes_total.into());
-            }
-
-            // Try to flush pending bytes to the writer.
-            if let Some(mut pending) = self.pending.take() {
-                let psz = pending.len();
-                trace!("writing {} pending bytes", psz);
-
-                let wsz = writer.socket.write(&pending)?;
-                trace!("wrote {} bytes", wsz);
-
-                {
-                    let wsz = wsz as u64;
-                    self.bytes_total += wsz;
-                    //self.bytes_total_count.incr(wsz);
-                }
-                if wsz < psz {
-                    trace!("saving {} bytes", psz - wsz);
-                    // If all of the pending bytes couldn't be complete, save the
-                    // remainder for next time.
-                    pending.drain(0..wsz);
-                    self.pending = Some(pending);
-                    return Ok(Async::NotReady);
-                }
-            }
             assert!(self.pending.is_none());
 
-            // Read some data into our shared buffer.
-            let mut buf = self.buf.borrow_mut();
-            let rsz = try_nb!(reader.socket.read(&mut buf));
+            let mut rbuf = self.buf.borrow_mut();
+            let rsz = try_nb!(reader.socket.read(&mut rbuf));
+            reader.ctx.read(rsz);
             if rsz == 0 {
-                // Nothing left to read, return the total number of bytes transferred.
-                trace!("completing: {}B", self.bytes_total);
-                self.completed = true;
+                self.should_shutdown = true;
                 try_nb!(writer.socket.shutdown());
                 writer.socket.tcp_shutdown(Shutdown::Write)?;
-                trace!("completed: {}B", self.bytes_total);
-                return Ok(self.bytes_total.into());
+                return Ok(Async::Ready(self.bytes_total));
             }
-            trace!("read {} bytes", rsz);
 
-            // Attempt to write from the shared buffer.
-            match writer.socket.write(&buf[..rsz]) {
-                Ok(wsz) => {
-                    trace!("wrote {} bytes", wsz);
-                    {
-                        let wsz = wsz as u64;
-                        self.bytes_total += wsz;
-                        //self.bytes_total_count.incr(wsz);
-                    }
-                    if wsz < rsz {
-                        trace!("saving {} bytes", rsz - wsz);
-                        // Allocate a temporary buffer to the unwritten remainder for next
-                        // time.
-                        //self.allocs_count.incr(1);
-                        let mut p = Vec::with_capacity(rsz - wsz);
-                        p.copy_from_slice(&buf[wsz..rsz]);
+            let mut wbuf = &rbuf[..rsz];
+            while !wbuf.is_empty() {
+                match writer.socket.write(wbuf) {
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        let mut p = Vec::with_capacity(wbuf.len());
+                        p.copy_from_slice(wbuf);
                         self.pending = Some(p);
                         return Ok(Async::NotReady);
                     }
-                }
-                Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => {
-                    //self.allocs_count.incr(1);
-                    let mut p = Vec::with_capacity(rsz);
-                    p.copy_from_slice(&buf);
-                    self.pending = Some(p);
-                    return Ok(Async::NotReady);
-                }
-                Err(e) => {
-                    return Err(e.into());
+                    Err(e) => return Err(e),
+                    Ok(wsz) => {
+                        self.bytes_total += wsz;
+                        writer.ctx.wrote(wsz);
+                        wbuf = &wbuf[wsz..];
+                    }
                 }
             }
-
-            // We shouldn't be looping if we couldn't write everything.
-            assert!(self.pending.is_none());
         }
     }
 }
