@@ -25,7 +25,8 @@ impl NamerdConfig {
 
         let metrics = metrics
             .clone()
-            .labeled("resolver".into(), self.namespace.clone());
+            .prefixed("resolver")
+            .labeled("namespace".into(), self.namespace.clone());
         let namerd = Namerd::new(self.base_url, period, self.namespace, metrics);
         Ok(namerd)
     }

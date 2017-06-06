@@ -60,7 +60,7 @@ fn main() {
 
     let (closer, closed) = app::closer();
 
-    // A single timer for the whole process.
+    // A single timer for the whole process.  The default hashwheel timer has a granularity of 100ms.
     let timer = Timer::default();
 
     // Create a background admin thread that runs an admin server and executes executes

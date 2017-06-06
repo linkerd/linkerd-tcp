@@ -75,6 +75,7 @@ impl AppConfig {
         };
 
         let (metrics, reporter) = tacho::new();
+        let metrics = metrics.prefixed("l5d");
 
         // Load all router configurations.
         //
@@ -177,7 +178,7 @@ impl RouterConfig {
                    metrics: &tacho::Scope)
                    -> Result<RouterSpawner, ConfigError> {
 
-        let metrics = metrics.clone().labeled("router", self.label.clone());
+        let metrics = metrics.clone().labeled("rt", self.label.clone());
 
         // Each router has its own resolver/executor pair. The resolver is used by the
         // router. The resolver executor is used to drive execution in another thread.
@@ -286,23 +287,21 @@ impl AdminRunner {
         } = self;
 
         let handle = reactor.handle();
-        {
-            while let Some(resolver) = resolvers.pop_front() {
-                handle.spawn(resolver.execute(&handle, timer));
-            }
+        while let Some(resolver) = resolvers.pop_front() {
+            handle.spawn(resolver.execute(&handle, timer));
         }
 
-        let prometheus = Rc::new(RefCell::new(String::with_capacity(8 * 1024)));
+        let prom_export = Rc::new(RefCell::new(String::with_capacity(8 * 1024)));
         let reporting = {
-            let prometheus = prometheus.clone();
+            let prom_export = prom_export.clone();
             timer
                 .interval(metrics_interval)
                 .map_err(|_| {})
                 .for_each(move |_| {
                               let report = reporter.take();
-                              let mut export = prometheus.borrow_mut();
-                              export.clear();
-                              tacho::prometheus::write(&mut *export, &report)
+                              let mut prom_export = prom_export.borrow_mut();
+                              prom_export.clear();
+                              tacho::prometheus::write(&mut *prom_export, &report)
                                   .expect("error foramtting metrics for prometheus");
                               Ok(())
                           })
@@ -316,7 +315,7 @@ impl AdminRunner {
             };
 
             let server =
-                admin::Admin::new(prometheus, closer, grace, handle.clone(), timer.clone());
+                admin::Admin::new(prom_export, closer, grace, handle.clone(), timer.clone());
             let http = Http::new();
             listener
                 .incoming()
