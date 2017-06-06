@@ -301,6 +301,7 @@ impl AdminRunner {
                 .for_each(move |_| {
                               let report = reporter.take();
                               let mut export = prometheus.borrow_mut();
+                              export.clear();
                               tacho::prometheus::write(&mut *export, &report)
                                   .expect("error foramtting metrics for prometheus");
                               Ok(())
