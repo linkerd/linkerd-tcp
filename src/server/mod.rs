@@ -25,9 +25,7 @@ fn unbound(listen_addr: net::SocketAddr,
            tls: Option<UnboundTls>,
            metrics: &tacho::Scope)
            -> Unbound {
-    let metrics = metrics
-        .clone()
-        .labeled("listen_addr".into(), format!("{}", listen_addr));
+    let metrics = metrics.clone();
     Unbound {
         listen_addr,
         dst_name,
