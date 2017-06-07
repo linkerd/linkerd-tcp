@@ -131,8 +131,6 @@ struct Metrics {
 #[derive(Clone)]
 struct FailureMetrics {
     timeouts: tacho::Counter,
-    resets: tacho::Counter,
-    refused: tacho::Counter,
     other: tacho::Counter,
 }
 impl FailureMetrics {
@@ -141,14 +139,6 @@ impl FailureMetrics {
             timeouts: metrics
                 .clone()
                 .labeled("cause", "timeout".into())
-                .counter(key),
-            resets: metrics
-                .clone()
-                .labeled("cause", "reset".into())
-                .counter(key),
-            refused: metrics
-                .clone()
-                .labeled("cause", "refused".into())
                 .counter(key),
             other: metrics
                 .clone()
@@ -267,10 +257,6 @@ impl Future for Bound {
                                     Err(e) => {
                                         match e.kind() {
                                             io::ErrorKind::TimedOut => fails.timeouts.incr(1),
-                                            io::ErrorKind::ConnectionReset => fails.resets.incr(1),
-                                            io::ErrorKind::ConnectionRefused => {
-                                                fails.refused.incr(1)
-                                            }
                                             _ => fails.other.incr(1),
                                         };
                                         Err(e)
@@ -295,12 +281,6 @@ impl Future for Bound {
                                           Err(e) => {
                                               match e.kind() {
                                                   io::ErrorKind::TimedOut => fails.timeouts.incr(1),
-                                                  io::ErrorKind::ConnectionReset => {
-                                                      fails.resets.incr(1)
-                                                  }
-                                                  io::ErrorKind::ConnectionRefused => {
-                                                      fails.refused.incr(1)
-                                                  }
                                                   _ => fails.other.incr(1),
                                               };
                                               Err(e)
