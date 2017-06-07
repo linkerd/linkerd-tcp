@@ -177,7 +177,8 @@ impl Manager {
     pub fn init_connecting(&mut self) {
         // Ensure that each endpoint has enough connections for all of its pending selecitons.
         for mut ep in self.available.values_mut().chain(self.retired.values_mut()) {
-            let needed = ep.waiting() - (ep.connecting() + ep.connected());
+            // TODO should this be smarter somehow?
+            let needed = ep.waiting();
             ep.init_connecting(needed, &self.connector, &self.reactor, &self.timer);
         }
     }
