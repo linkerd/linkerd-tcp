@@ -569,6 +569,7 @@ dependencies = [
 name = "tacho"
 version = "0.3.1"
 dependencies = [
+ "futures 0.1.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "hdrsample 3.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "ordermap 0.2.10 (registry+https://github.com/rust-lang/crates.io-index)",

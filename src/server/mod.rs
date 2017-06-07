@@ -3,7 +3,7 @@
 use super::Path;
 use super::connection::{Connection, Socket, ctx, secure, socket};
 use super::router::Router;
-use futures::{self, Async, Future, Poll, Stream, future};
+use futures::{Async, Future, Poll, Stream, future};
 use rustls;
 use std::{io, net, time};
 use std::cell::RefCell;
@@ -153,13 +153,9 @@ impl Future for Bound {
                                              Error = io::Error>> = match self.tls.as_ref() {
                             None => Box::new(future::ok(socket::plain(tcp))),
                             Some(tls) => {
-                                let t0 = Timing::start();
-                                let hs_us = tls.handshake_us.clone();
-                                let sock = secure::server_handshake(tcp, &tls.config)
-                                    .map(move |sess| {
-                                             hs_us.add(t0.elapsed_us());
-                                             socket::secure_server(sess)
-                                         });
+                                let sess = secure::server_handshake(tcp, &tls.config);
+                                let sess = tls.handshake_us.add_timing_us(sess);
+                                let sock = sess.map(socket::secure_server);
                                 Box::new(sock)
                             }
                         };
@@ -187,16 +183,13 @@ impl Future for Bound {
                     // outbound connection and begin streaming. We obtain an outbound connection after
                     // the incoming handshake is complete so that we don't waste outbound connections
                     // on failed inbound connections.
-                    let latency_us = self.conn_metrics.latency_us.clone();
-                    let connected = futures::lazy(move || {
-                        let t0 = Timing::start();
-                        src.join(balancer)
+                    let connected = {
+                        let c = src.join(balancer)
                             .and_then(move |(src, balancer)| {
-                                          // TODO enforce timeouts here.
-                                          latency_us.add(t0.elapsed_us());
                                           balancer.select().map(move |dst| (src, dst))
-                                      })
-                    });
+                                      });
+                        self.conn_metrics.latency_us.add_timing_us(c)
+                    };
 
                     let duplex = {
                         let buf = self.buf.clone();

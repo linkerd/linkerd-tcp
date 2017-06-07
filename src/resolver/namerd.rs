@@ -6,7 +6,7 @@
 
 use super::{DstAddr, Result, Error};
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
-use futures::{Async, Future, IntoFuture, Poll, Stream, future};
+use futures::{Async, Future, IntoFuture, Poll, Stream};
 use hyper::{Body, Chunk, Client, Uri};
 use hyper::client::{Connect as HyperConnect, HttpConnector};
 use hyper::status::StatusCode;
@@ -14,7 +14,7 @@ use serde_json as json;
 use std::{f32, net, time};
 use std::collections::HashMap;
 use std::rc::Rc;
-use tacho::{self, Timing};
+use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::{Timer, Interval};
 use url::Url;
@@ -154,20 +154,17 @@ impl Stream for Addrs {
 
 fn request<C: HyperConnect>(client: Rc<Client<C>>, uri: Uri, stats: Stats) -> AddrsFuture {
     debug!("Polling namerd at {}", uri.to_string());
-    let rsp = future::lazy(|| Ok(tacho::Timing::start())).and_then(move |start_t| {
-        client
-            .get(uri)
-            .then(handle_response)
-            .then(move |rsp| {
-                stats.request_latency_ms.add(start_t.elapsed_ms());
-                if rsp.is_ok() {
-                    stats.success_count.incr(1);
-                } else {
-                    stats.failure_count.incr(1);
-                }
-                rsp
-            })
-    });
+    let rsp = stats
+        .request_latency_ms
+        .add_timing_ms(client.get(uri).then(handle_response))
+        .then(move |rsp| {
+                  if rsp.is_ok() {
+                      stats.success_count.incr(1);
+                  } else {
+                      stats.failure_count.incr(1);
+                  }
+                  rsp
+              });
     Box::new(rsp)
 }
 
