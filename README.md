@@ -52,24 +52,32 @@ ARGS:
 ### Example configuration ###
 
 ```yaml
-proxies:
+admin:
+  port: 9989
+  metricsIntervalSecs: 10
+
+routers:
+
   - label: default
     servers:
-      # Listen on two ports, one using a self-signed TLS certificate.
-      - kind: io.l5d.tcp
-        addr: 0.0.0.0:7474
-      - kind: io.l5d.tls
-        addr: 0.0.0.0:7575
-        defaultIdentity:
-          privateKey: private.pem
-          certs:
-            - cert.pem
-            - ../eg-ca/ca/intermediate/certs/ca-chain.cert.pem
+      - port: 7474
+        dstName: /svc/default
+        connectTimeoutMs: 500
 
-    # Lookup /svc/google in namerd.
-    namerd:
-      url: http://127.0.0.1:4180
-      path: /svc/google
+      - ip: 0.0.0.0:7575
+        tls:
+          defaultIdentity:
+            privateKey: private.pem
+            certs:
+              - cert.pem
+              - ../eg-ca/ca/intermediate/certs/ca-chain.cert.pem
+
+    interpreter:
+      kind: io.l5d.namerd.http
+      baseUrl: http://localhost:4180
+      namespace: default
+      periodSecs: 20
+
 
     # Require that the downstream connection be TLS'd, with a `subjectAltName` including
     # the DNS name _www.google.com_ using either our local CA or the host's default

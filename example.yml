@@ -15,24 +15,3 @@ routers:
       baseUrl: http://localhost:4180
       namespace: default
       periodSecs: 20
-
-      # - kind: io.l5d.tls
-      #   port: 7575
-      #   identities:
-      #     localhost:
-      #       privateKey: ../eg-ca/localhost.tls/private.pem
-      #       certs:
-      #         - ../eg-ca/localhost.tls/cert.pem
-      #         - ../eg-ca/localhost.tls/ca-chain.cert.pem
-
-    # namerd:
-    #   url: http://127.0.0.1:4180
-    #   path: /svc/default
-    #   intervalSecs: 5
-
-    # client:
-    #   tls:
-    #     dnsName: "www.google.com"
-    #     trustCerts:
-    #       - ../eg-ca/www.google.com.tls/ca-chain.cert.pem
-    #       #-  /usr/local/etc/openssl/cert.pem

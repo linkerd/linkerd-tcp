@@ -64,8 +64,7 @@ impl Unbound {
         debug!("routing on {} to {}", self.listen_addr, self.dst_name);
         let listen = TcpListener::bind(&self.listen_addr, reactor)?;
         let bound_addr = listen.local_addr().unwrap();
-        let metrics = self.metrics
-            .labeled(SRV_ADDR_KEY, format!("{}", bound_addr));
+        let metrics = self.metrics.labeled("srv_addr", format!("{}", bound_addr));
         Ok(Bound {
                bound_addr,
                reactor: reactor.clone(),
@@ -76,7 +75,7 @@ impl Unbound {
                    .map(|tls| {
                             BoundTls {
                                 config: tls.config,
-                                handshake_us: metrics.stat(TLS_HANDSHAKE_US_KEY),
+                                handshake_us: metrics.clone().prefixed("tls").stat("handshake_us"),
                             }
                         }),
                connect_timeout: self.connect_timeout,
@@ -84,18 +83,18 @@ impl Unbound {
                router: self.router,
                buf: self.buf,
                metrics: Metrics {
-                   accepts: metrics.counter(ACCEPTS_KEY),
-                   closes: metrics.counter(CLOSES_KEY),
-                   active: metrics.gauge(ACTIVE_KEY),
+                   accepts: metrics.counter("accepts"),
+                   closes: metrics.counter("closes"),
+                   active: metrics.gauge("active"),
                    connect_failures: FailureMetrics::new(&metrics, "connect_failure"),
                    duplex_failures: FailureMetrics::new(&metrics, "stream_failure"),
                    per_conn: ConnMetrics {
-                       rx_bytes: metrics.counter(RX_BYTES_KEY),
-                       tx_bytes: metrics.counter(TX_BYTES_KEY),
-                       rx_bytes_sum: metrics.stat(CONN_RX_BYTES_KEY),
-                       tx_bytes_sum: metrics.stat(CONN_TX_BYTES_KEY),
-                       duration_ms: metrics.stat(CONN_DURATION_MS_KEY),
-                       latency_us: metrics.stat(CONN_LATENCY_US_KEY),
+                       rx_bytes: metrics.counter("total_rx_bytes"),
+                       tx_bytes: metrics.counter("total_tx_bytes"),
+                       rx_bytes_sum: metrics.stat("connection_rx_bytes"),
+                       tx_bytes_sum: metrics.stat("connection_tx_bytes"),
+                       duration_ms: metrics.stat("connection_duration_ms"),
+                       latency_us: metrics.stat("connect_latency_us"),
                    },
                },
            })
@@ -146,6 +145,14 @@ impl FailureMetrics {
                 .counter(key),
         }
     }
+
+    fn record(&self, e: &io::Error) {
+        if e.kind() == io::ErrorKind::TimedOut {
+            self.timeouts.incr(1);
+        } else {
+            self.other.incr(1);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -158,19 +165,18 @@ struct ConnMetrics {
     latency_us: tacho::Stat,
 }
 
-impl Bound {
-    fn timeout<F>(&self,
-                  fut: F,
-                  timeout: Option<Duration>)
-                  -> Box<Future<Item = F::Item, Error = io::Error>>
-        where F: Future<Error = io::Error> + 'static
-    {
-        match timeout {
-            None => Box::new(fut),
-            Some(timeout) => Box::new(self.timer.timeout(fut, timeout)),
-        }
+fn timeout<F>(fut: F,
+              timeout: Option<Duration>,
+              timer: &Timer)
+              -> Box<Future<Item = F::Item, Error = io::Error>>
+    where F: Future<Error = io::Error> + 'static
+{
+    match timeout {
+        None => Box::new(fut),
+        Some(timeout) => Box::new(timer.timeout(fut, timeout)),
     }
 }
+
 
 /// Completes when the listening socket stream completes.
 impl Future for Bound {
@@ -237,63 +243,55 @@ impl Future for Bound {
                     // outbound connection and begin streaming. We obtain an outbound connection after
                     // the incoming handshake is complete so that we don't waste outbound connections
                     // on failed inbound connections.
-                    let connect = {
-                        let c =
-                            src.join(balancer)
-                                .and_then(move |(src, b)| b.select().map(move |dst| (src, dst)));
-                        self.metrics.per_conn.latency_us.add_timing_us(c)
-                    };
+                    let connect =
+                        src.join(balancer)
+                            .and_then(move |(src, b)| b.select().map(move |dst| (src, dst)));
+
+                    // Enforce a connection timeout, measure successful connection
+                    // latencies and failure counts.
                     let connected = {
-                        let closes = self.metrics.closes.clone();
+                        // Measure the time until the connection is established, if it completes.
+                        let c = timeout(self.metrics.per_conn.latency_us.add_timing_us(connect),
+                                        self.connect_timeout,
+                                        &self.timer);
                         let fails = self.metrics.connect_failures.clone();
-                        self.timeout(connect, self.connect_timeout)
-                            .then(move |ret| {
-                                debug!("connection: {:?}", ret.is_ok());
-                                match ret {
-                                    Ok(v) => {
-                                        closes.incr(1);
-                                        Ok(v)
-                                    }
-                                    Err(e) => {
-                                        match e.kind() {
-                                            io::ErrorKind::TimedOut => fails.timeouts.incr(1),
-                                            _ => fails.other.incr(1),
-                                        };
-                                        Err(e)
-                                    }
-                                }
-                            })
+                        c.map_err(move |e| {
+                                      fails.record(&e);
+                                      e
+                                  })
                     };
 
-                    // Copy data between the endpoints
-                    //
-                    let duplex = {
+                    // Copy data between the endpoints.
+                    let done = {
                         let buf = self.buf.clone();
                         let fails = self.metrics.duplex_failures.clone();
                         let closes = self.metrics.closes.clone();
-                        connected.and_then(move |(src, dst)| {
-                            src.into_duplex(dst, buf)
-                                .then(move |ret| match ret {
-                                          Ok(v) => {
-                                              closes.incr(1);
-                                              Ok(v)
-                                          }
-                                          Err(e) => {
-                                              match e.kind() {
-                                                  io::ErrorKind::TimedOut => fails.timeouts.incr(1),
-                                                  _ => fails.other.incr(1),
-                                              };
-                                              Err(e)
-                                          }
-                                      })
-                        })
+                        let duration = self.metrics.per_conn.duration_ms.clone();
+                        let lifetime = self.connection_lifetime;
+                        let timer = self.timer.clone();
+                        connected
+                            .and_then(move |(src, dst)| {
+                                // Enforce a timeout on total connection lifetime.
+                                let duplex = timeout(duration.add_timing_ms(src.into_duplex(dst,
+                                                                                            buf)),
+                                                     lifetime,
+                                                     &timer);
+                                duplex.then(move |ret| match ret {
+                                                Ok(_) => {
+                                                    closes.incr(1);
+                                                    Ok(())
+                                                }
+                                                Err(e) => {
+                                                    fails.record(&e);
+                                                    Err(e)
+                                                }
+                                            })
+                            })
+                            .then(move |_| {
+                                      active.decr(1);
+                                      Ok(())
+                                  })
                     };
-
-                    let done = self.timeout(duplex, self.connection_lifetime)
-                        .then(move |_| {
-                                  active.decr(1);
-                                  Ok(())
-                              });
 
                     // Do all of this work in a single task.
                     // additional connections while this connection is open.
@@ -316,18 +314,6 @@ pub struct BoundTls {
     config: Arc<rustls::ServerConfig>,
     handshake_us: tacho::Stat,
 }
-
-static ACCEPTS_KEY: &'static str = "accepts";
-static CLOSES_KEY: &'static str = "closes";
-static ACTIVE_KEY: &'static str = "connections";
-static SRV_ADDR_KEY: &'static str = "srv_addr";
-static TLS_HANDSHAKE_US_KEY: &'static str = "tls_handshake_us";
-static RX_BYTES_KEY: &'static str = "rx_bytes";
-static TX_BYTES_KEY: &'static str = "tx_bytes";
-static CONN_RX_BYTES_KEY: &'static str = "connection_rx_bytes";
-static CONN_TX_BYTES_KEY: &'static str = "connection_tx_bytes";
-static CONN_DURATION_MS_KEY: &'static str = "connection_duration_ms";
-static CONN_LATENCY_US_KEY: &'static str = "connect_latency_us";
 
 pub struct SrcCtx {
     local: net::SocketAddr,
