@@ -3,6 +3,7 @@ use super::connection::Ctx;
 use super::connector::Connector;
 use futures::unsync::{mpsc, oneshot};
 use std::net;
+use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
@@ -40,7 +41,8 @@ impl Balancer {
                timer: &Timer,
                dst: &Path,
                //min_conns: usize,
-               conn: Connector)
+               conn: Connector,
+               metrics: &tacho::Scope)
                -> Balancer {
         let (tx, rx) = mpsc::unbounded();
         Balancer {
@@ -49,7 +51,8 @@ impl Balancer {
                                   timer.clone(),
                                   conn,
                                   //min_conns,
-                                  rx),
+                                  rx,
+                                  metrics),
             selector: selector::new(tx),
         }
     }

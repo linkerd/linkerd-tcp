@@ -36,6 +36,9 @@ impl BalancerFactory {
                          timer,
                          dst_name,
                          //self.minimum_connections,
-                         connector))
+                         connector,
+                         &self.metrics
+                              .clone()
+                              .labeled("dst", dst_name.as_str().into())))
     }
 }

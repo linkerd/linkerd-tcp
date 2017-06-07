@@ -193,6 +193,7 @@ impl RouterConfig {
             //let min_conns = self.minimum_connections
             //    .unwrap_or(DEFAULT_MINIMUM_CONNECTIONS);
             let client = self.client.unwrap_or_default().mk_connector_factory()?;
+            let metrics = metrics.clone().prefixed("balancer");
             BalancerFactory::new(/*min_conns,*/
                                  client,
                                  &metrics)

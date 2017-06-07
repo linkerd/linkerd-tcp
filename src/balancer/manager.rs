@@ -10,26 +10,35 @@ use ordermap::OrderMap;
 use rand::{self, Rng};
 use std::{cmp, net};
 use std::collections::VecDeque;
+use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
-pub fn new(dst: Path,
+pub fn new(dst_name: Path,
            reactor: Handle,
            timer: Timer,
-           conn: Connector,
+           connector: Connector,
            //min_conns: usize,
-           selects: mpsc::UnboundedReceiver<DstConnectionRequest>)
+           selects: mpsc::UnboundedReceiver<DstConnectionRequest>,
+           metrics: &tacho::Scope)
            -> Manager {
+    let endpoints = metrics.clone().prefixed("endpoints");
+    let connections = metrics.clone().prefixed("connections");
     Manager {
-        dst_name: dst,
-        reactor: reactor,
-        timer: timer,
-        connector: conn,
+        dst_name,
+        reactor,
+        timer,
+        connector,
+        selects,
         //minimum_connections: min_conns,
         available: OrderMap::default(),
         available_meta: EndpointsMeta::default(),
         retired: OrderMap::default(),
-        selects: selects,
+        available_gauge: endpoints.gauge("available"),
+        retired_gauge: endpoints.gauge("retired"),
+        connecting_gauge: connections.gauge("pending"),
+        connected_gauge: connections.gauge("ready"),
+        completing_gauge: connections.gauge("active"),
     }
 }
 
@@ -48,7 +57,7 @@ pub struct Manager {
     /// Endpoints considered available for new connections.
     available: OrderMap<net::SocketAddr, Endpoint>,
 
-    /// Endpointsthat are still actvie but considered unavailable for new connections.
+    /// Endpoints that are still actvie but considered unavailable for new connections.
     retired: OrderMap<net::SocketAddr, Endpoint>,
 
     // A cache of aggregated metadata about available endpoints.
@@ -56,6 +65,11 @@ pub struct Manager {
 
     // // A cache of aggregated metadata about retired endpoints.
     // retired_meta: EndpointsMeta,
+    available_gauge: tacho::Gauge,
+    retired_gauge: tacho::Gauge,
+    connecting_gauge: tacho::Gauge,
+    connected_gauge: tacho::Gauge,
+    completing_gauge: tacho::Gauge,
 }
 
 // Caches aggregated metadata about a set of endpoints.
@@ -171,11 +185,18 @@ impl Manager {
             ep.dispatch_waiting();
         }
 
+        info!("connecting={} connected={} completing={}",
+              meta.connecting,
+              meta.connected,
+              meta.completing);
+        self.connecting_gauge.set(meta.connecting);
+        self.connected_gauge.set(meta.connected);
+        self.completing_gauge.set(meta.completing);
         self.available_meta = meta;
     }
 
+    /// Ensure that each endpoint has enough connections for all of its pending selecitons.
     pub fn init_connecting(&mut self) {
-        // Ensure that each endpoint has enough connections for all of its pending selecitons.
         for mut ep in self.available.values_mut().chain(self.retired.values_mut()) {
             // TODO should this be smarter somehow?
             let needed = ep.waiting();
@@ -194,6 +215,11 @@ impl Manager {
         self.check_retired(&dsts, &mut temp);
         self.check_available(&dsts, &mut temp);
         self.update_available_from_new(dsts);
+        info!("available={} retired={}",
+              self.available.len(),
+              self.retired.len());
+        self.available_gauge.set(self.available.len());
+        self.retired_gauge.set(self.retired.len());
     }
 
     /// Checks retired endpoints.
