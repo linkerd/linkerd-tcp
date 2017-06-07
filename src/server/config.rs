@@ -7,18 +7,19 @@ use std::collections::HashMap;
 use std::net;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tacho;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, tag = "kind")]
-pub enum ServerConfig {
-    #[serde(rename = "io.l5d.tcp")]
-    Tcp {
-        port: u16,
-        ip: Option<net::IpAddr>,
-        dst_name: Option<String>,
-        tls: Option<TlsServerConfig>,
-    },
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ServerConfig {
+    port: u16,
+    ip: Option<net::IpAddr>,
+    dst_name: Option<String>,
+    tls: Option<TlsServerConfig>,
+    connect_timeout_ms: Option<u64>,
+    connection_lifetime_secs: Option<u64>,
+    // TODO idle time
 }
 
 impl ServerConfig {
@@ -28,11 +29,13 @@ impl ServerConfig {
                      metrics: &tacho::Scope)
                      -> Result<Unbound, ConfigError> {
         match *self {
-            ServerConfig::Tcp {
+            ServerConfig {
                 port,
                 ref ip,
                 ref dst_name,
                 ref tls,
+                ref connect_timeout_ms,
+                ref connection_lifetime_secs,
             } => {
                 if dst_name.is_none() {
                     return Err("`dst_name` required".into());
@@ -56,7 +59,16 @@ impl ServerConfig {
                         Some(super::UnboundTls { config: Arc::new(tls) })
                     }
                 };
-                Ok(super::unbound(addr, dst_name.into(), router, buf, tls, metrics))
+                let timeout = connect_timeout_ms.map(Duration::from_millis);
+                let lifetime = connection_lifetime_secs.map(Duration::from_secs);
+                Ok(super::unbound(addr,
+                                  dst_name.into(),
+                                  router,
+                                  buf,
+                                  tls,
+                                  timeout,
+                                  lifetime,
+                                  metrics))
             }
         }
     }

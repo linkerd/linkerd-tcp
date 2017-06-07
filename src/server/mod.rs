@@ -9,6 +9,7 @@ use std::{io, net, time};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tacho::{self, Timing};
 use tokio_core::net::{TcpListener, Incoming};
 use tokio_core::reactor::Handle;
@@ -23,6 +24,8 @@ fn unbound(listen_addr: net::SocketAddr,
            router: Router,
            buf: Rc<RefCell<Vec<u8>>>,
            tls: Option<UnboundTls>,
+           connect_timeout: Option<Duration>,
+           connection_lifetime: Option<Duration>,
            metrics: &tacho::Scope)
            -> Unbound {
     let metrics = metrics.clone().prefixed("srv");
@@ -32,6 +35,8 @@ fn unbound(listen_addr: net::SocketAddr,
         router,
         buf,
         tls,
+        connect_timeout,
+        connection_lifetime,
         metrics,
     }
 }
@@ -43,6 +48,8 @@ pub struct Unbound {
     buf: Rc<RefCell<Vec<u8>>>,
     tls: Option<UnboundTls>,
     metrics: tacho::Scope,
+    connect_timeout: Option<Duration>,
+    connection_lifetime: Option<Duration>,
 }
 impl Unbound {
     pub fn listen_addr(&self) -> net::SocketAddr {
@@ -72,18 +79,24 @@ impl Unbound {
                                 handshake_us: metrics.stat(TLS_HANDSHAKE_US_KEY),
                             }
                         }),
+               connect_timeout: self.connect_timeout,
+               connection_lifetime: self.connection_lifetime,
                router: self.router,
                buf: self.buf,
-               accepts: metrics.counter(ACCEPTS_KEY),
-               closes: metrics.counter(CLOSES_KEY),
-               active: metrics.gauge(ACTIVE_KEY),
-               conn_metrics: ConnMetrics {
-                   rx_bytes: metrics.counter(RX_BYTES_KEY),
-                   tx_bytes: metrics.counter(TX_BYTES_KEY),
-                   rx_bytes_sum: metrics.stat(CONN_RX_BYTES_KEY),
-                   tx_bytes_sum: metrics.stat(CONN_TX_BYTES_KEY),
-                   duration_ms: metrics.stat(CONN_DURATION_MS_KEY),
-                   latency_us: metrics.stat(CONN_LATENCY_US_KEY),
+               metrics: Metrics {
+                   accepts: metrics.counter(ACCEPTS_KEY),
+                   closes: metrics.counter(CLOSES_KEY),
+                   active: metrics.gauge(ACTIVE_KEY),
+                   connect_failures: FailureMetrics::new(&metrics, "connect_failure"),
+                   duplex_failures: FailureMetrics::new(&metrics, "stream_failure"),
+                   per_conn: ConnMetrics {
+                       rx_bytes: metrics.counter(RX_BYTES_KEY),
+                       tx_bytes: metrics.counter(TX_BYTES_KEY),
+                       rx_bytes_sum: metrics.stat(CONN_RX_BYTES_KEY),
+                       tx_bytes_sum: metrics.stat(CONN_TX_BYTES_KEY),
+                       duration_ms: metrics.stat(CONN_DURATION_MS_KEY),
+                       latency_us: metrics.stat(CONN_LATENCY_US_KEY),
+                   },
                },
            })
     }
@@ -99,13 +112,50 @@ pub struct Bound {
 
     dst_name: Path,
     router: Router,
+    connect_timeout: Option<Duration>,
+    connection_lifetime: Option<Duration>,
 
     buf: Rc<RefCell<Vec<u8>>>,
+    metrics: Metrics,
+}
 
+struct Metrics {
     accepts: tacho::Counter,
     closes: tacho::Counter,
     active: tacho::Gauge,
-    conn_metrics: ConnMetrics,
+    per_conn: ConnMetrics,
+    connect_failures: FailureMetrics,
+    duplex_failures: FailureMetrics,
+}
+
+#[derive(Clone)]
+struct FailureMetrics {
+    timeouts: tacho::Counter,
+    resets: tacho::Counter,
+    refused: tacho::Counter,
+    other: tacho::Counter,
+}
+impl FailureMetrics {
+    fn new(metrics: &tacho::Scope, key: &'static str) -> FailureMetrics {
+        FailureMetrics {
+            timeouts: metrics
+                .clone()
+                .labeled("cause", "timeout".into())
+                .counter(key),
+            resets: metrics
+                .clone()
+                .labeled("cause", "reset".into())
+                .counter(key),
+            refused: metrics
+                .clone()
+                .labeled("cause", "refused".into())
+                .counter(key),
+            other: metrics
+                .clone()
+                .labeled("cause", "other".into())
+                .counter(key),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -116,6 +166,20 @@ struct ConnMetrics {
     tx_bytes_sum: tacho::Stat,
     duration_ms: tacho::Stat,
     latency_us: tacho::Stat,
+}
+
+impl Bound {
+    fn timeout<F>(&self,
+                  fut: F,
+                  timeout: Option<Duration>)
+                  -> Box<Future<Item = F::Item, Error = io::Error>>
+        where F: Future<Error = io::Error> + 'static
+    {
+        match timeout {
+            None => Box::new(fut),
+            Some(timeout) => Box::new(self.timer.timeout(fut, timeout)),
+        }
+    }
 }
 
 /// Completes when the listening socket stream completes.
@@ -141,10 +205,9 @@ impl Future for Bound {
                            self.bound_addr,
                            tcp.peer_addr().unwrap());
 
-                    let closes = self.closes.clone();
-                    let active = self.active.clone();
-                    self.accepts.incr(1);
+                    let active = self.metrics.active.clone();
                     active.incr(1);
+                    self.metrics.accepts.incr(1);
 
                     // Finish accepting the connection from the server.
                     //
@@ -162,7 +225,7 @@ impl Future for Bound {
                         };
 
                         let dst_name = self.dst_name.clone();
-                        let metrics = self.conn_metrics.clone();
+                        let metrics = self.metrics.per_conn.clone();
                         sock.map(move |sock| {
                             let ctx = SrcCtx {
                                 local: sock.local_addr(),
@@ -184,25 +247,73 @@ impl Future for Bound {
                     // outbound connection and begin streaming. We obtain an outbound connection after
                     // the incoming handshake is complete so that we don't waste outbound connections
                     // on failed inbound connections.
+                    let connect = {
+                        let c =
+                            src.join(balancer)
+                                .and_then(move |(src, b)| b.select().map(move |dst| (src, dst)));
+                        self.metrics.per_conn.latency_us.add_timing_us(c)
+                    };
                     let connected = {
-                        let c = src.join(balancer)
-                            .and_then(move |(src, balancer)| {
-                                          balancer.select().map(move |dst| (src, dst))
-                                      });
-                        self.conn_metrics.latency_us.add_timing_us(c)
+                        let closes = self.metrics.closes.clone();
+                        let fails = self.metrics.connect_failures.clone();
+                        self.timeout(connect, self.connect_timeout)
+                            .then(move |ret| {
+                                debug!("connection: {:?}", ret.is_ok());
+                                match ret {
+                                    Ok(v) => {
+                                        closes.incr(1);
+                                        Ok(v)
+                                    }
+                                    Err(e) => {
+                                        match e.kind() {
+                                            io::ErrorKind::TimedOut => fails.timeouts.incr(1),
+                                            io::ErrorKind::ConnectionReset => fails.resets.incr(1),
+                                            io::ErrorKind::ConnectionRefused => {
+                                                fails.refused.incr(1)
+                                            }
+                                            _ => fails.other.incr(1),
+                                        };
+                                        Err(e)
+                                    }
+                                }
+                            })
                     };
 
                     // Copy data between the endpoints
                     //
                     let duplex = {
                         let buf = self.buf.clone();
-                        connected.and_then(move |(src, dst)| src.into_duplex(dst, buf))
+                        let fails = self.metrics.duplex_failures.clone();
+                        let closes = self.metrics.closes.clone();
+                        connected.and_then(move |(src, dst)| {
+                            src.into_duplex(dst, buf)
+                                .then(move |ret| match ret {
+                                          Ok(v) => {
+                                              closes.incr(1);
+                                              Ok(v)
+                                          }
+                                          Err(e) => {
+                                              match e.kind() {
+                                                  io::ErrorKind::TimedOut => fails.timeouts.incr(1),
+                                                  io::ErrorKind::ConnectionReset => {
+                                                      fails.resets.incr(1)
+                                                  }
+                                                  io::ErrorKind::ConnectionRefused => {
+                                                      fails.refused.incr(1)
+                                                  }
+                                                  _ => fails.other.incr(1),
+                                              };
+                                              Err(e)
+                                          }
+                                      })
+                        })
                     };
-                    let done = duplex.then(move |_| {
-                                               closes.incr(1);
-                                               active.decr(1);
-                                               Ok(())
-                                           });
+
+                    let done = self.timeout(duplex, self.connection_lifetime)
+                        .then(move |_| {
+                                  active.decr(1);
+                                  Ok(())
+                              });
 
                     // Do all of this work in a single task.
                     // additional connections while this connection is open.

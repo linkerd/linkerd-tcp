@@ -6,9 +6,9 @@ routers:
 
   - label: default
     servers:
-      - kind: io.l5d.tcp
-        port: 7474
-        dst_name: /svc/default
+      - port: 7474
+        dstName: /svc/default
+        connectTimeoutMs: 500
 
     interpreter:
       kind: io.l5d.namerd.http
