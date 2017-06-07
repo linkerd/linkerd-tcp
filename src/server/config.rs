@@ -17,19 +17,7 @@ pub enum ServerConfig {
         port: u16,
         ip: Option<net::IpAddr>,
         dst_name: Option<String>,
-    },
-
-    // TODO support cypher suites
-    // TODO support client validation
-    // TODO supoprt persistence?
-    #[serde(rename = "io.l5d.tls", rename_all = "camelCase")]
-    Tls {
-        port: u16,
-        ip: Option<net::IpAddr>,
-        dst_name: Option<String>,
-        alpn_protocols: Option<Vec<String>>,
-        default_identity: Option<TlsServerIdentityConfig>,
-        identities: Option<HashMap<String, TlsServerIdentityConfig>>,
+        tls: Option<TlsServerConfig>,
     },
 }
 
@@ -44,46 +32,45 @@ impl ServerConfig {
                 port,
                 ref ip,
                 ref dst_name,
+                ref tls,
             } => {
                 if dst_name.is_none() {
                     return Err("`dst_name` required".into());
                 }
-                let addr = {
-                    let ip =
-                        ip.unwrap_or_else(|| net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1)));
-                    net::SocketAddr::new(ip, port)
-                };
                 let dst_name = dst_name.as_ref().unwrap().clone();
-                Ok(super::unbound(addr, dst_name.into(), router, buf, None, metrics))
-            }
-            ServerConfig::Tls {
-                port,
-                ref ip,
-                ref dst_name,
-                ref alpn_protocols,
-                ref default_identity,
-                ref identities,
-                ..
-            } => {
-                let tls = {
-                    let mut tls = rustls::ServerConfig::new();
-                    let sni = sni::new(identities, default_identity)?;
-                    if let Some(protos) = alpn_protocols.as_ref() {
-                        tls.set_protocols(protos);
+                let ip = ip.unwrap_or_else(|| net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1)));
+                let addr = net::SocketAddr::new(ip, port);
+                let tls = match tls.as_ref() {
+                    None => None,
+                    Some(&TlsServerConfig {
+                             ref alpn_protocols,
+                             ref default_identity,
+                             ref identities,
+                         }) => {
+                        let mut tls = rustls::ServerConfig::new();
+                        if let Some(protos) = alpn_protocols.as_ref() {
+                            tls.set_protocols(protos);
+                        }
+                        let sni = sni::new(identities, default_identity)?;
+                        tls.cert_resolver = Box::new(sni);
+                        Some(super::UnboundTls { config: Arc::new(tls) })
                     }
-                    tls.cert_resolver = Box::new(sni);
-                    super::UnboundTls { config: Arc::new(tls) }
                 };
-                let addr = {
-                    let ip =
-                        ip.or_else(|| "0.0.0.0".parse::<net::Ipv4Addr>().ok().map(net::IpAddr::V4));
-                    net::SocketAddr::new(ip.unwrap(), port)
-                };
-                let dst_name = dst_name.as_ref().unwrap().clone();
-                Ok(super::unbound(addr, dst_name.into(), router, buf, Some(tls), metrics))
+                Ok(super::unbound(addr, dst_name.into(), router, buf, tls, metrics))
             }
         }
     }
+}
+
+// TODO support cypher suites
+// TODO support client validation
+// TODO supoprt persistence?
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TlsServerConfig {
+    pub alpn_protocols: Option<Vec<String>>,
+    pub default_identity: Option<TlsServerIdentityConfig>,
+    pub identities: Option<HashMap<String, TlsServerIdentityConfig>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

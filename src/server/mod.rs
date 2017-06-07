@@ -118,6 +118,7 @@ struct ConnMetrics {
     latency_us: tacho::Stat,
 }
 
+/// Completes when the listening socket stream completes.
 impl Future for Bound {
     type Item = ();
     type Error = io::Error;
@@ -132,7 +133,7 @@ impl Future for Bound {
                     return Ok(Async::NotReady);
                 }
                 Async::Ready(None) => {
-                    trace!("{}: listener closed", self.bound_addr);
+                    debug!("{}: listener closed", self.bound_addr);
                     return Ok(Async::Ready(()));
                 }
                 Async::Ready(Some((tcp, _))) => {
@@ -151,11 +152,11 @@ impl Future for Bound {
                     let src = {
                         let sock: Box<Future<Item = Socket,
                                              Error = io::Error>> = match self.tls.as_ref() {
-                            None => Box::new(future::ok(socket::plain(tcp))),
+                            None => future::ok(socket::plain(tcp)).boxed(),
                             Some(tls) => {
-                                let sess = secure::server_handshake(tcp, &tls.config);
-                                let sess = tls.handshake_us.add_timing_us(sess);
-                                let sock = sess.map(socket::secure_server);
+                                let sock = tls.handshake_us
+                                    .add_timing_us(secure::server_handshake(tcp, &tls.config))
+                                    .map(socket::secure_server);
                                 Box::new(sock)
                             }
                         };
@@ -175,7 +176,7 @@ impl Future for Bound {
                         })
                     };
 
-                    // Obtain a selector.
+                    // Obtain a balancing endpoint selector for the given destination.
                     let balancer = self.router
                         .route(&self.dst_name, &self.reactor, &self.timer);
 
@@ -191,6 +192,8 @@ impl Future for Bound {
                         self.conn_metrics.latency_us.add_timing_us(c)
                     };
 
+                    // Copy data between the endpoints
+                    //
                     let duplex = {
                         let buf = self.buf.clone();
                         connected.and_then(move |(src, dst)| src.into_duplex(dst, buf))
@@ -201,7 +204,7 @@ impl Future for Bound {
                                                Ok(())
                                            });
 
-                    // Do all of this work in a single, separate task so that we may process
+                    // Do all of this work in a single task.
                     // additional connections while this connection is open.
                     //
                     // TODO: implement some sort of backpressure here?
