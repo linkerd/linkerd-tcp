@@ -119,7 +119,7 @@ impl<R, W> Future for HalfDuplex<R, W>
             while !wbuf.is_empty() {
                 match writer.socket.write(wbuf) {
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        let mut p = Vec::with_capacity(wbuf.len());
+                        let mut p = vec![0; wbuf.len()];
                         p.copy_from_slice(wbuf);
                         self.pending = Some(p);
                         return Ok(Async::NotReady);

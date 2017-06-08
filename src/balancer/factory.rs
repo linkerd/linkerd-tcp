@@ -32,13 +32,7 @@ impl BalancerFactory {
                        dst_name: &Path)
                        -> Result<Balancer, ConfigError> {
         let connector = self.connector_factory.borrow().mk_connector(dst_name)?;
-        Ok(Balancer::new(reactor,
-                         timer,
-                         dst_name,
-                         //self.minimum_connections,
-                         connector,
-                         &self.metrics
-                              .clone()
-                              .labeled("dst", dst_name.as_str().into())))
+        let metrics = self.metrics.clone().labeled("dst", dst_name);
+        Ok(Balancer::new(reactor, timer, dst_name, connector, &metrics))
     }
 }

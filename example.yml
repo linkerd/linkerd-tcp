@@ -9,6 +9,7 @@ routers:
       - port: 7474
         dstName: /svc/default
         connectTimeoutMs: 500
+        connectionLifetimeSecs: 60
 
     interpreter:
       kind: io.l5d.namerd.http

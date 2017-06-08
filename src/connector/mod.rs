@@ -1,46 +1,51 @@
 use super::{ConfigError, Path};
 use super::connection::secure;
+use super::connection::socket::{self, Socket};
+use futures::{Future, Poll};
 use rustls::ClientConfig as RustlsClientConfig;
-use std::{net, time};
+use std::{io, net, time};
 use std::sync::Arc;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
 mod config;
-mod connecting;
 
 pub use self::config::{ConnectorFactoryConfig, ConnectorConfig, TlsConnectorFactoryConfig};
-pub use self::connecting::Connecting;
 
-/// Builds a connector
+/// Builds a connector for each name.
 pub struct ConnectorFactory(ConnectorFactoryInner);
 
 enum ConnectorFactoryInner {
-    Global(Connector),
-    Static(StaticConnectorFactory),
+    /// Uses a single connector for all names.
+    StaticGlobal(Connector),
+    /// Builds a new connector for each name by applying all configurations with a
+    /// matching prefix. This is considered "static" because the set of configurations may
+    /// not be updated dynamically.
+    StaticPrefixed(StaticPrefixConnectorFactory),
 }
 
 impl ConnectorFactory {
     pub fn new_global(conn: Connector) -> ConnectorFactory {
-        ConnectorFactory(ConnectorFactoryInner::Global(conn))
+        ConnectorFactory(ConnectorFactoryInner::StaticGlobal(conn))
     }
 
-    pub fn new_static(configs: Vec<(Path, ConnectorConfig)>) -> ConnectorFactory {
-        let f = StaticConnectorFactory(configs);
-        ConnectorFactory(ConnectorFactoryInner::Static(f))
+    pub fn new_prefixed(prefixed_configs: Vec<(Path, ConnectorConfig)>) -> ConnectorFactory {
+        let f = StaticPrefixConnectorFactory(prefixed_configs);
+        ConnectorFactory(ConnectorFactoryInner::StaticPrefixed(f))
     }
 
     pub fn mk_connector(&self, dst_name: &Path) -> Result<Connector, ConfigError> {
         match self.0 {
-            ConnectorFactoryInner::Global(ref conn) => Ok(conn.clone()),
-            ConnectorFactoryInner::Static(ref factory) => factory.mk_connector(dst_name),
+            ConnectorFactoryInner::StaticGlobal(ref c) => Ok(c.clone()),
+            ConnectorFactoryInner::StaticPrefixed(ref f) => f.mk_connector(dst_name),
         }
     }
 }
 
-struct StaticConnectorFactory(Vec<(Path, ConnectorConfig)>);
-impl StaticConnectorFactory {
+struct StaticPrefixConnectorFactory(Vec<(Path, ConnectorConfig)>);
+impl StaticPrefixConnectorFactory {
+    /// Builds a new connector by applying all configurations with a matching prefix.
     fn mk_connector(&self, dst_name: &Path) -> Result<Connector, ConfigError> {
         let mut config = ConnectorConfig::default();
         for &(ref pfx, ref c) in &self.0 {
@@ -76,10 +81,40 @@ pub struct Connector {
     connect_timeout: Option<time::Duration>,
     tls: Option<Tls>,
 }
+
 impl Connector {
+    fn timeout<F>(&self, fut: F, timer: &Timer) -> Box<Future<Item = F::Item, Error = io::Error>>
+        where F: Future<Error = io::Error> + 'static
+    {
+        match self.connect_timeout {
+            None => Box::new(fut),
+            Some(t) => Box::new(timer.timeout(fut, t).map_err(|e| e.into())),
+        }
+    }
+
     pub fn connect(&self, addr: &net::SocketAddr, reactor: &Handle, timer: &Timer) -> Connecting {
-        let c = TcpStream::connect(addr, reactor);
-        let timeout = self.connect_timeout.map(|t| timer.sleep(t));
-        connecting::new(c, self.tls.clone(), timeout)
+        let tcp = TcpStream::connect(addr, reactor);
+        let socket: Box<Future<Item = Socket, Error = io::Error>> = match self.tls {
+            None => {
+                let f = tcp.map(socket::plain);
+                Box::new(self.timeout(f, timer))
+            }
+            Some(ref tls) => {
+                let tls = tls.clone();
+                let f = tcp.and_then(move |tcp| tls.handshake(tcp))
+                    .map(socket::secure_client);
+                Box::new(self.timeout(f, timer))
+            }
+        };
+        Connecting(socket)
+    }
+}
+
+pub struct Connecting(Box<Future<Item = Socket, Error = io::Error>>);
+impl Future for Connecting {
+    type Item = Socket;
+    type Error = io::Error;
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        self.0.poll()
     }
 }

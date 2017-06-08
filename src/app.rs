@@ -178,7 +178,7 @@ impl RouterConfig {
                    metrics: &tacho::Scope)
                    -> Result<RouterSpawner, ConfigError> {
 
-        let metrics = metrics.clone().labeled("rt", self.label.clone());
+        let metrics = metrics.clone().labeled("rt", self.label);
 
         // Each router has its own resolver/executor pair. The resolver is used by the
         // router. The resolver executor is used to drive execution in another thread.
@@ -190,8 +190,6 @@ impl RouterConfig {
         };
 
         let balancer = {
-            //let min_conns = self.minimum_connections
-            //    .unwrap_or(DEFAULT_MINIMUM_CONNECTIONS);
             let client = self.client.unwrap_or_default().mk_connector_factory()?;
             let metrics = metrics.clone().prefixed("balancer");
             BalancerFactory::new(/*min_conns,*/

@@ -44,7 +44,7 @@ impl ConnectorFactoryConfig {
                         } 
                     }
                 }
-                Ok(ConnectorFactory::new_static(pfx_configs))
+                Ok(ConnectorFactory::new_prefixed(pfx_configs))
             }
         }
     }

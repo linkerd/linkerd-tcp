@@ -1,4 +1,5 @@
 use super::{DstConnection, DstCtx, Summary};
+use super::manager::EndpointMetrics;
 use super::selector::DstConnectionRequest;
 use super::super::Path;
 use super::super::connection::{Connection, Socket};
@@ -7,6 +8,7 @@ use futures::{Future, Async};
 use futures::unsync::oneshot;
 use std::collections::VecDeque;
 use std::net;
+use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
@@ -20,9 +22,10 @@ pub struct Endpoint {
     weight: f32,
 
     consecutive_failures: usize,
+    metrics: EndpointMetrics,
 
     /// Queues pending connections that have not yet been completed.
-    connecting: VecDeque<Connecting>,
+    connecting: VecDeque<tacho::Timed<Connecting>>,
 
     /// Queues established connections that have not yet been dispatched.
     connected: VecDeque<Socket>,
@@ -36,15 +39,20 @@ pub struct Endpoint {
     ///
     /// This shold be replaced with a task-aware data structure so that all items
     /// are not polled regularly (so that balancers can scale to 100K+ connections).
-    completing: VecDeque<Completing>,
+    completing: VecDeque<tacho::Timed<Completing>>,
 }
 
 impl Endpoint {
-    pub fn new(dst_name: Path, peer_addr: net::SocketAddr, weight: f32) -> Endpoint {
+    pub fn new(dst_name: Path,
+               peer_addr: net::SocketAddr,
+               weight: f32,
+               metrics: EndpointMetrics)
+               -> Endpoint {
         Endpoint {
             dst_name,
             peer_addr,
             weight,
+            metrics,
             consecutive_failures: 0,
             connecting: VecDeque::default(),
             connected: VecDeque::default(),
@@ -100,6 +108,7 @@ impl Endpoint {
                            timer: &Timer) {
         for _ in 0..count {
             let conn = connector.connect(&self.peer_addr, reactor, timer);
+            let conn = self.metrics.connect_latency.time(conn);
             self.track_connecting(conn);
         }
     }
@@ -125,6 +134,7 @@ impl Endpoint {
             None => self.waiting.push_back(w),
             Some(sock) => {
                 let (conn, done) = self.mk_connection(sock);
+                let done = self.metrics.connection_duration.time(done);
                 match w.send(conn) {
                     // DstConnectionRequest no longer waiting. save the connection for later.
                     Err(conn) => self.connected.push_front(conn.socket),
@@ -134,7 +144,7 @@ impl Endpoint {
         }
     }
 
-    fn track_connecting(&mut self, mut c: Connecting) {
+    fn track_connecting(&mut self, mut c: tacho::Timed<Connecting>) {
         match c.poll() {
             Ok(Async::NotReady) => self.connecting.push_back(c),
             Ok(Async::Ready(sock)) => {
@@ -150,7 +160,7 @@ impl Endpoint {
         }
     }
 
-    fn track_completing(&mut self, mut c: Completing) {
+    fn track_completing(&mut self, mut c: tacho::Timed<Completing>) {
         match c.poll() {
             Err(_) => error!("{}: connection lost", self.peer_addr),
             Ok(Async::NotReady) => self.completing.push_back(c),
@@ -181,6 +191,7 @@ impl Endpoint {
                 self.connected.push_front(conn.socket);
                 return;
             } else {
+                let done = self.metrics.connection_duration.time(done);
                 self.track_completing(done);
             }
         }

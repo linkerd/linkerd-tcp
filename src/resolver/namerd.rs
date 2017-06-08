@@ -155,8 +155,8 @@ impl Stream for Addrs {
 fn request<C: HyperConnect>(client: Rc<Client<C>>, uri: Uri, stats: Stats) -> AddrsFuture {
     debug!("Polling namerd at {}", uri.to_string());
     let rsp = stats
-        .request_latency_ms
-        .add_timing_ms(client.get(uri).then(handle_response))
+        .request_latency
+        .time(client.get(uri).then(handle_response))
         .then(move |rsp| {
                   if rsp.is_ok() {
                       stats.success_count.incr(1);
@@ -273,14 +273,14 @@ struct Meta {
 
 #[derive(Clone)]
 pub struct Stats {
-    request_latency_ms: tacho::Stat,
+    request_latency: tacho::Timer,
     success_count: tacho::Counter,
     failure_count: tacho::Counter,
 }
 impl Stats {
     fn new(metrics: tacho::Scope) -> Stats {
         Stats {
-            request_latency_ms: metrics.stat("request_latency_ms".into()),
+            request_latency: metrics.timer_ms("request_latency_ms".into()),
             success_count: metrics.counter("success_count".into()),
             failure_count: metrics.counter("failure_count".into()),
         }

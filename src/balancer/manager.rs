@@ -30,7 +30,7 @@ pub fn new(dst_name: Path,
         timer,
         connector,
         selects,
-        //minimum_connections: min_conns,
+        waiter: None,
         available: OrderMap::default(),
         available_meta: EndpointsMeta::default(),
         retired: OrderMap::default(),
@@ -39,6 +39,11 @@ pub fn new(dst_name: Path,
         connecting_gauge: connections.gauge("pending"),
         connected_gauge: connections.gauge("ready"),
         completing_gauge: connections.gauge("active"),
+        waiters_gauge: connections.gauge("waiters"),
+        endpoint_metrics: EndpointMetrics {
+            connect_latency: connections.timer_us("latency_us"),
+            connection_duration: connections.timer_ms("duration_ms"),
+        },
     }
 }
 
@@ -52,6 +57,7 @@ pub struct Manager {
 
     /// Requests from a `Selector` for a `DstConnection`.
     selects: mpsc::UnboundedReceiver<DstConnectionRequest>,
+    waiter: Option<DstConnectionRequest>,
 
     //minimum_connections: usize,
     /// Endpoints considered available for new connections.
@@ -70,14 +76,23 @@ pub struct Manager {
     connecting_gauge: tacho::Gauge,
     connected_gauge: tacho::Gauge,
     completing_gauge: tacho::Gauge,
+    waiters_gauge: tacho::Gauge,
+    endpoint_metrics: EndpointMetrics,
 }
 
 // Caches aggregated metadata about a set of endpoints.
 #[derive(Debug, Default)]
 struct EndpointsMeta {
+    waiting: usize,
     connecting: usize,
     connected: usize,
     completing: usize,
+}
+
+#[derive(Clone)]
+pub struct EndpointMetrics {
+    pub connect_latency: tacho::Timer,
+    pub connection_duration: tacho::Timer,
 }
 
 impl Manager {
@@ -89,29 +104,37 @@ impl Manager {
     }
 
     fn dispatch_new_selects(&mut self) {
-        // If there are no endpoints, we can't do anything.
-        if self.available.is_empty() {
-            info!("cannot dispatch an endpoint in {}: no available endpoints",
-                  self.dst_name);
-            // XXX we could fail these waiters here.  I'd prefer to rely on a timeout in
-            // the dispatching task.
-            return;
+        if let Some(waiter) = self.waiter.take() {
+            if let Some(waiter) = self.dispatch_waiter(waiter) {
+                debug!("cannot dispatch an endpoint in {}: no available endpoints",
+                       self.dst_name);
+                self.waiter = Some(waiter);
+                return;
+            }
         }
+
         loop {
-            match self.selects
-                      .poll()
-                      .expect("failed to read from unbounded queue") {
+            match self.selects.poll().expect("failed to select") {
                 Async::NotReady |
                 Async::Ready(None) => return,
-                Async::Ready(Some(get_conn)) => {
-                    if let Some(ep) = self.select_endpoint() {
-                        ep.track_waiting(get_conn);
-                    } else {
-                        //
+                Async::Ready(Some(waiter)) => {
+                    if let Some(waiter) = self.dispatch_waiter(waiter) {
+                        debug!("cannot dispatch an endpoint in {}: no available endpoints",
+                               self.dst_name);
+                        self.waiter = Some(waiter);
+                        return;
                     }
                 }
             }
         }
+    }
+
+    fn dispatch_waiter(&mut self, waiter: DstConnectionRequest) -> Option<DstConnectionRequest> {
+        if let Some(ep) = self.select_endpoint() {
+            ep.track_waiting(waiter);
+            return None;
+        }
+        Some(waiter)
     }
 
     /// Selects an endpoint using the power of two choices.
@@ -178,6 +201,7 @@ impl Manager {
             meta.connecting += ep.connecting();;
             meta.connected += ep.connected();
             meta.completing += ep.completing();
+            meta.waiting += ep.waiting()
         }
         for mut ep in self.retired.values_mut() {
             ep.poll_connecting();
@@ -185,13 +209,10 @@ impl Manager {
             ep.dispatch_waiting();
         }
 
-        info!("connecting={} connected={} completing={}",
-              meta.connecting,
-              meta.connected,
-              meta.completing);
         self.connecting_gauge.set(meta.connecting);
         self.connected_gauge.set(meta.connected);
         self.completing_gauge.set(meta.completing);
+        self.waiters_gauge.set(meta.waiting);
         self.available_meta = meta;
     }
 
@@ -215,9 +236,6 @@ impl Manager {
         self.check_retired(&dsts, &mut temp);
         self.check_available(&dsts, &mut temp);
         self.update_available_from_new(dsts);
-        info!("available={} retired={}",
-              self.available.len(),
-              self.retired.len());
         self.available_gauge.set(self.available.len());
         self.retired_gauge.set(self.retired.len());
     }
@@ -272,10 +290,11 @@ impl Manager {
     fn update_available_from_new(&mut self, mut dsts: OrderMap<net::SocketAddr, f32>) {
         // Add new endpoints or update the base weights of existing endpoints.
         let name = self.dst_name.clone();
+        let metrics = self.endpoint_metrics.clone();
         for (addr, weight) in dsts.drain(..) {
             self.available
                 .entry(addr)
-                .or_insert_with(|| Endpoint::new(name.clone(), addr, weight))
+                .or_insert_with(|| Endpoint::new(name.clone(), addr, weight, metrics.clone()))
                 .set_weight(weight);
         }
     }

@@ -5,12 +5,12 @@ use super::connection::{Connection, Socket, ctx, secure, socket};
 use super::router::Router;
 use futures::{Async, Future, Poll, Stream, future};
 use rustls;
-use std::{io, net, time};
+use std::{io, net};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
-use tacho::{self, Timing};
+use tacho;
 use tokio_core::net::{TcpListener, Incoming};
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
@@ -19,6 +19,7 @@ mod config;
 mod sni;
 pub use self::config::ServerConfig;
 
+/// Builds a server that is not yet bound on a port.
 fn unbound(listen_addr: net::SocketAddr,
            dst_name: Path,
            router: Router,
@@ -65,6 +66,8 @@ impl Unbound {
         let listen = TcpListener::bind(&self.listen_addr, reactor)?;
         let bound_addr = listen.local_addr().unwrap();
         let metrics = self.metrics.labeled("srv_addr", format!("{}", bound_addr));
+        let connect_metrics = metrics.clone().prefixed("connect");
+        let stream_metrics = metrics.clone().prefixed("stream");
         Ok(Bound {
                bound_addr,
                reactor: reactor.clone(),
@@ -75,7 +78,8 @@ impl Unbound {
                    .map(|tls| {
                             BoundTls {
                                 config: tls.config,
-                                handshake_us: metrics.clone().prefixed("tls").stat("handshake_us"),
+                                handshake_latency:
+                                    metrics.clone().prefixed("tls").timer_us("handshake_us"),
                             }
                         }),
                connect_timeout: self.connect_timeout,
@@ -85,16 +89,18 @@ impl Unbound {
                metrics: Metrics {
                    accepts: metrics.counter("accepts"),
                    closes: metrics.counter("closes"),
+                   failures: metrics.counter("failures"),
                    active: metrics.gauge("active"),
-                   connect_failures: FailureMetrics::new(&metrics, "connect_failure"),
-                   duplex_failures: FailureMetrics::new(&metrics, "stream_failure"),
+                   waiters: metrics.gauge("waiters"),
+                   connect_failures: FailureMetrics::new(&connect_metrics, "failure"),
+                   stream_failures: FailureMetrics::new(&stream_metrics, "failure"),
                    per_conn: ConnMetrics {
-                       rx_bytes: metrics.counter("total_rx_bytes"),
-                       tx_bytes: metrics.counter("total_tx_bytes"),
-                       rx_bytes_sum: metrics.stat("connection_rx_bytes"),
-                       tx_bytes_sum: metrics.stat("connection_tx_bytes"),
-                       duration_ms: metrics.stat("connection_duration_ms"),
-                       latency_us: metrics.stat("connect_latency_us"),
+                       rx_bytes: stream_metrics.counter("rx_bytes"),
+                       tx_bytes: stream_metrics.counter("tx_bytes"),
+                       rx_bytes_per_conn: stream_metrics.stat("connection_rx_bytes"),
+                       tx_bytes_per_conn: stream_metrics.stat("connection_tx_bytes"),
+                       latency: connect_metrics.timer_us("latency_us"),
+                       duration: stream_metrics.timer_ms("duration_ms"),
                    },
                },
            })
@@ -121,10 +127,12 @@ pub struct Bound {
 struct Metrics {
     accepts: tacho::Counter,
     closes: tacho::Counter,
+    failures: tacho::Counter,
     active: tacho::Gauge,
+    waiters: tacho::Gauge,
     per_conn: ConnMetrics,
     connect_failures: FailureMetrics,
-    duplex_failures: FailureMetrics,
+    stream_failures: FailureMetrics,
 }
 
 #[derive(Clone)]
@@ -135,14 +143,8 @@ struct FailureMetrics {
 impl FailureMetrics {
     fn new(metrics: &tacho::Scope, key: &'static str) -> FailureMetrics {
         FailureMetrics {
-            timeouts: metrics
-                .clone()
-                .labeled("cause", "timeout".into())
-                .counter(key),
-            other: metrics
-                .clone()
-                .labeled("cause", "other".into())
-                .counter(key),
+            timeouts: metrics.clone().labeled("cause", "timeout").counter(key),
+            other: metrics.clone().labeled("cause", "other").counter(key),
         }
     }
 
@@ -159,10 +161,10 @@ impl FailureMetrics {
 struct ConnMetrics {
     rx_bytes: tacho::Counter,
     tx_bytes: tacho::Counter,
-    rx_bytes_sum: tacho::Stat,
-    tx_bytes_sum: tacho::Stat,
-    duration_ms: tacho::Stat,
-    latency_us: tacho::Stat,
+    rx_bytes_per_conn: tacho::Stat,
+    tx_bytes_per_conn: tacho::Stat,
+    duration: tacho::Timer,
+    latency: tacho::Timer,
 }
 
 fn timeout<F>(fut: F,
@@ -201,9 +203,11 @@ impl Future for Bound {
                            self.bound_addr,
                            tcp.peer_addr().unwrap());
 
+                    self.metrics.accepts.incr(1);
                     let active = self.metrics.active.clone();
                     active.incr(1);
-                    self.metrics.accepts.incr(1);
+                    let waiters = self.metrics.waiters.clone();
+                    waiters.incr(1);
 
                     // Finish accepting the connection from the server.
                     //
@@ -213,8 +217,8 @@ impl Future for Bound {
                                              Error = io::Error>> = match self.tls.as_ref() {
                             None => future::ok(socket::plain(tcp)).boxed(),
                             Some(tls) => {
-                                let sock = tls.handshake_us
-                                    .add_timing_us(secure::server_handshake(tcp, &tls.config))
+                                let sock = tls.handshake_latency
+                                    .time(secure::server_handshake(tcp, &tls.config))
                                     .map(socket::secure_server);
                                 Box::new(sock)
                             }
@@ -228,7 +232,6 @@ impl Future for Bound {
                                 peer: sock.peer_addr(),
                                 rx_bytes_total: 0,
                                 tx_bytes_total: 0,
-                                start: Timing::start(),
                                 metrics,
                             };
                             Connection::new(dst_name, sock, ctx)
@@ -249,48 +252,51 @@ impl Future for Bound {
 
                     // Enforce a connection timeout, measure successful connection
                     // latencies and failure counts.
-                    let connected = {
+                    let connect = {
                         // Measure the time until the connection is established, if it completes.
-                        let c = timeout(self.metrics.per_conn.latency_us.add_timing_us(connect),
+                        let c = timeout(self.metrics.per_conn.latency.time(connect),
                                         self.connect_timeout,
                                         &self.timer);
                         let fails = self.metrics.connect_failures.clone();
-                        c.map_err(move |e| {
-                                      fails.record(&e);
-                                      e
-                                  })
+                        c.then(move |res| {
+                                   waiters.decr(1);
+                                   res.map_err(|e| {
+                                                   fails.record(&e);
+                                                   e
+                                               })
+                               })
                     };
 
                     // Copy data between the endpoints.
-                    let done = {
+                    let stream = {
                         let buf = self.buf.clone();
-                        let fails = self.metrics.duplex_failures.clone();
-                        let closes = self.metrics.closes.clone();
-                        let duration = self.metrics.per_conn.duration_ms.clone();
+                        let stream_fails = self.metrics.stream_failures.clone();
+                        let duration = self.metrics.per_conn.duration.clone();
                         let lifetime = self.connection_lifetime;
                         let timer = self.timer.clone();
-                        connected
-                            .and_then(move |(src, dst)| {
-                                // Enforce a timeout on total connection lifetime.
-                                let duplex = timeout(duration.add_timing_ms(src.into_duplex(dst,
-                                                                                            buf)),
-                                                     lifetime,
-                                                     &timer);
-                                duplex.then(move |ret| match ret {
-                                                Ok(_) => {
-                                                    closes.incr(1);
-                                                    Ok(())
-                                                }
-                                                Err(e) => {
-                                                    fails.record(&e);
-                                                    Err(e)
-                                                }
-                                            })
-                            })
-                            .then(move |_| {
-                                      active.decr(1);
-                                      Ok(())
-                                  })
+                        connect.and_then(move |(src, dst)| {
+                            // Enforce a timeout on total connection lifetime.
+                            let duplex = src.into_duplex(dst, buf);
+                            duration
+                                .time(timeout(duplex, lifetime, &timer))
+                                .map_err(move |e| {
+                                             stream_fails.record(&e);
+                                             e
+                                         })
+                        })
+                    };
+
+                    let done = {
+                        let closes = self.metrics.closes.clone();
+                        let failures = self.metrics.failures.clone();
+                        stream.then(move |ret| {
+                                        active.decr(1);
+                                        match ret {
+                                            Ok(_) => closes.incr(1),
+                                            Err(_) => failures.incr(1),
+                                        }
+                                        Ok(())
+                                    })
                     };
 
                     // Do all of this work in a single task.
@@ -312,7 +318,7 @@ pub struct UnboundTls {
 #[derive(Clone)]
 pub struct BoundTls {
     config: Arc<rustls::ServerConfig>,
-    handshake_us: tacho::Stat,
+    handshake_latency: tacho::Timer,
 }
 
 pub struct SrcCtx {
@@ -320,7 +326,6 @@ pub struct SrcCtx {
     peer: net::SocketAddr,
     rx_bytes_total: usize,
     tx_bytes_total: usize,
-    start: time::Instant,
     metrics: ConnMetrics,
 }
 impl ctx::Ctx for SrcCtx {
@@ -344,8 +349,11 @@ impl ctx::Ctx for SrcCtx {
 }
 impl Drop for SrcCtx {
     fn drop(&mut self) {
-        self.metrics.duration_ms.add(self.start.elapsed_ms());
-        self.metrics.rx_bytes_sum.add(self.rx_bytes_total as u64);
-        self.metrics.tx_bytes_sum.add(self.tx_bytes_total as u64);
+        self.metrics
+            .rx_bytes_per_conn
+            .add(self.rx_bytes_total as u64);
+        self.metrics
+            .tx_bytes_per_conn
+            .add(self.tx_bytes_total as u64);
     }
 }
