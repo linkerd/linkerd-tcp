@@ -10,7 +10,7 @@ use ordermap::OrderMap;
 use rand::{self, Rng};
 use std::{cmp, net};
 use std::collections::VecDeque;
-use tacho;
+use tacho::{self, Timing};
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
@@ -40,6 +40,7 @@ pub fn new(dst_name: Path,
         connected_gauge: connections.gauge("ready"),
         completing_gauge: connections.gauge("active"),
         waiters_gauge: connections.gauge("waiters"),
+        poll_us: metrics.stat("poll_us"),
         endpoint_metrics: EndpointMetrics {
             connect_latency: connections.timer_us("latency_us"),
             connection_duration: connections.timer_ms("duration_ms"),
@@ -77,6 +78,7 @@ pub struct Manager {
     connected_gauge: tacho::Gauge,
     completing_gauge: tacho::Gauge,
     waiters_gauge: tacho::Gauge,
+    poll_us: tacho::Stat,
     endpoint_metrics: EndpointMetrics,
 }
 
@@ -356,7 +358,7 @@ impl Future for Managing {
     type Error = ();
 
     fn poll(&mut self) -> Poll<(), ()> {
-        // TODO track a stat for execution time.
+        let t0 = Timing::start();
 
         // Check all endpoints for updates..
         self.manager.poll_endpoints();
@@ -372,6 +374,7 @@ impl Future for Managing {
         // Initiate new connections.
         self.manager.init_connecting();
 
+        self.manager.poll_us.add(t0.elapsed_us());
         Ok(Async::NotReady)
     }
 }
