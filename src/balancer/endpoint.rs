@@ -6,13 +6,17 @@ use super::super::connection::{Connection, Socket};
 use super::super::connector::{Connector, Connecting};
 use futures::{Future, Async};
 use futures::unsync::oneshot;
+use std::{cmp, io, net};
 use std::collections::VecDeque;
-use std::net;
-use tacho;
+use std::time::Duration;
+use tacho::{self, Timing};
 use tokio_core::reactor::Handle;
-use tokio_timer::Timer;
+use tokio_timer::{Sleep, Timer};
 
 type Completing = oneshot::Receiver<Summary>;
+
+const BASE_BACKOFF_MS: u64 = 500;
+const MAX_BACKOFF_MS: u64 = 60 * 60 * 15; // 15 minutes
 
 /// Represents a single concrete traffic destination
 pub struct Endpoint {
@@ -21,8 +25,12 @@ pub struct Endpoint {
 
     weight: f32,
 
-    consecutive_failures: usize,
+    reactor: Handle,
+    timer: Timer,
+
+    consecutive_failures: u32,
     metrics: EndpointMetrics,
+    delay: Option<Sleep>,
 
     /// Queues pending connections that have not yet been completed.
     connecting: VecDeque<tacho::Timed<Connecting>>,
@@ -46,13 +54,18 @@ impl Endpoint {
     pub fn new(dst_name: Path,
                peer_addr: net::SocketAddr,
                weight: f32,
-               metrics: EndpointMetrics)
+               metrics: EndpointMetrics,
+               reactor: Handle,
+               timer: Timer)
                -> Endpoint {
         Endpoint {
             dst_name,
             peer_addr,
             weight,
+            reactor,
+            timer,
             metrics,
+            delay: None,
             consecutive_failures: 0,
             connecting: VecDeque::default(),
             connected: VecDeque::default(),
@@ -63,6 +76,10 @@ impl Endpoint {
 
     pub fn peer_addr(&self) -> net::SocketAddr {
         self.peer_addr
+    }
+
+    pub fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures
     }
 
     pub fn connecting(&self) -> usize {
@@ -83,13 +100,8 @@ impl Endpoint {
 
     // TODO should we account for available connections?
     // TODO we should be able to use throughput/bandwidth as well.
-    pub fn load(&self) -> f32 {
-        self.completing.len() as f32 + self.waiting.len() as f32 +
-        self.consecutive_failures.pow(2) as f32
-    }
-
-    pub fn weight(&self) -> f32 {
-        self.weight
+    pub fn load(&self) -> usize {
+        self.completing.len() + self.waiting.len() + self.consecutive_failures.pow(2) as usize
     }
 
     pub fn set_weight(&mut self, w: f32) {
@@ -97,18 +109,37 @@ impl Endpoint {
         self.weight = w;
     }
 
-    pub fn weighted_load(&self) -> f32 {
-        self.load() / self.weight
+    pub fn weighted_load(&self) -> usize {
+        let load = (self.load() + 1) as f32;
+        let factor = 100.0 * (1.0 - self.weight);
+        (load * factor) as usize
     }
 
-    pub fn init_connecting(&mut self,
-                           count: usize,
-                           connector: &Connector,
-                           reactor: &Handle,
-                           timer: &Timer) {
+    fn backoff(&self) -> Duration {
+        let ms = if self.consecutive_failures == 0 {
+            0
+        } else {
+            BASE_BACKOFF_MS * self.consecutive_failures as u64
+        };
+        Duration::from_millis(cmp::min(ms, MAX_BACKOFF_MS))
+    }
+
+    pub fn init_connecting(&mut self, count: usize, connector: &Connector) {
+        if let Some(mut delay) = self.delay.take() {
+            debug!("{}: waiting for delay to expire (#{})",
+                   self.peer_addr,
+                   self.consecutive_failures);
+            if delay.poll().expect("failed to sleep") == Async::NotReady {
+                self.delay = Some(delay);
+                return;
+            }
+        }
+
         for _ in 0..count {
-            let conn = connector.connect(&self.peer_addr, reactor, timer);
-            let conn = self.metrics.connect_latency.time(conn);
+            let conn = self.metrics
+                .connect_latency
+                .time(connector.connect(&self.peer_addr, &self.reactor, &self.timer));
+            self.metrics.attempts.incr(1);
             self.track_connecting(conn);
         }
     }
@@ -150,12 +181,32 @@ impl Endpoint {
             Ok(Async::Ready(sock)) => {
                 self.connected.push_back(sock);
                 self.consecutive_failures = 0;
+                self.metrics.connects.incr(1);
             }
-            Err(_) => {
-                self.consecutive_failures += 1;
-                error!("{}: connection failed (#{})",
+            Err(e) => {
+                error!("{}: connection failed (#{}): {}",
                        self.peer_addr,
+                       self.consecutive_failures,
+                       e);
+                self.consecutive_failures += 1;
+                match e.kind() {
+                    io::ErrorKind::TimedOut => {
+                        self.metrics.timeouts.incr(1);
+                    }
+                    _ => {
+                        self.metrics.failures.incr(1);
+                    }
+                }
+
+                let backoff = self.backoff();
+                debug!("{}: delaying next connection {}ms (#{})",
+                       self.peer_addr,
+                       backoff.elapsed_ms(),
                        self.consecutive_failures);
+                let mut delay = self.timer.sleep(backoff);
+                if delay.poll().expect("failed to sleep") == Async::NotReady {
+                    self.delay = Some(delay);
+                }
             }
         }
     }

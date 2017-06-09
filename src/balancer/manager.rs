@@ -22,8 +22,8 @@ pub fn new(dst_name: Path,
            selects: mpsc::UnboundedReceiver<DstConnectionRequest>,
            metrics: &tacho::Scope)
            -> Manager {
-    let endpoints = metrics.clone().prefixed("endpoints");
-    let connections = metrics.clone().prefixed("connections");
+    let endpoints = metrics.clone().prefixed("endpoint");
+    let connections = metrics.clone().prefixed("connection");
     Manager {
         dst_name,
         reactor,
@@ -35,13 +35,25 @@ pub fn new(dst_name: Path,
         available_meta: EndpointsMeta::default(),
         retired: OrderMap::default(),
         available_gauge: endpoints.gauge("available"),
+        failed_gauge: endpoints.gauge("failed"),
         retired_gauge: endpoints.gauge("retired"),
+        load_gauge: endpoints.gauge("load"),
         connecting_gauge: connections.gauge("pending"),
         connected_gauge: connections.gauge("ready"),
         completing_gauge: connections.gauge("active"),
         waiters_gauge: connections.gauge("waiters"),
         poll_us: metrics.stat("poll_us"),
         endpoint_metrics: EndpointMetrics {
+            attempts: connections.counter("attempts"),
+            connects: connections.counter("connects"),
+            failures: connections
+                .clone()
+                .labeled("cause", "other")
+                .counter("failure"),
+            timeouts: connections
+                .clone()
+                .labeled("cause", "timeout")
+                .counter("failure"),
             connect_latency: connections.timer_us("latency_us"),
             connection_duration: connections.timer_ms("duration_ms"),
         },
@@ -73,10 +85,12 @@ pub struct Manager {
     // // A cache of aggregated metadata about retired endpoints.
     // retired_meta: EndpointsMeta,
     available_gauge: tacho::Gauge,
+    failed_gauge: tacho::Gauge,
     retired_gauge: tacho::Gauge,
     connecting_gauge: tacho::Gauge,
     connected_gauge: tacho::Gauge,
     completing_gauge: tacho::Gauge,
+    load_gauge: tacho::Gauge,
     waiters_gauge: tacho::Gauge,
     poll_us: tacho::Stat,
     endpoint_metrics: EndpointMetrics,
@@ -89,10 +103,16 @@ struct EndpointsMeta {
     connecting: usize,
     connected: usize,
     completing: usize,
+    failed: usize,
+    load: usize,
 }
 
 #[derive(Clone)]
 pub struct EndpointMetrics {
+    pub attempts: tacho::Counter,
+    pub connects: tacho::Counter,
+    pub timeouts: tacho::Counter,
+    pub failures: tacho::Counter,
     pub connect_latency: tacho::Timer,
     pub connection_duration: tacho::Timer,
 }
@@ -153,13 +173,14 @@ impl Manager {
                 self.available.get_index_mut(0).map(|(_, ep)| ep)
             }
             sz => {
+                let mut rng = rand::thread_rng();
+
                 // Pick 2 candidate indices.
                 let (i0, i1) = if sz == 2 {
                     // There are only two endpoints, so no need for an RNG.
                     (0, 1)
                 } else {
                     // 3 or more endpoints: choose two distinct endpoints at random.
-                    let mut rng = rand::thread_rng();
                     let i0 = rng.gen_range(0, sz);
                     let mut i1 = rng.gen_range(0, sz);
                     while i0 == i1 {
@@ -167,24 +188,24 @@ impl Manager {
                     }
                     (i0, i1)
                 };
+
                 let addr = {
                     // Determine the index of the lesser-loaded endpoint
                     let (addr0, ep0) = self.available.get_index(i0).unwrap();
                     let (addr1, ep1) = self.available.get_index(i1).unwrap();
-                    if ep0.weighted_load() <= ep1.weighted_load() {
-                        trace!("dst: {} *{} (not {} *{})",
-                               addr0,
-                               ep0.weight(),
-                               addr1,
-                               ep1.weight());
+                    let (load0, load1) = (ep0.weighted_load(), ep1.weighted_load());
 
+                    let use_first = if load0 == load1 {
+                        rng.gen::<bool>()
+                    } else {
+                        load0 < load1
+                    };
+
+                    if use_first {
+                        trace!("dst: {} {} (not {} {})", addr0, load0, addr1, load1);
                         *addr0
                     } else {
-                        trace!("dst: {} *{} (not {} *{})",
-                               addr1,
-                               ep1.weight(),
-                               addr0,
-                               ep0.weight());
+                        trace!("dst: {} {} (not {} {})", addr1, load1, addr0, load0);
                         *addr1
                     }
                 };
@@ -203,7 +224,11 @@ impl Manager {
             meta.connecting += ep.connecting();;
             meta.connected += ep.connected();
             meta.completing += ep.completing();
-            meta.waiting += ep.waiting()
+            meta.waiting += ep.waiting();
+            if ep.consecutive_failures() > 0 {
+                meta.failed += 1;
+            }
+            meta.load += ep.load()
         }
         for mut ep in self.retired.values_mut() {
             ep.poll_connecting();
@@ -214,7 +239,9 @@ impl Manager {
         self.connecting_gauge.set(meta.connecting);
         self.connected_gauge.set(meta.connected);
         self.completing_gauge.set(meta.completing);
+        self.load_gauge.set(meta.load);
         self.waiters_gauge.set(meta.waiting);
+        self.failed_gauge.set(meta.failed);
         self.available_meta = meta;
     }
 
@@ -223,7 +250,7 @@ impl Manager {
         for mut ep in self.available.values_mut().chain(self.retired.values_mut()) {
             // TODO should this be smarter somehow?
             let needed = ep.waiting();
-            ep.init_connecting(needed, &self.connector, &self.reactor, &self.timer);
+            ep.init_connecting(needed, &self.connector);
         }
     }
 
@@ -293,10 +320,19 @@ impl Manager {
         // Add new endpoints or update the base weights of existing endpoints.
         let name = self.dst_name.clone();
         let metrics = self.endpoint_metrics.clone();
+        let handle = self.reactor.clone();
+        let timer = self.timer.clone();
         for (addr, weight) in dsts.drain(..) {
             self.available
                 .entry(addr)
-                .or_insert_with(|| Endpoint::new(name.clone(), addr, weight, metrics.clone()))
+                .or_insert_with(|| {
+                                    Endpoint::new(name.clone(),
+                                                  addr,
+                                                  weight,
+                                                  metrics.clone(),
+                                                  handle.clone(),
+                                                  timer.clone())
+                                })
                 .set_weight(weight);
         }
     }
