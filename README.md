@@ -134,7 +134,7 @@ debugging, set `RUST_LOG=trace`.
 
 ## Docker ##
 
-To build the linkerd/linkerd-tcp docker image, run:
+To build the  linkerd/linkerd-tcp docker image, run:
 
 ```bash
 ./dockerize latest

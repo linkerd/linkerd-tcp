@@ -1,5 +1,5 @@
 use super::{ConfigError, Path};
-use super::balancer::{Balancer, BalancerFactory, Selector};
+use super::balancer::{Balancer, BalancerFactory};
 use super::resolver::Resolver;
 use futures::{Future, Poll, Async};
 use std::cell::RefCell;
@@ -43,7 +43,7 @@ impl Router {
 }
 
 struct InnerRouter {
-    routes: HashMap<Path, Selector>,
+    routes: HashMap<Path, Balancer>,
     resolver: Resolver,
     factory: BalancerFactory,
     route_create: tacho::Counter,
@@ -64,24 +64,23 @@ impl InnerRouter {
                 dst: &Path,
                 reactor: &Handle,
                 timer: &Timer)
-                -> Result<Selector, ConfigError> {
+                -> Result<Balancer, ConfigError> {
         // Try to get a balancer from the cache.
         if let Some(route) = self.routes.get(dst) {
             self.route_found.incr(1);
             return Ok(route.clone());
         }
 
-        match self.factory.mk_balancer(reactor, timer, dst) {
+        let resolve = self.resolver.resolve(dst.clone());
+        match self.factory.mk_balancer(reactor, timer, dst, resolve) {
             Err(e) => {
                 self.route_error.incr(1);
                 Err(e)
             }
-            Ok(Balancer { selector, manager }) => {
+            Ok(balancer) => {
                 self.route_create.incr(1);
-                let resolve = self.resolver.resolve(dst.clone());
-                reactor.spawn(manager.manage(resolve).map_err(|_| {}));
-                self.routes.insert(dst.clone(), selector.clone());
-                Ok(selector)
+                self.routes.insert(dst.clone(), balancer.clone());
+                Ok(balancer)
             }
         }
     }
@@ -91,9 +90,9 @@ impl InnerRouter {
 ///
 ///
 #[derive(Clone)]
-pub struct Route(Option<Result<Selector, ConfigError>>);
+pub struct Route(Option<Result<Balancer, ConfigError>>);
 impl Future for Route {
-    type Item = Selector;
+    type Item = Balancer;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {

@@ -4,14 +4,14 @@
 // balancers can be shared across logical names. In the meantime, it's sufficient to have
 // a balancer per logical name.
 
-use super::{DstAddr, Result, Error};
+use super::{WeightedAddr, Result, Error};
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
 use futures::{Async, Future, IntoFuture, Poll, Stream};
 use hyper::{Body, Chunk, Client, Uri};
 use hyper::client::{Connect as HyperConnect, HttpConnector};
 use hyper::status::StatusCode;
 use serde_json as json;
-use std::{f32, net, time};
+use std::{net, time};
 use std::collections::HashMap;
 use std::rc::Rc;
 use tacho;
@@ -21,11 +21,11 @@ use url::Url;
 
 type HttpConnectorFactory = Client<HttpConnector>;
 
-type AddrsFuture = Box<Future<Item = Vec<DstAddr>, Error = Error>>;
+type AddrsFuture = Box<Future<Item = Vec<WeightedAddr>, Error = Error>>;
 
-// pub struct Addrs(Box<Stream<Item = Result<Vec<DstAddr>>, Error = ()>>);
+// pub struct Addrs(Box<Stream<Item = Result<Vec<WeightedAddr>>, Error = ()>>);
 // impl Stream for Addrs {
-//     type Item = Result<Vec<DstAddr>>;
+//     type Item = Result<Vec<WeightedAddr>>;
 //     type Error = ();
 //     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
 //         self.0.poll()
@@ -103,7 +103,7 @@ enum State {
 }
 
 impl Stream for Addrs {
-    type Item = Result<Vec<DstAddr>>;
+    type Item = Result<Vec<WeightedAddr>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -215,7 +215,7 @@ fn to_buf(chunks: &[Chunk]) -> Bytes {
     buf.freeze()
 }
 
-fn parse_chunks(chunks: &[Chunk]) -> Result<Vec<DstAddr>> {
+fn parse_chunks(chunks: &[Chunk]) -> Result<Vec<WeightedAddr>> {
     let r = to_buf(chunks).into_buf().reader();
     let result: json::Result<NamerdResponse> = json::from_reader(r);
     match result {
@@ -228,15 +228,15 @@ fn parse_chunks(chunks: &[Chunk]) -> Result<Vec<DstAddr>> {
     }
 }
 
-fn to_weighted_addrs(namerd_addrs: &[NamerdAddr]) -> Vec<DstAddr> {
+fn to_weighted_addrs(namerd_addrs: &[NamerdAddr]) -> Vec<WeightedAddr> {
     // We never intentionally clear the EndpointMap.
-    let mut dsts: Vec<DstAddr> = Vec::new();
+    let mut dsts: Vec<WeightedAddr> = Vec::new();
     let mut sum = 0.0;
     for na in namerd_addrs {
         let addr = net::SocketAddr::new(na.ip.parse().unwrap(), na.port);
         let w = na.meta.endpoint_addr_weight.unwrap_or(1.0);
         sum += w;
-        dsts.push(DstAddr::new(addr, w));
+        dsts.push(WeightedAddr::new(addr, w));
     }
     // Normalize weights on [0.0, 0.1].
     for mut dst in &mut dsts {
@@ -267,7 +267,7 @@ struct Meta {
     #[serde(rename = "nodeName")]
     node_name: Option<String>,
 
-    endpoint_addr_weight: Option<f32>,
+    endpoint_addr_weight: Option<f64>,
 }
 
 

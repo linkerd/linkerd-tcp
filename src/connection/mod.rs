@@ -61,14 +61,6 @@ impl<C> ConnectionCtx<C>
 impl<C> Ctx for ConnectionCtx<C>
     where C: Ctx
 {
-    fn local_addr(&self) -> net::SocketAddr {
-        self.local_addr
-    }
-
-    fn peer_addr(&self) -> net::SocketAddr {
-        self.peer_addr
-    }
-
     fn read(&mut self, sz: usize) {
         self.ctx.read(sz);
     }
@@ -76,6 +68,9 @@ impl<C> Ctx for ConnectionCtx<C>
     fn wrote(&mut self, sz: usize) {
         self.ctx.wrote(sz);
     }
+}
+impl<C> Drop for ConnectionCtx<C> {
+    fn drop(&mut self) {}
 }
 
 /// A src or dst connection.

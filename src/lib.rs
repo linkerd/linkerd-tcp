@@ -36,8 +36,7 @@ mod resolver;
 mod router;
 mod server;
 
-use balancer::{DstAddr, DstConnection};
-use connection::Connection;
+use balancer::WeightedAddr;
 use path::Path;
 
 /// Describes a configuratin error.

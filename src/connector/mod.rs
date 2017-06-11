@@ -69,10 +69,20 @@ impl Tls {
     }
 }
 
-fn new(connect_timeout: Option<time::Duration>, tls: Option<Tls>) -> Connector {
+fn new(connect_timeout: Option<time::Duration>,
+       tls: Option<Tls>,
+       max_waiters: usize,
+       min_connections: usize,
+       fail_limit: usize,
+       fail_penalty: time::Duration)
+       -> Connector {
     Connector {
         connect_timeout,
         tls,
+        max_waiters,
+        min_connections,
+        fail_limit,
+        fail_penalty,
     }
 }
 
@@ -80,9 +90,28 @@ fn new(connect_timeout: Option<time::Duration>, tls: Option<Tls>) -> Connector {
 pub struct Connector {
     connect_timeout: Option<time::Duration>,
     tls: Option<Tls>,
+    max_waiters: usize,
+    min_connections: usize,
+    fail_limit: usize,
+    fail_penalty: time::Duration,
 }
 
 impl Connector {
+    pub fn max_waiters(&self) -> usize {
+        self.max_waiters
+    }
+
+    pub fn min_connections(&self) -> usize {
+        self.min_connections
+    }
+
+    pub fn failure_limit(&self) -> usize {
+        self.fail_limit
+    }
+    pub fn failure_penalty(&self) -> time::Duration {
+        self.fail_penalty
+    }
+
     fn timeout<F>(&self, fut: F, timer: &Timer) -> Box<Future<Item = F::Item, Error = io::Error>>
         where F: Future<Error = io::Error> + 'static
     {

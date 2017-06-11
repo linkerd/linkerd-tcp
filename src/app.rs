@@ -23,8 +23,6 @@ const DEFAULT_ADMIN_PORT: u16 = 9989;
 const DEFAULT_BUFFER_SIZE_BYTES: usize = 16 * 1024;
 const DEFAULT_GRACE_SECS: u64 = 10;
 const DEFAULT_METRICS_INTERVAL_SECS: u64 = 60;
-//TODO const DEFAULT_MINIMUM_CONNECTIONS: usize = 1;
-//TODO const DEFAULT_MAXIMUM_WAITERS: usize = 128;
 
 /// Signals a receiver to shutdown by the provided deadline.
 pub type Closer = oneshot::Sender<Instant>;
@@ -166,9 +164,6 @@ pub struct RouterConfig {
 
     /// Interprets request destinations into a stream of address pool updates.
     pub interpreter: InterpreterConfig,
-
-    //pub minimum_connections: Option<usize>,
-    // TODO pub maximum_waiters: Option<usize>,
 }
 
 impl RouterConfig {
@@ -177,7 +172,6 @@ impl RouterConfig {
                    buf: Rc<RefCell<Vec<u8>>>,
                    metrics: &tacho::Scope)
                    -> Result<RouterSpawner, ConfigError> {
-
         let metrics = metrics.clone().labeled("rt", self.label);
 
         // Each router has its own resolver/executor pair. The resolver is used by the
@@ -190,11 +184,9 @@ impl RouterConfig {
         };
 
         let balancer = {
-            let client = self.client.unwrap_or_default().mk_connector_factory()?;
             let metrics = metrics.clone().prefixed("balancer");
-            BalancerFactory::new(/*min_conns,*/
-                                 client,
-                                 &metrics)
+            let client = self.client.unwrap_or_default().mk_connector_factory()?;
+            BalancerFactory::new(client, &metrics)
         };
         let router = router::new(resolver, balancer, &metrics);
 
@@ -226,7 +218,7 @@ impl RouterSpawner {
             info!("routing on {} to {}",
                   unbound.listen_addr(),
                   unbound.dst_name());
-            let bound = unbound.bind(reactor, timer).expect("failed to bind");
+            let bound = unbound.bind(reactor, timer).expect("failed to bind server");
             reactor.spawn(bound.map_err(|_| {}));
         }
         Ok(())
@@ -309,7 +301,7 @@ impl AdminRunner {
 
         let serving = {
             let listener = {
-                println!("Listening on http://{}.", addr);
+                info!("admin listening on http://{}.", addr);
                 TcpListener::bind(&addr, &handle).expect("unable to listen")
             };
 

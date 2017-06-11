@@ -19,6 +19,7 @@ pub struct ServerConfig {
     tls: Option<TlsServerConfig>,
     connect_timeout_ms: Option<u64>,
     connection_lifetime_secs: Option<u64>,
+    max_concurrency: Option<usize>,
     // TODO idle time
 }
 
@@ -36,6 +37,7 @@ impl ServerConfig {
                 ref tls,
                 ref connect_timeout_ms,
                 ref connection_lifetime_secs,
+                ref max_concurrency,
             } => {
                 if dst_name.is_none() {
                     return Err("`dst_name` required".into());
@@ -61,6 +63,7 @@ impl ServerConfig {
                 };
                 let timeout = connect_timeout_ms.map(Duration::from_millis);
                 let lifetime = connection_lifetime_secs.map(Duration::from_secs);
+                let max_concurrency = max_concurrency.unwrap_or(super::DEFAULT_MAX_CONCURRENCY);
                 Ok(super::unbound(addr,
                                   dst_name.into(),
                                   router,
@@ -68,6 +71,7 @@ impl ServerConfig {
                                   tls,
                                   timeout,
                                   lifetime,
+                                  max_concurrency,
                                   metrics))
             }
         }

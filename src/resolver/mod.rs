@@ -1,4 +1,4 @@
-use super::{DstAddr, Path};
+use super::{WeightedAddr, Path};
 use futures::{Future, Stream, Poll};
 use futures::sync::mpsc;
 use tokio_core::reactor::Handle;
@@ -47,7 +47,7 @@ pub fn new(namerd: Namerd) -> (Resolver, Executor) {
 /// writes to the response channel as results are ready.
 #[derive(Clone)]
 pub struct Resolver {
-    requests: mpsc::UnboundedSender<(Path, mpsc::UnboundedSender<Result<Vec<DstAddr>>>)>,
+    requests: mpsc::UnboundedSender<(Path, mpsc::UnboundedSender<Result<Vec<WeightedAddr>>>)>,
 }
 
 impl Resolver {
@@ -63,10 +63,10 @@ impl Resolver {
     }
 }
 
-pub struct Resolve(mpsc::UnboundedReceiver<Result<Vec<DstAddr>>>);
+pub struct Resolve(mpsc::UnboundedReceiver<Result<Vec<WeightedAddr>>>);
 
 impl Stream for Resolve {
-    type Item = Result<Vec<DstAddr>>;
+    type Item = Result<Vec<WeightedAddr>>;
     type Error = ();
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         self.0.poll()
@@ -75,7 +75,7 @@ impl Stream for Resolve {
 
 /// Serves resolutions from `Resolver`s.
 pub struct Executor {
-    requests: mpsc::UnboundedReceiver<(Path, mpsc::UnboundedSender<Result<Vec<DstAddr>>>)>,
+    requests: mpsc::UnboundedReceiver<(Path, mpsc::UnboundedSender<Result<Vec<WeightedAddr>>>)>,
     namerd: Namerd,
 }
 
