@@ -2,11 +2,12 @@ use super::Path;
 use super::connection::Ctx;
 use super::connector::Connector;
 use futures::unsync::{mpsc, oneshot};
-use std::net;
+use std::{io, net};
 use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
+mod dispatcher;
 mod endpoint;
 mod factory;
 mod manager;
@@ -40,7 +41,8 @@ impl Balancer {
     pub fn new(reactor: &Handle,
                timer: &Timer,
                dst: &Path,
-               //min_conns: usize,
+               min_conns: usize,
+               max_waiters: usize,
                conn: Connector,
                metrics: &tacho::Scope)
                -> Balancer {
@@ -50,7 +52,8 @@ impl Balancer {
                                   reactor.clone(),
                                   timer.clone(),
                                   conn,
-                                  //min_conns,
+                                  min_conns,
+                                  max_waiters,
                                   rx,
                                   metrics),
             selector: selector::new(tx),
@@ -96,6 +99,16 @@ impl DstCtx {
     }
 }
 
+impl DstCtx {
+    fn send_summary(&mut self) {
+        if let Some(tx) = self.tx.take() {
+            if let Some(summary) = self.summary.take() {
+                let _ = tx.send(summary);
+            }
+        }
+    }
+}
+
 impl Ctx for DstCtx {
     fn local_addr(&self) -> net::SocketAddr {
         self.summary.as_ref().unwrap().local_addr
@@ -118,14 +131,8 @@ impl Ctx for DstCtx {
             summary.write_bytes += sz;
         }
     }
-}
 
-impl Drop for DstCtx {
-    fn drop(&mut self) {
-        if let Some(tx) = self.tx.take() {
-            if let Some(summary) = self.summary.take() {
-                let _ = tx.send(summary);
-            }
-        }
+    fn complete(self, _res: io::Result<()>) {
+        self.send_summary
     }
 }

@@ -1,13 +1,15 @@
-use super::{DstConnection, DstCtx, Summary};
+use super::{DstConnection, Summary};
 use super::manager::EndpointMetrics;
 use super::selector::DstConnectionRequest;
 use super::super::Path;
-use super::super::connection::{Connection, Socket};
+use super::super::connection::{Connection, Socket, ctx};
 use super::super::connector::{Connector, Connecting};
 use futures::{Future, Async};
 use futures::unsync::oneshot;
 use std::{cmp, io, net};
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::time::Duration;
 use tacho::{self, Timing};
 use tokio_core::reactor::Handle;
@@ -22,33 +24,22 @@ const MAX_BACKOFF_MS: u64 = 60 * 60 * 15; // 15 minutes
 pub struct Endpoint {
     dst_name: Path,
     peer_addr: net::SocketAddr,
-
     weight: f32,
-
     reactor: Handle,
     timer: Timer,
+}
 
+struct State {
     consecutive_failures: u32,
     metrics: EndpointMetrics,
-    delay: Option<Sleep>,
-
-    /// Queues pending connections that have not yet been completed.
-    connecting: VecDeque<tacho::Timed<Connecting>>,
-
-    /// Queues established connections that have not yet been dispatched.
-    connected: VecDeque<Socket>,
-
-    /// Queues dispatch requests for connections.
-    waiting: VecDeque<DstConnectionRequest>,
-
-    /// Holds a future that will be completed when streaming is complete.
-    ///
-    /// ## XXX
-    ///
-    /// This shold be replaced with a task-aware data structure so that all items
-    /// are not polled regularly (so that balancers can scale to 100K+ connections).
-    completing: VecDeque<tacho::Timed<Completing>>,
+    delay: Option<Duration>,
 }
+
+pub struct Ctx {
+    state: Rc<RefCell<State>>,
+    metrics: EndpointMetrics,
+}
+impl ctx::Ctx for Ctx {}
 
 impl Endpoint {
     pub fn new(dst_name: Path,
@@ -67,12 +58,10 @@ impl Endpoint {
             metrics,
             delay: None,
             consecutive_failures: 0,
-            connecting: VecDeque::default(),
-            connected: VecDeque::default(),
-            waiting: VecDeque::default(),
-            completing: VecDeque::default(),
         }
     }
+
+    pub fn connect(&self) -> Box<Future<Item = Connection<Ctx>, Error = io::Error>> {}
 
     pub fn peer_addr(&self) -> net::SocketAddr {
         self.peer_addr

@@ -1,4 +1,5 @@
 use super::DstAddr;
+use super::dispatcher::{self, Dispatcher};
 use super::endpoint::Endpoint;
 use super::selector::DstConnectionRequest;
 use super::super::Path;
@@ -9,7 +10,9 @@ use futures::unsync::mpsc;
 use ordermap::OrderMap;
 use rand::{self, Rng};
 use std::{cmp, net};
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 use tacho::{self, Timing};
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
@@ -18,60 +21,61 @@ pub fn new(dst_name: Path,
            reactor: Handle,
            timer: Timer,
            connector: Connector,
-           //min_conns: usize,
-           selects: mpsc::UnboundedReceiver<DstConnectionRequest>,
+           min_conns: usize,
+           max_waiters: usize,
+           waiters_rx: mpsc::UnboundedReceiver<DstConnectionRequest>,
            metrics: &tacho::Scope)
            -> Manager {
-    let endpoints = metrics.clone().prefixed("endpoint");
-    let connections = metrics.clone().prefixed("connection");
+    let metrics_endpoints = metrics.clone().prefixed("endpoint");
+    let metrics_connections = metrics.clone().prefixed("connection");
+
+    let endpoints = Endpoints {
+        available: OrderMap::default(),
+        retired: OrderMap::default(),
+        metrics: EndpointMetrics {
+            attempts: metrics_connections.counter("attempts"),
+            connects: metrics_connections.counter("connects"),
+            failures: metrics_connections
+                .clone()
+                .labeled("cause", "other")
+                .counter("failure"),
+            timeouts: metrics_connections
+                .clone()
+                .labeled("cause", "timeout")
+                .counter("failure"),
+            connect_latency: metrics_connections.timer_us("latency_us"),
+            connection_duration: metrics_connections.timer_ms("duration_ms"),
+        },
+    };
+    let endpoints = Rc::new(RefCell::new(endpoints));
+    let dst_name = Rc::new(dst_name);
+    let dispatcher = dispatcher::new(dst_name,
+                                     reactor.clone(),
+                                     timer.clone(),
+                                     connector,
+                                     endpoints.clone(),
+                                     max_waiters);
     Manager {
         dst_name,
         reactor,
         timer,
-        connector,
-        selects,
-        waiter: None,
-        available: OrderMap::default(),
-        available_meta: EndpointsMeta::default(),
-        retired: OrderMap::default(),
-        available_gauge: endpoints.gauge("available"),
-        failed_gauge: endpoints.gauge("failed"),
-        retired_gauge: endpoints.gauge("retired"),
-        load_gauge: endpoints.gauge("load"),
-        connecting_gauge: connections.gauge("pending"),
-        connected_gauge: connections.gauge("ready"),
-        completing_gauge: connections.gauge("active"),
-        waiters_gauge: connections.gauge("waiters"),
-        poll_us: metrics.stat("poll_us"),
-        endpoint_metrics: EndpointMetrics {
-            attempts: connections.counter("attempts"),
-            connects: connections.counter("connects"),
-            failures: connections
-                .clone()
-                .labeled("cause", "other")
-                .counter("failure"),
-            timeouts: connections
-                .clone()
-                .labeled("cause", "timeout")
-                .counter("failure"),
-            connect_latency: connections.timer_us("latency_us"),
-            connection_duration: connections.timer_ms("duration_ms"),
+        dispatcher,
+        endpoints,
+        metrics: Metrics {
+            available: metrics_endpoints.gauge("available"),
+            failed: metrics_endpoints.gauge("failed"),
+            retired: metrics_endpoints.gauge("retired"),
+            load: metrics_endpoints.gauge("load"),
+            connecting: metrics_connections.gauge("pending"),
+            connected: metrics_connections.gauge("ready"),
+            completing: metrics_connections.gauge("active"),
+            waiters: metrics_connections.gauge("waiters"),
+            poll_us: metrics.stat("poll_us"),
         },
     }
 }
 
-pub struct Manager {
-    dst_name: Path,
-
-    reactor: Handle,
-    timer: Timer,
-
-    connector: Connector,
-
-    /// Requests from a `Selector` for a `DstConnection`.
-    selects: mpsc::UnboundedReceiver<DstConnectionRequest>,
-    waiter: Option<DstConnectionRequest>,
-
+pub struct Endpoints {
     //minimum_connections: usize,
     /// Endpoints considered available for new connections.
     available: OrderMap<net::SocketAddr, Endpoint>,
@@ -79,21 +83,48 @@ pub struct Manager {
     /// Endpoints that are still actvie but considered unavailable for new connections.
     retired: OrderMap<net::SocketAddr, Endpoint>,
 
-    // A cache of aggregated metadata about available endpoints.
-    available_meta: EndpointsMeta,
+    metrics: EndpointMetrics,
+}
 
+impl Endpoints {
+    pub fn available(&self) -> &OrderMap<net::SocketAddr, Endpoint> {
+        &self.available
+    }
+}
+
+pub struct Manager {
+    dst_name: Rc<Path>,
+
+    reactor: Handle,
+    timer: Timer,
+
+    dispatcher: Dispatcher,
+    endpoints: Rc<RefCell<Endpoints>>,
+    metrics: Metrics,
+}
+
+struct Metrics {
     // // A cache of aggregated metadata about retired endpoints.
     // retired_meta: EndpointsMeta,
-    available_gauge: tacho::Gauge,
-    failed_gauge: tacho::Gauge,
-    retired_gauge: tacho::Gauge,
-    connecting_gauge: tacho::Gauge,
-    connected_gauge: tacho::Gauge,
-    completing_gauge: tacho::Gauge,
-    load_gauge: tacho::Gauge,
-    waiters_gauge: tacho::Gauge,
+    available: tacho::Gauge,
+    failed: tacho::Gauge,
+    retired: tacho::Gauge,
+    connecting: tacho::Gauge,
+    connected: tacho::Gauge,
+    completing: tacho::Gauge,
+    load: tacho::Gauge,
+    waiters: tacho::Gauge,
     poll_us: tacho::Stat,
-    endpoint_metrics: EndpointMetrics,
+}
+impl Metrics {
+    fn record(&self, meta: &EndpointsMeta) {
+        self.connecting.set(meta.connecting);
+        self.connected.set(meta.connected);
+        self.completing.set(meta.completing);
+        self.load.set(meta.load);
+        self.waiters.set(meta.waiting);
+        self.failed.set(meta.failed);
+    }
 }
 
 // Caches aggregated metadata about a set of endpoints.
@@ -122,135 +153,6 @@ impl Manager {
         Managing {
             manager: self,
             resolution: r,
-        }
-    }
-
-    fn dispatch_new_selects(&mut self) {
-        if let Some(waiter) = self.waiter.take() {
-            if let Some(waiter) = self.dispatch_waiter(waiter) {
-                debug!("cannot dispatch an endpoint in {}: no available endpoints",
-                       self.dst_name);
-                self.waiter = Some(waiter);
-                return;
-            }
-        }
-
-        loop {
-            match self.selects.poll().expect("failed to select") {
-                Async::NotReady |
-                Async::Ready(None) => return,
-                Async::Ready(Some(waiter)) => {
-                    if let Some(waiter) = self.dispatch_waiter(waiter) {
-                        debug!("cannot dispatch an endpoint in {}: no available endpoints",
-                               self.dst_name);
-                        self.waiter = Some(waiter);
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    fn dispatch_waiter(&mut self, waiter: DstConnectionRequest) -> Option<DstConnectionRequest> {
-        if let Some(ep) = self.select_endpoint() {
-            ep.track_waiting(waiter);
-            return None;
-        }
-        Some(waiter)
-    }
-
-    /// Selects an endpoint using the power of two choices.
-    ///
-    /// We select 2 endpoints randomly, compare their weighted loads
-    fn select_endpoint(&mut self) -> Option<&mut Endpoint> {
-        match self.available.len() {
-            0 => {
-                trace!("no endpoints ready");
-                None
-            }
-            1 => {
-                // One endpoint, use it.
-                self.available.get_index_mut(0).map(|(_, ep)| ep)
-            }
-            sz => {
-                let mut rng = rand::thread_rng();
-
-                // Pick 2 candidate indices.
-                let (i0, i1) = if sz == 2 {
-                    // There are only two endpoints, so no need for an RNG.
-                    (0, 1)
-                } else {
-                    // 3 or more endpoints: choose two distinct endpoints at random.
-                    let i0 = rng.gen_range(0, sz);
-                    let mut i1 = rng.gen_range(0, sz);
-                    while i0 == i1 {
-                        i1 = rng.gen_range(0, sz);
-                    }
-                    (i0, i1)
-                };
-
-                let addr = {
-                    // Determine the index of the lesser-loaded endpoint
-                    let (addr0, ep0) = self.available.get_index(i0).unwrap();
-                    let (addr1, ep1) = self.available.get_index(i1).unwrap();
-                    let (load0, load1) = (ep0.weighted_load(), ep1.weighted_load());
-
-                    let use_first = if load0 == load1 {
-                        rng.gen::<bool>()
-                    } else {
-                        load0 < load1
-                    };
-
-                    if use_first {
-                        trace!("dst: {} {} (not {} {})", addr0, load0, addr1, load1);
-                        *addr0
-                    } else {
-                        trace!("dst: {} {} (not {} {})", addr1, load1, addr0, load0);
-                        *addr1
-                    }
-                };
-                self.available.get_mut(&addr)
-            }
-        }
-    }
-
-    fn poll_endpoints(&mut self) {
-        let mut meta = EndpointsMeta::default();
-
-        for mut ep in self.available.values_mut() {
-            ep.poll_connecting();
-            ep.poll_completing();
-            ep.dispatch_waiting();
-            meta.connecting += ep.connecting();;
-            meta.connected += ep.connected();
-            meta.completing += ep.completing();
-            meta.waiting += ep.waiting();
-            if ep.consecutive_failures() > 0 {
-                meta.failed += 1;
-            }
-            meta.load += ep.load()
-        }
-        for mut ep in self.retired.values_mut() {
-            ep.poll_connecting();
-            ep.poll_completing();
-            ep.dispatch_waiting();
-        }
-
-        self.connecting_gauge.set(meta.connecting);
-        self.connected_gauge.set(meta.connected);
-        self.completing_gauge.set(meta.completing);
-        self.load_gauge.set(meta.load);
-        self.waiters_gauge.set(meta.waiting);
-        self.failed_gauge.set(meta.failed);
-        self.available_meta = meta;
-    }
-
-    /// Ensure that each endpoint has enough connections for all of its pending selecitons.
-    pub fn init_connecting(&mut self) {
-        for mut ep in self.available.values_mut().chain(self.retired.values_mut()) {
-            // TODO should this be smarter somehow?
-            let needed = ep.waiting();
-            ep.init_connecting(needed, &self.connector);
         }
     }
 
@@ -394,23 +296,23 @@ impl Future for Managing {
     type Error = ();
 
     fn poll(&mut self) -> Poll<(), ()> {
-        let t0 = Timing::start();
+        // let t0 = Timing::start();
 
-        // Check all endpoints for updates..
-        self.manager.poll_endpoints();
+        // // Check all endpoints for updates..
+        // self.manager.poll_endpoints();
 
-        // Try to resolve a new set of addresses. If there's an update, update the balancer's endpoints so that `available` contains only
-        if let Some(Ok(resolution)) = self.resolve() {
-            self.manager.update_resolved(&resolution);
-        }
+        // // Try to resolve a new set of addresses. If there's an update, update the balancer's endpoints so that `available` contains only
+        // if let Some(Ok(resolution)) = self.resolve() {
+        //     self.manager.update_resolved(&resolution);
+        // }
 
-        // Dispatch new select requests to available nodes.
-        self.manager.dispatch_new_selects();
+        // // Dispatch new select requests to available nodes.
+        // self.manager.dispatch_new_selects();
 
-        // Initiate new connections.
-        self.manager.init_connecting();
+        // // Initiate new connections.
+        // self.manager.init_connecting();
 
-        self.manager.poll_us.add(t0.elapsed_us());
+        // self.manager.poll_us.add(t0.elapsed_us());
         Ok(Async::NotReady)
     }
 }

@@ -1,4 +1,4 @@
-use std::net;
+use std::{io, net};
 
 /// A connection context
 pub trait Ctx {
@@ -7,6 +7,7 @@ pub trait Ctx {
 
     fn read(&mut self, sz: usize);
     fn wrote(&mut self, sz: usize);
+    fn complete(self, res: io::Result<()>);
 
     fn join<B: Ctx>(self, other: B) -> Join<Self, B>
         where Self: Sized
@@ -32,6 +33,7 @@ impl Ctx for Null {
 
     fn read(&mut self, _sz: usize) {}
     fn wrote(&mut self, _sz: usize) {}
+    fn complete(self, _res: io::Result<()>) {}
 }
 
 pub struct Join<A, B>(A, B);
@@ -52,5 +54,10 @@ impl<A: Ctx, B: Ctx> Ctx for Join<A, B> {
     fn wrote(&mut self, sz: usize) {
         self.0.wrote(sz);
         self.1.wrote(sz);
+    }
+
+    fn complete(self, result: io::Result<()>) {
+        self.0.complete(result.clone());
+        self.1.complete(result);
     }
 }

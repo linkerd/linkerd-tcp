@@ -11,13 +11,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tacho;
-use tokio_core::net::{TcpListener, Incoming};
+use tokio_core::net::{TcpListener, TcpStream, Incoming};
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
 mod config;
 mod sni;
 pub use self::config::ServerConfig;
+
+const DEFAULT_MAX_CONCURRENCY: usize = 100000;
 
 /// Builds a server that is not yet bound on a port.
 fn unbound(listen_addr: net::SocketAddr,
@@ -27,6 +29,7 @@ fn unbound(listen_addr: net::SocketAddr,
            tls: Option<UnboundTls>,
            connect_timeout: Option<Duration>,
            connection_lifetime: Option<Duration>,
+           max_concurrency: usize,
            metrics: &tacho::Scope)
            -> Unbound {
     let metrics = metrics.clone().prefixed("srv");
@@ -38,6 +41,7 @@ fn unbound(listen_addr: net::SocketAddr,
         tls,
         connect_timeout,
         connection_lifetime,
+        max_concurrency,
         metrics,
     }
 }
@@ -51,6 +55,7 @@ pub struct Unbound {
     metrics: tacho::Scope,
     connect_timeout: Option<Duration>,
     connection_lifetime: Option<Duration>,
+    max_concurrency: usize,
 }
 impl Unbound {
     pub fn listen_addr(&self) -> net::SocketAddr {
@@ -61,67 +66,172 @@ impl Unbound {
         &self.dst_name
     }
 
-    pub fn bind(self, reactor: &Handle, timer: &Timer) -> io::Result<Bound> {
+    fn init_src_connection(&self,
+                           src_tcp: TcpStream,
+                           metrics: &Metrics,
+                           tls: &Option<BoundTls>)
+                           -> Box<Future<Item = Connection<SrcCtx>, Error = io::Error>> {
+        // TODO determine dst_addr dynamically.
+        let dst_name = self.dst_name.clone();
+
+        let sock: Box<Future<Item = Socket, Error = io::Error>> = match tls.as_ref() {
+            None => future::ok(socket::plain(src_tcp)).boxed(),
+            Some(tls) => {
+                // TODO we should be able to get metadata from a TLS handshake but we can't!
+                let sock = tls.handshake_latency
+                    .time(secure::server_handshake(src_tcp, &tls.config))
+                    .map(socket::secure_server);
+                Box::new(sock)
+            }
+        };
+
+        let metrics = metrics.per_conn.clone();
+        let conn = sock.map(move |sock| {
+            let ctx = SrcCtx {
+                local: sock.local_addr(),
+                peer: sock.peer_addr(),
+                rx_bytes_total: 0,
+                tx_bytes_total: 0,
+                metrics,
+            };
+            Connection::new(dst_name, sock, ctx)
+        });
+        Box::new(conn)
+    }
+
+    pub fn bind<'a>(self, reactor: &Handle, timer: &Timer) -> io::Result<Bound> {
         debug!("routing on {} to {}", self.listen_addr, self.dst_name);
         let listen = TcpListener::bind(&self.listen_addr, reactor)?;
         let bound_addr = listen.local_addr().unwrap();
+
         let metrics = self.metrics.labeled("srv_addr", format!("{}", bound_addr));
+        let tls = self.tls
+            .map(|tls| {
+                     BoundTls {
+                         config: tls.config,
+                         handshake_latency:
+                             metrics.clone().prefixed("tls").timer_us("handshake_us"),
+                     }
+                 });
+
         let connect_metrics = metrics.clone().prefixed("connect");
         let stream_metrics = metrics.clone().prefixed("stream");
+        let per_conn = ConnMetrics {
+            rx_bytes: stream_metrics.counter("rx_bytes"),
+            tx_bytes: stream_metrics.counter("tx_bytes"),
+            rx_bytes_per_conn: stream_metrics.stat("connection_rx_bytes"),
+            tx_bytes_per_conn: stream_metrics.stat("connection_tx_bytes"),
+            latency: connect_metrics.timer_us("latency_us"),
+            duration: stream_metrics.timer_ms("duration_ms"),
+        };
+        let metrics = Metrics {
+            accepts: metrics.counter("accepts"),
+            closes: metrics.counter("closes"),
+            failures: metrics.counter("failures"),
+            active: metrics.gauge("active"),
+            waiters: metrics.gauge("waiters"),
+            connect_failures: FailureMetrics::new(&connect_metrics, "failure"),
+            stream_failures: FailureMetrics::new(&stream_metrics, "failure"),
+            per_conn,
+        };
+
+        let reactor = reactor.clone();
+        let timer = timer.clone();
+        let serving = listen
+            .incoming()
+            .map(move |(src_tcp, _)| {
+                metrics.accepts.incr(1);
+                let active = metrics.active.clone();
+                active.incr(1);
+                let waiters = metrics.waiters.clone();
+                waiters.incr(1);
+
+                // Finish accepting the connection from the server.
+                let src = self.init_src_connection(src_tcp, &metrics, &tls);
+
+                // Obtain a balancing endpoint selector for the given destination.
+                let balancer = self.router.route(&self.dst_name, &reactor, &timer);
+
+                // Once the incoming connection is ready and we have a balancer ready, obtain an
+                // outbound connection and begin streaming. We obtain an outbound connection after
+                // the incoming handshake is complete so that we don't waste outbound connections
+                // on failed inbound connections.
+                let connect = src.join(balancer)
+                    .and_then(move |(src, b)| b.select().map(move |dst| (src, dst)));
+
+                // Enforce a connection timeout, measure successful connection
+                // latencies and failure counts.
+                let connect = {
+                    // Measure the time until the connection is established, if it completes.
+                    let c = timeout(metrics.per_conn.latency.time(connect),
+                                    self.connect_timeout,
+                                    &timer);
+                    let fails = metrics.connect_failures.clone();
+                    c.then(move |res| {
+                               waiters.decr(1);
+                               res.map_err(|e| {
+                                               fails.record(&e);
+                                               e
+                                           })
+                           })
+                };
+
+                // Copy data between the endpoints.
+                let stream = {
+                    let buf = self.buf.clone();
+                    let stream_fails = metrics.stream_failures.clone();
+                    let duration = metrics.per_conn.duration.clone();
+                    let lifetime = self.connection_lifetime;
+                    let timer = timer.clone();
+                    connect.and_then(move |(src, dst)| {
+                        // Enforce a timeout on total connection lifetime.
+                        let duplex = src.into_duplex(dst, buf);
+                        duration
+                            .time(timeout(duplex, lifetime, &timer))
+                            .map_err(move |e| {
+                                         stream_fails.record(&e);
+                                         e
+                                     })
+                    })
+                };
+
+                let closes = metrics.closes.clone();
+                let failures = metrics.failures.clone();
+                stream.then(move |ret| {
+                                active.decr(1);
+                                match ret {
+                                    Ok(_) => closes.incr(1),
+                                    Err(_) => failures.incr(1),
+                                }
+                                Ok(())
+                            })
+            })
+            .buffer_unordered(self.max_concurrency);
+
         Ok(Bound {
                bound_addr,
-               reactor: reactor.clone(),
-               timer: timer.clone(),
-               dst_name: self.dst_name,
-               incoming: listen.incoming(),
-               tls: self.tls
-                   .map(|tls| {
-                            BoundTls {
-                                config: tls.config,
-                                handshake_latency:
-                                    metrics.clone().prefixed("tls").timer_us("handshake_us"),
-                            }
-                        }),
-               connect_timeout: self.connect_timeout,
-               connection_lifetime: self.connection_lifetime,
-               router: self.router,
-               buf: self.buf,
-               metrics: Metrics {
-                   accepts: metrics.counter("accepts"),
-                   closes: metrics.counter("closes"),
-                   failures: metrics.counter("failures"),
-                   active: metrics.gauge("active"),
-                   waiters: metrics.gauge("waiters"),
-                   connect_failures: FailureMetrics::new(&connect_metrics, "failure"),
-                   stream_failures: FailureMetrics::new(&stream_metrics, "failure"),
-                   per_conn: ConnMetrics {
-                       rx_bytes: stream_metrics.counter("rx_bytes"),
-                       tx_bytes: stream_metrics.counter("tx_bytes"),
-                       rx_bytes_per_conn: stream_metrics.stat("connection_rx_bytes"),
-                       tx_bytes_per_conn: stream_metrics.stat("connection_tx_bytes"),
-                       latency: connect_metrics.timer_us("latency_us"),
-                       duration: stream_metrics.timer_ms("duration_ms"),
-                   },
-               },
+               serving: Box::new(serving),
            })
     }
 }
 
 pub struct Bound {
-    reactor: Handle,
-    timer: Timer,
-
     bound_addr: net::SocketAddr,
-    incoming: Incoming,
-    tls: Option<BoundTls>,
-
-    dst_name: Path,
-    router: Router,
-    connect_timeout: Option<Duration>,
-    connection_lifetime: Option<Duration>,
-
-    buf: Rc<RefCell<Vec<u8>>>,
-    metrics: Metrics,
+    serving: Box<Stream<Item = (), Error = io::Error> + 'static>,
+}
+impl Future for Bound {
+    type Item = ();
+    type Error = io::Error;
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        loop {
+            match self.serving.poll() {
+                Ok(Async::NotReady) => return Ok(Async::NotReady),
+                Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
+                Ok(Async::Ready(Some(_))) |
+                Err(_) => {}
+            }
+        }
+    }
 }
 
 struct Metrics {
@@ -179,137 +289,6 @@ fn timeout<F>(fut: F,
     }
 }
 
-
-/// Completes when the listening socket stream completes.
-impl Future for Bound {
-    type Item = ();
-    type Error = io::Error;
-
-    fn poll(&mut self) -> Poll<(), io::Error> {
-        // Accept all inbound connections from the listener and spawn their work into the
-        // router. This should perhaps yield control back to the reactor periodically.
-        loop {
-            trace!("{}: polling incoming", self.bound_addr);
-            match self.incoming.poll()? {
-                Async::NotReady => {
-                    return Ok(Async::NotReady);
-                }
-                Async::Ready(None) => {
-                    debug!("{}: listener closed", self.bound_addr);
-                    return Ok(Async::Ready(()));
-                }
-                Async::Ready(Some((tcp, _))) => {
-                    trace!("{}: incoming stream from {}",
-                           self.bound_addr,
-                           tcp.peer_addr().unwrap());
-
-                    self.metrics.accepts.incr(1);
-                    let active = self.metrics.active.clone();
-                    active.incr(1);
-                    let waiters = self.metrics.waiters.clone();
-                    waiters.incr(1);
-
-                    // Finish accepting the connection from the server.
-                    //
-                    // TODO we should be able to get metadata from a TLS handshake but we can't!
-                    let src = {
-                        let sock: Box<Future<Item = Socket,
-                                             Error = io::Error>> = match self.tls.as_ref() {
-                            None => future::ok(socket::plain(tcp)).boxed(),
-                            Some(tls) => {
-                                let sock = tls.handshake_latency
-                                    .time(secure::server_handshake(tcp, &tls.config))
-                                    .map(socket::secure_server);
-                                Box::new(sock)
-                            }
-                        };
-
-                        let dst_name = self.dst_name.clone();
-                        let metrics = self.metrics.per_conn.clone();
-                        sock.map(move |sock| {
-                            let ctx = SrcCtx {
-                                local: sock.local_addr(),
-                                peer: sock.peer_addr(),
-                                rx_bytes_total: 0,
-                                tx_bytes_total: 0,
-                                metrics,
-                            };
-                            Connection::new(dst_name, sock, ctx)
-                        })
-                    };
-
-                    // Obtain a balancing endpoint selector for the given destination.
-                    let balancer = self.router
-                        .route(&self.dst_name, &self.reactor, &self.timer);
-
-                    // Once the incoming connection is ready and we have a balancer ready, obtain an
-                    // outbound connection and begin streaming. We obtain an outbound connection after
-                    // the incoming handshake is complete so that we don't waste outbound connections
-                    // on failed inbound connections.
-                    let connect =
-                        src.join(balancer)
-                            .and_then(move |(src, b)| b.select().map(move |dst| (src, dst)));
-
-                    // Enforce a connection timeout, measure successful connection
-                    // latencies and failure counts.
-                    let connect = {
-                        // Measure the time until the connection is established, if it completes.
-                        let c = timeout(self.metrics.per_conn.latency.time(connect),
-                                        self.connect_timeout,
-                                        &self.timer);
-                        let fails = self.metrics.connect_failures.clone();
-                        c.then(move |res| {
-                                   waiters.decr(1);
-                                   res.map_err(|e| {
-                                                   fails.record(&e);
-                                                   e
-                                               })
-                               })
-                    };
-
-                    // Copy data between the endpoints.
-                    let stream = {
-                        let buf = self.buf.clone();
-                        let stream_fails = self.metrics.stream_failures.clone();
-                        let duration = self.metrics.per_conn.duration.clone();
-                        let lifetime = self.connection_lifetime;
-                        let timer = self.timer.clone();
-                        connect.and_then(move |(src, dst)| {
-                            // Enforce a timeout on total connection lifetime.
-                            let duplex = src.into_duplex(dst, buf);
-                            duration
-                                .time(timeout(duplex, lifetime, &timer))
-                                .map_err(move |e| {
-                                             stream_fails.record(&e);
-                                             e
-                                         })
-                        })
-                    };
-
-                    let done = {
-                        let closes = self.metrics.closes.clone();
-                        let failures = self.metrics.failures.clone();
-                        stream.then(move |ret| {
-                                        active.decr(1);
-                                        match ret {
-                                            Ok(_) => closes.incr(1),
-                                            Err(_) => failures.incr(1),
-                                        }
-                                        Ok(())
-                                    })
-                    };
-
-                    // Do all of this work in a single task.
-                    // additional connections while this connection is open.
-                    //
-                    // TODO: implement some sort of backpressure here?
-                    self.reactor.spawn(done);
-                }
-            }
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct UnboundTls {
     config: Arc<rustls::ServerConfig>,
@@ -328,6 +307,7 @@ pub struct SrcCtx {
     tx_bytes_total: usize,
     metrics: ConnMetrics,
 }
+impl SrcCtx {}
 impl ctx::Ctx for SrcCtx {
     fn local_addr(&self) -> net::SocketAddr {
         self.local
@@ -346,9 +326,8 @@ impl ctx::Ctx for SrcCtx {
         self.tx_bytes_total += sz;
         self.metrics.tx_bytes.incr(sz);
     }
-}
-impl Drop for SrcCtx {
-    fn drop(&mut self) {
+
+    fn complete(self, _result: io::Result<()>) {
         self.metrics
             .rx_bytes_per_conn
             .add(self.rx_bytes_total as u64);

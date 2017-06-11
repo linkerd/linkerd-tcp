@@ -1,5 +1,5 @@
 use super::Path;
-use std::{fmt, net};
+use std::{fmt, io, net};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -75,6 +75,10 @@ impl<C> Ctx for ConnectionCtx<C>
 
     fn wrote(&mut self, sz: usize) {
         self.ctx.wrote(sz);
+    }
+
+    fn complete(self, r: io::Result<()>) {
+        self.ctx.complete(r)
     }
 }
 

@@ -167,8 +167,8 @@ pub struct RouterConfig {
     /// Interprets request destinations into a stream of address pool updates.
     pub interpreter: InterpreterConfig,
 
-    //pub minimum_connections: Option<usize>,
-    // TODO pub maximum_waiters: Option<usize>,
+    pub min_connections: Option<usize>,
+    pub max_waiters: Option<usize>,
 }
 
 impl RouterConfig {
@@ -190,11 +190,11 @@ impl RouterConfig {
         };
 
         let balancer = {
+            let min_conns = self.min_connections.unwrap_or(0);
+            let max_waiters = self.max_waiters.unwrap_or(::std::usize::MAX);
             let client = self.client.unwrap_or_default().mk_connector_factory()?;
             let metrics = metrics.clone().prefixed("balancer");
-            BalancerFactory::new(/*min_conns,*/
-                                 client,
-                                 &metrics)
+            BalancerFactory::new(min_conns, max_waiters, client, &metrics)
         };
         let router = router::new(resolver, balancer, &metrics);
 
@@ -226,7 +226,7 @@ impl RouterSpawner {
             info!("routing on {} to {}",
                   unbound.listen_addr(),
                   unbound.dst_name());
-            let bound = unbound.bind(reactor, timer).expect("failed to bind");
+            let bound = unbound.bind(reactor, timer).expect("failed to bind server");
             reactor.spawn(bound.map_err(|_| {}));
         }
         Ok(())
