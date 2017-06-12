@@ -5,7 +5,8 @@ use futures::{Future, Poll};
 use std::{cmp, io, net};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tacho;
 use tokio_timer::Timer;
 
 pub type Connection = _Connection<Ctx>;
@@ -80,13 +81,25 @@ impl Endpoint {
         (load * factor) as usize
     }
 
-    pub fn connect(&self, sock: connector::Connecting, timer: &Timer) -> Connecting {
+    pub fn connect(&self,
+                   sock: connector::Connecting,
+                   duration: &tacho::Timer,
+                   timer: &Timer)
+                   -> Connecting {
         let mut state = self.state.borrow_mut();
         state.pending_conns += 1;
         let conn = {
             let dst_name = self.dst_name.clone();
             let state = self.state.clone();
-            sock.map(move |sock| Connection::new(dst_name, sock, Ctx { state }))
+            let duration = duration.clone();
+            sock.map(move |sock| {
+                         let ctx = Ctx {
+                             state,
+                             duration,
+                             start: Instant::now(),
+                         };
+                         Connection::new(dst_name, sock, ctx)
+                     })
         };
         if let Some(backoff) = state.backoff() {
             debug!("{}: delaying new connection (#{})",
@@ -118,7 +131,8 @@ impl Future for Connecting {
 
 pub struct Ctx {
     state: Rc<RefCell<State>>,
-    // start: Instant,
+    duration: tacho::Timer,
+    start: Instant,
     // metrics: EndpointMetrics,
 }
 
@@ -141,5 +155,6 @@ impl ctx::Ctx for Ctx {
         } else {
             state.consecutive_failures += 1;
         }
+        self.duration.record_since(self.start)
     }
 }

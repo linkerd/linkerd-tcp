@@ -139,9 +139,10 @@ impl Dispatcher {
                 Some(ep) => {
                     let sock = self.connector
                         .connect(&ep.peer_addr(), &self.reactor, &self.timer);
-                    let mut conn = self.metrics
-                        .connect_latency
-                        .time(ep.connect(sock, &self.timer));
+                    let mut conn =
+                        self.metrics
+                            .connect_latency
+                            .time(ep.connect(sock, &self.metrics.connection_duration, &self.timer));
                     self.metrics.attempts.incr(1);
                     match conn.poll() {
                         Err(e) => {
