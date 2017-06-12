@@ -12,19 +12,11 @@ use tokio_timer::Timer;
 pub struct BalancerFactory {
     connector_factory: Rc<RefCell<ConnectorFactory>>,
     metrics: tacho::Scope,
-    min_connections: usize,
-    max_waiters: usize,
 }
 
 impl BalancerFactory {
-    pub fn new(min_connections: usize,
-               max_waiters: usize,
-               cf: ConnectorFactory,
-               metrics: &tacho::Scope)
-               -> BalancerFactory {
+    pub fn new(cf: ConnectorFactory, metrics: &tacho::Scope) -> BalancerFactory {
         BalancerFactory {
-            min_connections,
-            max_waiters,
             connector_factory: Rc::new(RefCell::new(cf)),
             metrics: metrics.clone(),
         }
@@ -38,13 +30,6 @@ impl BalancerFactory {
                        -> Result<Balancer, ConfigError> {
         let connector = self.connector_factory.borrow().mk_connector(dst_name)?;
         let metrics = self.metrics.clone().labeled("dst", dst_name);
-        Ok(super::new(reactor,
-                      timer,
-                      dst_name,
-                      self.min_connections,
-                      self.max_waiters,
-                      connector,
-                      resolve,
-                      &metrics))
+        Ok(super::new(reactor, timer, dst_name, connector, resolve, &metrics))
     }
 }

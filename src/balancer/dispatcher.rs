@@ -17,20 +17,18 @@ pub fn new(reactor: Handle,
            timer: Timer,
            connector: Connector,
            endpoints: Rc<RefCell<Endpoints>>,
-           min_connections: usize,
-           max_waiters: usize,
            metrics: &tacho::Scope)
            -> Dispatcher {
     Dispatcher {
         reactor,
         timer,
-        connector,
         endpoints,
-        min_connections,
-        max_waiters,
-        connecting: VecDeque::with_capacity(max_waiters),
-        connected: VecDeque::with_capacity(max_waiters),
-        waiters: VecDeque::with_capacity(max_waiters),
+        max_waiters: connector.max_waiters(),
+        min_connections: connector.min_connections(),
+        connector,
+        connecting: VecDeque::default(),
+        connected: VecDeque::default(),
+        waiters: VecDeque::default(),
         metrics: Metrics::new(metrics),
     }
 }

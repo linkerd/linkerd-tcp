@@ -6,6 +6,8 @@ use std::io::BufReader;
 use std::sync::Arc;
 use std::time;
 
+const DEFAULT_MAX_WAITERS: usize = 1_000_000;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "kind")]
 pub enum ConnectorFactoryConfig {
@@ -71,7 +73,9 @@ impl ConnectorConfig {
             Some(ref tls) => Some(tls.mk_tls()?),
         };
         let connect_timeout = self.connect_timeout_ms.map(time::Duration::from_millis);
-        Ok(super::new(connect_timeout, tls))
+        let max_waiters = self.max_waiters.unwrap_or(DEFAULT_MAX_WAITERS);
+        let min_conns = self.min_connections.unwrap_or(0);
+        Ok(super::new(connect_timeout, tls, max_waiters, min_conns))
     }
 
     pub fn update(&mut self, other: &ConnectorConfig) {

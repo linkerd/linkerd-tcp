@@ -39,8 +39,6 @@ impl WeightedAddr {
 pub fn new(reactor: &Handle,
            timer: &Timer,
            dst: &Path,
-           min_conns: usize,
-           max_waiters: usize,
            connector: Connector,
            resolve: Resolve,
            metrics: &tacho::Scope)
@@ -63,8 +61,6 @@ pub fn new(reactor: &Handle,
                                      timer.clone(),
                                      connector,
                                      endpoints,
-                                     min_conns,
-                                     max_waiters,
                                      &metrics);
     let dispatch = rx.forward(dispatcher.sink_map_err(|_| {}));
     reactor.spawn(dispatch.map(|_| {}));

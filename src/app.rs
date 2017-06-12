@@ -23,8 +23,6 @@ const DEFAULT_ADMIN_PORT: u16 = 9989;
 const DEFAULT_BUFFER_SIZE_BYTES: usize = 16 * 1024;
 const DEFAULT_GRACE_SECS: u64 = 10;
 const DEFAULT_METRICS_INTERVAL_SECS: u64 = 60;
-//TODO const DEFAULT_MINIMUM_CONNECTIONS: usize = 1;
-//TODO const DEFAULT_MAXIMUM_WAITERS: usize = 128;
 
 /// Signals a receiver to shutdown by the provided deadline.
 pub type Closer = oneshot::Sender<Instant>;
@@ -166,12 +164,6 @@ pub struct RouterConfig {
 
     /// Interprets request destinations into a stream of address pool updates.
     pub interpreter: InterpreterConfig,
-
-    /// Limits the number of waiting inbound connections on each balancer.
-    pub max_waiters: Option<usize>,
-
-    ///
-    pub min_connections: Option<usize>,
 }
 
 impl RouterConfig {
@@ -192,11 +184,9 @@ impl RouterConfig {
         };
 
         let balancer = {
-            let min_conns = self.min_connections.unwrap_or(0);
-            let max_waiters = self.max_waiters.unwrap_or(::std::usize::MAX);
-            let client = self.client.unwrap_or_default().mk_connector_factory()?;
             let metrics = metrics.clone().prefixed("balancer");
-            BalancerFactory::new(min_conns, max_waiters, client, &metrics)
+            let client = self.client.unwrap_or_default().mk_connector_factory()?;
+            BalancerFactory::new(client, &metrics)
         };
         let router = router::new(resolver, balancer, &metrics);
 
