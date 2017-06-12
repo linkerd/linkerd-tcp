@@ -78,6 +78,7 @@ impl InnerRouter {
                 Err(e)
             }
             Ok(balancer) => {
+                self.route_create.incr(1);
                 self.routes.insert(dst.clone(), balancer.clone());
                 Ok(balancer)
             }

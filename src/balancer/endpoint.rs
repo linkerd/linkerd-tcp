@@ -33,8 +33,7 @@ pub struct Endpoint {
 #[derive(Default)]
 struct State {
     pending_conns: usize,
-    ready_conns: usize,
-    active_conns: usize,
+    open_conns: usize,
     consecutive_failures: usize,
     rx_bytes: usize,
     tx_bytes: usize,
@@ -50,7 +49,7 @@ impl State {
     }
 
     pub fn is_idle(&self) -> bool {
-        self.active_conns == 0
+        self.open_conns == 0
     }
 }
 
@@ -63,7 +62,11 @@ impl Endpoint {
     // TODO we should be able to use throughput/bandwidth as well.
     pub fn load(&self) -> usize {
         let s = self.state.borrow();
-        s.active_conns + s.pending_conns + s.consecutive_failures.pow(2)
+        s.open_conns + s.pending_conns + s.consecutive_failures.pow(2)
+    }
+
+    pub fn consecutive_failures(&self) -> usize {
+        self.state.borrow().consecutive_failures
     }
 
     pub fn set_weight(&mut self, w: f32) {
@@ -132,7 +135,7 @@ impl ctx::Ctx for Ctx {
 
     fn complete(self, res: &io::Result<()>) {
         let mut state = self.state.borrow_mut();
-        state.active_conns -= 1;
+        state.open_conns -= 1;
         if res.is_ok() {
             state.consecutive_failures = 0;
         } else {

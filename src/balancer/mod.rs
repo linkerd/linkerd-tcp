@@ -1,7 +1,7 @@
 use super::Path;
 use super::connector::Connector;
 use super::resolver::Resolve;
-use futures::{Async, Future, Poll, Sink, Stream, future, unsync};
+use futures::{Async, Future, Poll, Sink, Stream, unsync};
 use ordermap::OrderMap;
 use std::{cmp, io, net};
 use std::cell::RefCell;
@@ -79,7 +79,7 @@ impl Balancer {
     pub fn connect(&self) -> Connect {
         let (tx, rx) = unsync::oneshot::channel();
         let result = unsync::mpsc::UnboundedSender::send(&self.0, tx)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, "lost dispatcher"))
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "lost dispatcher"))
             .map(|_| rx);
         Connect(Some(result))
     }
@@ -121,9 +121,9 @@ impl Endpoints {
         &self.available
     }
 
-    pub fn retired(&self) -> &OrderMap<net::SocketAddr, Endpoint> {
-        &self.retired
-    }
+    // pub fn retired(&self) -> &OrderMap<net::SocketAddr, Endpoint> {
+    //     &self.retired
+    // }
 
     // TODO: we need to do some sort of probation deal to manage endpoints that are
     // retired.

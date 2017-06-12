@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io;
 use std::rc::Rc;
+use std::time::Instant;
 use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
@@ -20,7 +21,6 @@ pub fn new(reactor: Handle,
            max_waiters: usize,
            metrics: &tacho::Scope)
            -> Dispatcher {
-    let connect_latency = metrics.timer_us("connect_latency_us");
     Dispatcher {
         reactor,
         timer,
@@ -31,7 +31,7 @@ pub fn new(reactor: Handle,
         connecting: VecDeque::with_capacity(max_waiters),
         connected: VecDeque::with_capacity(max_waiters),
         waiters: VecDeque::with_capacity(max_waiters),
-        connect_latency,
+        metrics: Metrics::new(metrics),
     }
 }
 
@@ -41,12 +41,12 @@ pub struct Dispatcher {
     timer: Timer,
     connector: Connector,
     endpoints: Rc<RefCell<Endpoints>>,
-    connect_latency: tacho::Timer,
     connecting: VecDeque<tacho::Timed<endpoint::Connecting>>,
     min_connections: usize,
     connected: VecDeque<Connection<endpoint::Ctx>>,
     waiters: VecDeque<Waiter>,
     max_waiters: usize,
+    metrics: Metrics,
 }
 
 impl Dispatcher {
@@ -102,15 +102,6 @@ impl Dispatcher {
         }
     }
 
-    fn dispatch_waiters(&mut self) {
-        while let Some(conn) = self.connected.pop_front() {
-            if let Err(conn) = self.dispatch_to_next_waiter(conn) {
-                self.connected.push_front(conn);
-                return;
-            }
-        }
-    }
-
     fn dispatch_to_next_waiter(&mut self,
                                conn: endpoint::Connection)
                                -> Result<(), endpoint::Connection> {
@@ -121,6 +112,15 @@ impl Dispatcher {
                     Ok(()) => Ok(()),
                     Err(conn) => self.dispatch_to_next_waiter(conn),
                 }
+            }
+        }
+    }
+
+    fn dispatch_connected_to_waiters(&mut self) {
+        while let Some(conn) = self.connected.pop_front() {
+            if let Err(conn) = self.dispatch_to_next_waiter(conn) {
+                self.connected.push_front(conn);
+                return;
             }
         }
     }
@@ -139,16 +139,72 @@ impl Dispatcher {
                 Some(ep) => {
                     let sock = self.connector
                         .connect(&ep.peer_addr(), &self.reactor, &self.timer);
-                    let mut conn = self.connect_latency.time(ep.connect(sock, &self.timer));
-                    match conn.poll()? {
-                        Async::NotReady => self.connecting.push_back(conn),
-                        Async::Ready(conn) => self.connected.push_back(conn),
+                    let mut conn = self.metrics
+                        .connect_latency
+                        .time(ep.connect(sock, &self.timer));
+                    self.metrics.attempts.incr(1);
+                    match conn.poll() {
+                        Err(e) => {
+                            self.metrics.failure(&e);
+                            return Err(e);
+                        }
+                        Ok(Async::NotReady) => {
+                            self.metrics.pending.incr(1);
+                            self.connecting.push_back(conn)
+                        }
+                        Ok(Async::Ready(conn)) => self.connected.push_back(conn),
                     }
                     connected += 1;
                 }
             }
         }
         Ok(connected)
+    }
+
+    fn poll_connecting(&mut self) -> io::Result<()> {
+        for _ in 0..self.connecting.len() {
+            let mut conn = self.connecting.pop_front().unwrap();
+            match conn.poll() {
+                Err(e) => {
+                    self.metrics.pending.decr(1);
+                    self.metrics.failure(&e);
+                    return Err(e);
+                }
+                Ok(Async::NotReady) => self.connecting.push_back(conn),
+                Ok(Async::Ready(conn)) => {
+                    self.metrics.pending.decr(1);
+                    self.metrics.open.incr(1);
+                    self.metrics.connects.incr(1);
+                    self.connected.push_back(conn)
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn record(&self, t0: Instant) {
+        let endpoints = self.endpoints.borrow();
+        {
+            let available = endpoints.available();
+            self.metrics.available.set(available.len());
+            let failed = available
+                .values()
+                .filter(|ep| ep.consecutive_failures() > 0)
+                .count();
+            self.metrics.failed.set(failed)
+        }
+        self.metrics.retired.set(endpoints.retired.len());
+        self.metrics.poll_time.record_since(t0);
+        self.metrics.waiters.set(self.waiters.len());
+    }
+
+    fn poll(&mut self) -> io::Result<()> {
+        let t0 = Instant::now();
+        self.poll_connecting()?;
+        self.connect()?;
+        self.dispatch_connected_to_waiters();
+        self.record(t0);
+        Ok(())
     }
 }
 
@@ -158,46 +214,67 @@ impl Sink for Dispatcher {
     type SinkError = io::Error;
 
     fn start_send(&mut self, waiter: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
-        if self.waiters.len() < self.max_waiters {
-            let connecting = self.connect()?;
-            self.dispatch_waiters();
-            if connecting > 0 {
-                return Ok(AsyncSink::Ready);
-            }
+        if self.waiters.len() == self.max_waiters {
+            return Ok(AsyncSink::NotReady(waiter));
         }
-
-        Ok(AsyncSink::NotReady(waiter))
+        self.waiters.push_back(waiter);
+        self.poll()?;
+        Ok(AsyncSink::Ready)
     }
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        if self.connecting.is_empty() {
-            if self.waiters.is_empty() {
-                return Ok(Async::Ready(()));
-            }
-
-            return Ok(Async::NotReady);
+        if self.connecting.is_empty() && self.waiters.is_empty() {
+            return Ok(Async::Ready(()));
         }
-
+        self.poll()?;;
         Ok(Async::NotReady)
     }
 }
 
 struct Metrics {
-    // // A cache of aggregated metadata about retired endpoints.
-    // retired_meta: EndpointsMeta,
     available: tacho::Gauge,
     failed: tacho::Gauge,
     retired: tacho::Gauge,
-    connecting: tacho::Gauge,
-    connected: tacho::Gauge,
-    completing: tacho::Gauge,
-    load: tacho::Gauge,
+    pending: tacho::Gauge,
+    open: tacho::Gauge,
     waiters: tacho::Gauge,
-    poll_us: tacho::Stat,
+    poll_time: tacho::Timer,
     attempts: tacho::Counter,
     connects: tacho::Counter,
     timeouts: tacho::Counter,
+    refused: tacho::Counter,
     failures: tacho::Counter,
     connect_latency: tacho::Timer,
     connection_duration: tacho::Timer,
+}
+
+impl Metrics {
+    fn new(root: &tacho::Scope) -> Metrics {
+        let ep = root.clone().prefixed("endpoint");
+        let conn = root.clone().prefixed("connection");
+        Metrics {
+            available: ep.gauge("available"),
+            failed: ep.gauge("failed"),
+            retired: ep.gauge("retired"),
+            pending: conn.gauge("pending"),
+            open: conn.gauge("open"),
+            waiters: root.gauge("waiters"),
+            poll_time: root.timer_us("poll_time_us"),
+            attempts: conn.counter("aggempts"),
+            connects: conn.counter("connects"),
+            timeouts: conn.clone().labeled("cause", "timeout").counter("failure"),
+            refused: conn.clone().labeled("cause", "refused").counter("failure"),
+            failures: conn.clone().labeled("cause", "other").counter("failure"),
+            connect_latency: conn.timer_us("latency_us"),
+            connection_duration: conn.timer_us("duration_ms"),
+        }
+    }
+
+    fn failure(&self, err: &io::Error) {
+        match err.kind() {
+            io::ErrorKind::TimedOut => self.timeouts.incr(1),
+            io::ErrorKind::ConnectionRefused => self.refused.incr(1),
+            _ => self.failures.incr(1),
+        }
+    }
 }
