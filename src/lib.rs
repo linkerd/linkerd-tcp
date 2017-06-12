@@ -36,7 +36,7 @@ mod resolver;
 mod router;
 mod server;
 
-use balancer::{DstAddr, DstConnection};
+use balancer::{EndpointConnection as DstConnection, WeightedAddr};
 use connection::Connection;
 use path::Path;
 

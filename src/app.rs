@@ -167,8 +167,11 @@ pub struct RouterConfig {
     /// Interprets request destinations into a stream of address pool updates.
     pub interpreter: InterpreterConfig,
 
-    pub min_connections: Option<usize>,
+    /// Limits the number of waiting inbound connections on each balancer.
     pub max_waiters: Option<usize>,
+
+    ///
+    pub min_connections: Option<usize>,
 }
 
 impl RouterConfig {
@@ -177,7 +180,6 @@ impl RouterConfig {
                    buf: Rc<RefCell<Vec<u8>>>,
                    metrics: &tacho::Scope)
                    -> Result<RouterSpawner, ConfigError> {
-
         let metrics = metrics.clone().labeled("rt", self.label);
 
         // Each router has its own resolver/executor pair. The resolver is used by the

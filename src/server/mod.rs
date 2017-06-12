@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tacho;
-use tokio_core::net::{TcpListener, TcpStream, Incoming};
+use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
@@ -66,13 +66,11 @@ impl Unbound {
         &self.dst_name
     }
 
-    fn init_src_connection(&self,
+    fn init_src_connection(dst_name: Path,
                            src_tcp: TcpStream,
                            metrics: &Metrics,
                            tls: &Option<BoundTls>)
                            -> Box<Future<Item = Connection<SrcCtx>, Error = io::Error>> {
-        // TODO determine dst_addr dynamically.
-        let dst_name = self.dst_name.clone();
 
         let sock: Box<Future<Item = Socket, Error = io::Error>> = match tls.as_ref() {
             None => future::ok(socket::plain(src_tcp)).boxed(),
@@ -87,19 +85,17 @@ impl Unbound {
 
         let metrics = metrics.per_conn.clone();
         let conn = sock.map(move |sock| {
-            let ctx = SrcCtx {
-                local: sock.local_addr(),
-                peer: sock.peer_addr(),
-                rx_bytes_total: 0,
-                tx_bytes_total: 0,
-                metrics,
-            };
-            Connection::new(dst_name, sock, ctx)
-        });
+                                let ctx = SrcCtx {
+                                    rx_bytes_total: 0,
+                                    tx_bytes_total: 0,
+                                    metrics,
+                                };
+                                Connection::new(dst_name, sock, ctx)
+                            });
         Box::new(conn)
     }
 
-    pub fn bind<'a>(self, reactor: &Handle, timer: &Timer) -> io::Result<Bound> {
+    pub fn bind(self, reactor: &Handle, timer: &Timer) -> io::Result<Bound> {
         debug!("routing on {} to {}", self.listen_addr, self.dst_name);
         let listen = TcpListener::bind(&self.listen_addr, reactor)?;
         let bound_addr = listen.local_addr().unwrap();
@@ -135,6 +131,13 @@ impl Unbound {
             per_conn,
         };
 
+        // TODO determine dst_addr dynamically.
+        let dst_name = self.dst_name;
+        let router = self.router;
+        let connect_timeout = self.connect_timeout;
+        let connection_lifetime = self.connection_lifetime;
+        let buf = self.buf;
+
         let reactor = reactor.clone();
         let timer = timer.clone();
         let serving = listen
@@ -147,24 +150,25 @@ impl Unbound {
                 waiters.incr(1);
 
                 // Finish accepting the connection from the server.
-                let src = self.init_src_connection(src_tcp, &metrics, &tls);
+                // TODO determine dst_addr dynamically.
+                let src = Unbound::init_src_connection(dst_name.clone(), src_tcp, &metrics, &tls);
 
                 // Obtain a balancing endpoint selector for the given destination.
-                let balancer = self.router.route(&self.dst_name, &reactor, &timer);
+                let balancer = router.route(&dst_name, &reactor, &timer);
 
                 // Once the incoming connection is ready and we have a balancer ready, obtain an
                 // outbound connection and begin streaming. We obtain an outbound connection after
                 // the incoming handshake is complete so that we don't waste outbound connections
                 // on failed inbound connections.
                 let connect = src.join(balancer)
-                    .and_then(move |(src, b)| b.select().map(move |dst| (src, dst)));
+                    .and_then(move |(src, b)| b.connect().map(move |dst| (src, dst)));
 
                 // Enforce a connection timeout, measure successful connection
                 // latencies and failure counts.
                 let connect = {
                     // Measure the time until the connection is established, if it completes.
                     let c = timeout(metrics.per_conn.latency.time(connect),
-                                    self.connect_timeout,
+                                    connect_timeout,
                                     &timer);
                     let fails = metrics.connect_failures.clone();
                     c.then(move |res| {
@@ -178,10 +182,10 @@ impl Unbound {
 
                 // Copy data between the endpoints.
                 let stream = {
-                    let buf = self.buf.clone();
+                    let buf = buf.clone();
                     let stream_fails = metrics.stream_failures.clone();
                     let duration = metrics.per_conn.duration.clone();
-                    let lifetime = self.connection_lifetime;
+                    let lifetime = connection_lifetime;
                     let timer = timer.clone();
                     connect.and_then(move |(src, dst)| {
                         // Enforce a timeout on total connection lifetime.
@@ -208,23 +212,17 @@ impl Unbound {
             })
             .buffer_unordered(self.max_concurrency);
 
-        Ok(Bound {
-               bound_addr,
-               serving: Box::new(serving),
-           })
+        Ok(Bound(Box::new(serving)))
     }
 }
 
-pub struct Bound {
-    bound_addr: net::SocketAddr,
-    serving: Box<Stream<Item = (), Error = io::Error> + 'static>,
-}
+pub struct Bound(Box<Stream<Item = (), Error = io::Error> + 'static>);
 impl Future for Bound {
     type Item = ();
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
-            match self.serving.poll() {
+            match self.0.poll() {
                 Ok(Async::NotReady) => return Ok(Async::NotReady),
                 Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
                 Ok(Async::Ready(Some(_))) |
@@ -301,22 +299,12 @@ pub struct BoundTls {
 }
 
 pub struct SrcCtx {
-    local: net::SocketAddr,
-    peer: net::SocketAddr,
     rx_bytes_total: usize,
     tx_bytes_total: usize,
     metrics: ConnMetrics,
 }
 impl SrcCtx {}
 impl ctx::Ctx for SrcCtx {
-    fn local_addr(&self) -> net::SocketAddr {
-        self.local
-    }
-
-    fn peer_addr(&self) -> net::SocketAddr {
-        self.peer
-    }
-
     fn read(&mut self, sz: usize) {
         self.rx_bytes_total += sz;
         self.metrics.rx_bytes.incr(sz);
@@ -327,7 +315,7 @@ impl ctx::Ctx for SrcCtx {
         self.metrics.tx_bytes.incr(sz);
     }
 
-    fn complete(self, _result: io::Result<()>) {
+    fn complete(self, _result: &io::Result<()>) {
         self.metrics
             .rx_bytes_per_conn
             .add(self.rx_bytes_total as u64);

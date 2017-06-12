@@ -56,6 +56,10 @@ pub struct ConnectorConfig {
     pub prefix: Option<String>,
     pub tls: Option<TlsConnectorFactoryConfig>,
     pub connect_timeout_ms: Option<u64>,
+
+    pub max_waiters: Option<usize>,
+    pub min_connections: Option<usize>,
+    
     // TODO fail_fast: Option<Boolean>
     // TODO requeue_budget: Option<RequeueBudget>
 }

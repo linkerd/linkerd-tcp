@@ -1,38 +1,32 @@
-use super::{DstAddr, DstCtx};
-use super::endpoint::Endpoint;
-use super::manager::Endpoints;
-use super::selector::DstConnectionRequest;
-use super::super::Path;
-use super::super::connection::{Connection, Socket};
-use super::super::connector::{Connector, Connecting};
-use super::super::resolver::{self, Resolve};
-use futures::{Future, Stream, Sink, Poll, Async, AsyncSink, StartSend, unsync};
-use ordermap::OrderMap;
+use super::{Endpoints, EndpointMap, Waiter};
+use super::endpoint::{self, Endpoint};
+use super::super::connection::Connection;
+use super::super::connector::Connector;
+use futures::{Future, Sink, Poll, Async, AsyncSink, StartSend};
 use rand::{self, Rng};
-use std::{cmp, io, net};
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::collections::vec_deque::Drain;
+use std::io;
 use std::rc::Rc;
-use tacho::{self, Timing};
+use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
-pub fn new(dst_name: Path,
-           reactor: Handle,
+pub fn new(reactor: Handle,
            timer: Timer,
            connector: Connector,
            endpoints: Rc<RefCell<Endpoints>>,
+           min_connections: usize,
            max_waiters: usize,
            metrics: &tacho::Scope)
            -> Dispatcher {
     let connect_latency = metrics.timer_us("connect_latency_us");
     Dispatcher {
-        dst_name,
         reactor,
         timer,
         connector,
         endpoints,
+        min_connections,
         max_waiters,
         connecting: VecDeque::with_capacity(max_waiters),
         connected: VecDeque::with_capacity(max_waiters),
@@ -43,15 +37,15 @@ pub fn new(dst_name: Path,
 
 /// Accepts connection requests
 pub struct Dispatcher {
-    dst_name: Path,
     reactor: Handle,
     timer: Timer,
     connector: Connector,
     endpoints: Rc<RefCell<Endpoints>>,
     connect_latency: tacho::Timer,
-    connecting: VecDeque<tacho::Timed<Connecting>>,
-    connected: VecDeque<Connection<DstCtx>>,
-    waiters: VecDeque<DstConnectionRequest>,
+    connecting: VecDeque<tacho::Timed<endpoint::Connecting>>,
+    min_connections: usize,
+    connected: VecDeque<Connection<endpoint::Ctx>>,
+    waiters: VecDeque<Waiter>,
     max_waiters: usize,
 }
 
@@ -59,9 +53,7 @@ impl Dispatcher {
     /// Selects an endpoint using the power of two choices.
     ///
     /// We select 2 endpoints randomly, compare their weighted loads
-    fn select_endpoint(&mut self) -> Option<&Endpoint> {
-        let endpoints = self.endpoints.borrow();
-        let available = endpoints.available();
+    fn select_endpoint(available: &EndpointMap) -> Option<&Endpoint> {
         match available.len() {
             0 => {
                 trace!("no endpoints ready");
@@ -110,58 +102,102 @@ impl Dispatcher {
         }
     }
 
-    fn connect(&self, ep: &Endpoint) -> io::Result<()> {
-        let conn = self.connector
-            .connect(&ep.peer_addr(), &self.reactor, &self.timer);
-        let mut conn = self.connect_latency.time(conn);
-        match conn.poll()? {
-            Async::NotReady => {
-                self.connecting.push_back(conn);
-            }
-            Async::Ready(conn) => {
-                let conn = Connection::new(self.dst_name, conn, ep.ctx());
-                self.connected.push_back(conn);
-            }
-        }
-        Ok(())
-    }
-
     fn dispatch_waiters(&mut self) {
         while let Some(conn) = self.connected.pop_front() {
-            match self.waiters.pop_front() {
-                None => {
-                    self.connected.push_front(conn);
-                    return;
-                }
-                Some(waiter) => {
-                    waiter.send(conn);
+            if let Err(conn) = self.dispatch_to_next_waiter(conn) {
+                self.connected.push_front(conn);
+                return;
+            }
+        }
+    }
+
+    fn dispatch_to_next_waiter(&mut self,
+                               conn: endpoint::Connection)
+                               -> Result<(), endpoint::Connection> {
+        match self.waiters.pop_front() {
+            None => Err(conn),
+            Some(waiter) => {
+                match waiter.send(conn) {
+                    Ok(()) => Ok(()),
+                    Err(conn) => self.dispatch_to_next_waiter(conn),
                 }
             }
         }
+    }
+
+    fn connect(&mut self) -> io::Result<usize> {
+        let endpoints = self.endpoints.borrow();
+        let available = endpoints.available();
+        let mut connected = 0;
+        let needed = self.min_connections +
+                     (self.waiters.len() - self.connecting.len() + self.connected.len());
+        for _ in 0..needed {
+            match Dispatcher::select_endpoint(available) {
+                None => {
+                    return Ok(connected);
+                }
+                Some(ep) => {
+                    let sock = self.connector
+                        .connect(&ep.peer_addr(), &self.reactor, &self.timer);
+                    let mut conn = self.connect_latency.time(ep.connect(sock, &self.timer));
+                    match conn.poll()? {
+                        Async::NotReady => self.connecting.push_back(conn),
+                        Async::Ready(conn) => self.connected.push_back(conn),
+                    }
+                    connected += 1;
+                }
+            }
+        }
+        Ok(connected)
     }
 }
 
-/// Buffers up to `max_waiters` concurrent connection requests, along with corresponding connectin attempts.
+/// Buffers up to `max_waiters` concurrent connection requests, along with corresponding connection attempts.
 impl Sink for Dispatcher {
-    type SinkItem = DstConnectionRequest;
-    type SinkError = ();
+    type SinkItem = Waiter;
+    type SinkError = io::Error;
 
-    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
-        if self.waiters.len() == self.max_waiters {
-            return Ok(AsyncSink::NotReady(item));
-        }
-
-        match self.select_endpoint() {
-            None => Ok(AsyncSink::NotReady(item)),
-            Some(ep) => {
-                self.waiters.push_back(item);
-                self.connect(&ep);
-                Ok(AsyncSink::Ready)
+    fn start_send(&mut self, waiter: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+        if self.waiters.len() < self.max_waiters {
+            let connecting = self.connect()?;
+            self.dispatch_waiters();
+            if connecting > 0 {
+                return Ok(AsyncSink::Ready);
             }
         }
+
+        Ok(AsyncSink::NotReady(waiter))
     }
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        Ok(Async::Ready(()))
+        if self.connecting.is_empty() {
+            if self.waiters.is_empty() {
+                return Ok(Async::Ready(()));
+            }
+
+            return Ok(Async::NotReady);
+        }
+
+        Ok(Async::NotReady)
     }
+}
+
+struct Metrics {
+    // // A cache of aggregated metadata about retired endpoints.
+    // retired_meta: EndpointsMeta,
+    available: tacho::Gauge,
+    failed: tacho::Gauge,
+    retired: tacho::Gauge,
+    connecting: tacho::Gauge,
+    connected: tacho::Gauge,
+    completing: tacho::Gauge,
+    load: tacho::Gauge,
+    waiters: tacho::Gauge,
+    poll_us: tacho::Stat,
+    attempts: tacho::Counter,
+    connects: tacho::Counter,
+    timeouts: tacho::Counter,
+    failures: tacho::Counter,
+    connect_latency: tacho::Timer,
+    connection_duration: tacho::Timer,
 }

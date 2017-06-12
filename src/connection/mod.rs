@@ -61,14 +61,6 @@ impl<C> ConnectionCtx<C>
 impl<C> Ctx for ConnectionCtx<C>
     where C: Ctx
 {
-    fn local_addr(&self) -> net::SocketAddr {
-        self.local_addr
-    }
-
-    fn peer_addr(&self) -> net::SocketAddr {
-        self.peer_addr
-    }
-
     fn read(&mut self, sz: usize) {
         self.ctx.read(sz);
     }
@@ -77,7 +69,7 @@ impl<C> Ctx for ConnectionCtx<C>
         self.ctx.wrote(sz);
     }
 
-    fn complete(self, r: io::Result<()>) {
+    fn complete(self, r: &io::Result<()>) {
         self.ctx.complete(r)
     }
 }

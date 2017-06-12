@@ -1,96 +1,69 @@
-use super::{DstConnection, Summary};
-use super::manager::EndpointMetrics;
-use super::selector::DstConnectionRequest;
 use super::super::Path;
-use super::super::connection::{Connection, Socket, ctx};
-use super::super::connector::{Connector, Connecting};
-use futures::{Future, Async};
-use futures::unsync::oneshot;
+use super::super::connection::{Connection as _Connection, ctx};
+use super::super::connector;
+use futures::{Future, Poll};
 use std::{cmp, io, net};
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::Duration;
-use tacho::{self, Timing};
-use tokio_core::reactor::Handle;
-use tokio_timer::{Sleep, Timer};
+use tokio_timer::Timer;
 
-type Completing = oneshot::Receiver<Summary>;
+pub type Connection = _Connection<Ctx>;
 
 const BASE_BACKOFF_MS: u64 = 500;
 const MAX_BACKOFF_MS: u64 = 60 * 60 * 15; // 15 minutes
+
+pub fn new(dst_name: Path, peer_addr: net::SocketAddr, weight: f32) -> Endpoint {
+    Endpoint {
+        dst_name,
+        peer_addr,
+        weight,
+        state: Rc::new(RefCell::new(State::default())),
+    }
+}
 
 /// Represents a single concrete traffic destination
 pub struct Endpoint {
     dst_name: Path,
     peer_addr: net::SocketAddr,
     weight: f32,
-    reactor: Handle,
-    timer: Timer,
-}
-
-struct State {
-    consecutive_failures: u32,
-    metrics: EndpointMetrics,
-    delay: Option<Duration>,
-}
-
-pub struct Ctx {
     state: Rc<RefCell<State>>,
-    metrics: EndpointMetrics,
 }
-impl ctx::Ctx for Ctx {}
 
-impl Endpoint {
-    pub fn new(dst_name: Path,
-               peer_addr: net::SocketAddr,
-               weight: f32,
-               metrics: EndpointMetrics,
-               reactor: Handle,
-               timer: Timer)
-               -> Endpoint {
-        Endpoint {
-            dst_name,
-            peer_addr,
-            weight,
-            reactor,
-            timer,
-            metrics,
-            delay: None,
-            consecutive_failures: 0,
+#[derive(Default)]
+struct State {
+    pending_conns: usize,
+    ready_conns: usize,
+    active_conns: usize,
+    consecutive_failures: usize,
+    rx_bytes: usize,
+    tx_bytes: usize,
+}
+impl State {
+    fn backoff(&self) -> Option<Duration> {
+        if self.consecutive_failures == 0 {
+            None
+        } else {
+            let bo = BASE_BACKOFF_MS * self.consecutive_failures as u64;
+            Some(Duration::from_millis(cmp::min(bo, MAX_BACKOFF_MS)))
         }
     }
 
-    pub fn connect(&self) -> Box<Future<Item = Connection<Ctx>, Error = io::Error>> {}
+    pub fn is_idle(&self) -> bool {
+        self.active_conns == 0
+    }
+}
 
+impl Endpoint {
     pub fn peer_addr(&self) -> net::SocketAddr {
         self.peer_addr
-    }
-
-    pub fn consecutive_failures(&self) -> u32 {
-        self.consecutive_failures
-    }
-
-    pub fn connecting(&self) -> usize {
-        self.connecting.len()
-    }
-
-    pub fn connected(&self) -> usize {
-        self.connected.len()
-    }
-
-    pub fn completing(&self) -> usize {
-        self.completing.len()
-    }
-
-    pub fn waiting(&self) -> usize {
-        self.waiting.len()
     }
 
     // TODO should we account for available connections?
     // TODO we should be able to use throughput/bandwidth as well.
     pub fn load(&self) -> usize {
-        self.completing.len() + self.waiting.len() + self.consecutive_failures.pow(2) as usize
+        let s = self.state.borrow();
+        s.active_conns + s.pending_conns + s.consecutive_failures.pow(2)
     }
 
     pub fn set_weight(&mut self, w: f32) {
@@ -104,146 +77,66 @@ impl Endpoint {
         (load * factor) as usize
     }
 
-    fn backoff(&self) -> Duration {
-        let ms = if self.consecutive_failures == 0 {
-            0
-        } else {
-            BASE_BACKOFF_MS * self.consecutive_failures as u64
+    pub fn connect(&self, sock: connector::Connecting, timer: &Timer) -> Connecting {
+        let mut state = self.state.borrow_mut();
+        state.pending_conns += 1;
+        let conn = {
+            let dst_name = self.dst_name.clone();
+            let state = self.state.clone();
+            sock.map(move |sock| Connection::new(dst_name, sock, Ctx { state }))
         };
-        Duration::from_millis(cmp::min(ms, MAX_BACKOFF_MS))
-    }
-
-    pub fn init_connecting(&mut self, count: usize, connector: &Connector) {
-        if let Some(mut delay) = self.delay.take() {
-            debug!("{}: waiting for delay to expire (#{})",
+        if let Some(backoff) = state.backoff() {
+            debug!("{}: delaying new connection (#{})",
                    self.peer_addr,
-                   self.consecutive_failures);
-            if delay.poll().expect("failed to sleep") == Async::NotReady {
-                self.delay = Some(delay);
-                return;
-            }
+                   state.consecutive_failures);
+            let conn = timer
+                .sleep(backoff)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+                .and_then(move |_| conn);
+            return Connecting(Box::new(conn));
         }
 
-        for _ in 0..count {
-            let conn = self.metrics
-                .connect_latency
-                .time(connector.connect(&self.peer_addr, &self.reactor, &self.timer));
-            self.metrics.attempts.incr(1);
-            self.track_connecting(conn);
-        }
-    }
-
-    fn mk_connection(&self, sock: Socket) -> (DstConnection, Completing) {
-        let (tx, rx) = oneshot::channel();
-        let ctx = DstCtx::new(self.dst_name.clone(), sock.local_addr(), self.peer_addr, tx);
-        let conn = Connection::new(self.dst_name.clone(), sock, ctx);
-        (conn, rx)
+        Connecting(Box::new(conn))
     }
 
     pub fn is_idle(&self) -> bool {
-        self.waiting.is_empty() && self.completing.is_empty()
+        self.state.borrow().is_idle()
+    }
+}
+
+pub struct Connecting(Box<Future<Item = Connection, Error = io::Error> + 'static>);
+impl Future for Connecting {
+    type Item = Connection;
+    type Error = io::Error;
+    fn poll(&mut self) -> Poll<Connection, io::Error> {
+        self.0.poll()
+    }
+}
+
+pub struct Ctx {
+    state: Rc<RefCell<State>>,
+    // start: Instant,
+    // metrics: EndpointMetrics,
+}
+
+impl ctx::Ctx for Ctx {
+    fn read(&mut self, sz: usize) {
+        let mut state = self.state.borrow_mut();
+        state.rx_bytes += sz;
     }
 
-    /// Accepts a request for a connection to be provided.
-    ///
-    /// The request is satisfied immediately if possible. If there are no available
-    /// connections, the request is saved to be satisfied later when there is an available
-    /// connection.
-    pub fn track_waiting(&mut self, w: DstConnectionRequest) {
-        match self.connected.pop_front() {
-            None => self.waiting.push_back(w),
-            Some(sock) => {
-                let (conn, done) = self.mk_connection(sock);
-                let done = self.metrics.connection_duration.time(done);
-                match w.send(conn) {
-                    // DstConnectionRequest no longer waiting. save the connection for later.
-                    Err(conn) => self.connected.push_front(conn.socket),
-                    Ok(_) => self.track_completing(done),
-                }
-            }
-        }
+    fn wrote(&mut self, sz: usize) {
+        let mut state = self.state.borrow_mut();
+        state.tx_bytes += sz;
     }
 
-    fn track_connecting(&mut self, mut c: tacho::Timed<Connecting>) {
-        match c.poll() {
-            Ok(Async::NotReady) => self.connecting.push_back(c),
-            Ok(Async::Ready(sock)) => {
-                self.connected.push_back(sock);
-                self.consecutive_failures = 0;
-                self.metrics.connects.incr(1);
-            }
-            Err(e) => {
-                error!("{}: connection failed (#{}): {}",
-                       self.peer_addr,
-                       self.consecutive_failures,
-                       e);
-                self.consecutive_failures += 1;
-                match e.kind() {
-                    io::ErrorKind::TimedOut => {
-                        self.metrics.timeouts.incr(1);
-                    }
-                    _ => {
-                        self.metrics.failures.incr(1);
-                    }
-                }
-
-                let backoff = self.backoff();
-                debug!("{}: delaying next connection {}ms (#{})",
-                       self.peer_addr,
-                       backoff.elapsed_ms(),
-                       self.consecutive_failures);
-                let mut delay = self.timer.sleep(backoff);
-                if delay.poll().expect("failed to sleep") == Async::NotReady {
-                    self.delay = Some(delay);
-                }
-            }
+    fn complete(self, res: &io::Result<()>) {
+        let mut state = self.state.borrow_mut();
+        state.active_conns -= 1;
+        if res.is_ok() {
+            state.consecutive_failures = 0;
+        } else {
+            state.consecutive_failures += 1;
         }
-    }
-
-    fn track_completing(&mut self, mut c: tacho::Timed<Completing>) {
-        match c.poll() {
-            Err(_) => error!("{}: connection lost", self.peer_addr),
-            Ok(Async::NotReady) => self.completing.push_back(c),
-            Ok(Async::Ready(summary)) => {
-                debug!("{}: connection finished: {:?}", self.peer_addr, summary);
-            }
-        }
-    }
-
-    pub fn poll_connecting(&mut self) {
-        for _ in 0..self.connecting.len() {
-            let c = self.connecting.pop_front().unwrap();
-            self.track_connecting(c);
-        }
-    }
-
-    pub fn poll_completing(&mut self) {
-        for _ in 0..self.completing.len() {
-            let c = self.completing.pop_front().unwrap();
-            self.track_completing(c);
-        }
-    }
-
-    pub fn dispatch_waiting(&mut self) {
-        while let Some(sock) = self.connected.pop_front() {
-            let (conn, done) = self.mk_connection(sock);
-            if let Err(conn) = self.dispatch_to_next_waiter(conn) {
-                self.connected.push_front(conn.socket);
-                return;
-            } else {
-                let done = self.metrics.connection_duration.time(done);
-                self.track_completing(done);
-            }
-        }
-    }
-
-    fn dispatch_to_next_waiter(&mut self, conn: DstConnection) -> Result<(), DstConnection> {
-        if let Some(waiter) = self.waiting.pop_front() {
-            return match waiter.send(conn) {
-                       Err(conn) => self.dispatch_to_next_waiter(conn),
-                       Ok(()) => Ok(()),
-                   };
-        }
-        Err(conn)
     }
 }

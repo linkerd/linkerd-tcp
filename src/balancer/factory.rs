@@ -1,6 +1,7 @@
 use super::Balancer;
 use super::super::{ConfigError, Path};
 use super::super::connector::ConnectorFactory;
+use super::super::resolver::Resolve;
 use std::cell::RefCell;
 use std::rc::Rc;
 use tacho;
@@ -32,16 +33,18 @@ impl BalancerFactory {
     pub fn mk_balancer(&self,
                        reactor: &Handle,
                        timer: &Timer,
-                       dst_name: &Path)
+                       dst_name: &Path,
+                       resolve: Resolve)
                        -> Result<Balancer, ConfigError> {
         let connector = self.connector_factory.borrow().mk_connector(dst_name)?;
         let metrics = self.metrics.clone().labeled("dst", dst_name);
-        Ok(Balancer::new(reactor,
-                         timer,
-                         dst_name,
-                         self.min_connections,
-                         self.max_waiters,
-                         connector,
-                         &metrics))
+        Ok(super::new(reactor,
+                      timer,
+                      dst_name,
+                      self.min_connections,
+                      self.max_waiters,
+                      connector,
+                      resolve,
+                      &metrics))
     }
 }
