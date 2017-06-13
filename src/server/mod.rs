@@ -142,7 +142,8 @@ impl Unbound {
         let timer = timer.clone();
         let serving = listen
             .incoming()
-            .map(move |(src_tcp, _)| {
+            .map(move |(src_tcp, src_addr)| {
+                trace!("received incoming connection from {}", src_addr);
                 metrics.accepts.incr(1);
                 let active = metrics.active.clone();
                 active.incr(1);
@@ -171,12 +172,20 @@ impl Unbound {
                                     connect_timeout,
                                     &timer);
                     let fails = metrics.connect_failures.clone();
-                    c.then(move |res| {
-                               waiters.decr(1);
-                               res.map_err(|e| {
-                                               fails.record(&e);
-                                               e
-                                           })
+                    c.then(move |res| match res {
+                               Ok((src, dst)) => {
+                                   trace!("connection ready for {} to {}",
+                                          src_addr,
+                                          dst.peer_addr());
+                                   waiters.decr(1);
+                                   Ok((src, dst))
+                               }
+                               Err(e) => {
+                                   trace!("connection failed for {}: {}", src_addr, e);
+                                   waiters.decr(1);
+                                   fails.record(&e);
+                                   Err(e)
+                               }
                            })
                 };
 
@@ -189,26 +198,40 @@ impl Unbound {
                     let timer = timer.clone();
                     connect.and_then(move |(src, dst)| {
                         // Enforce a timeout on total connection lifetime.
+                        let dst_addr = dst.peer_addr();
                         let duplex = src.into_duplex(dst, buf);
                         duration
                             .time(timeout(duplex, lifetime, &timer))
-                            .map_err(move |e| {
-                                         stream_fails.record(&e);
-                                         e
-                                     })
+                            .then(move |res| match res {
+                                      Ok(_) => {
+                                          trace!("stream succeeded for {} to {}",
+                                                 src_addr,
+                                                 dst_addr);
+                                          Ok(())
+                                      }
+                                      Err(e) => {
+                                          trace!("stream failed for {} to {}: {}",
+                                                 src_addr,
+                                                 dst_addr,
+                                                 e);
+                                          stream_fails.record(&e);
+                                          Err(e)
+                                      }
+                                  })
                     })
                 };
 
                 let closes = metrics.closes.clone();
                 let failures = metrics.failures.clone();
                 stream.then(move |ret| {
-                                active.decr(1);
-                                match ret {
-                                    Ok(_) => closes.incr(1),
-                                    Err(_) => failures.incr(1),
-                                }
-                                Ok(())
-                            })
+                    active.decr(1);
+                    if ret.is_ok() {
+                        closes.incr(1);
+                    } else {
+                        failures.incr(1);
+                    }
+                    Ok(())
+                })
             })
             .buffer_unordered(self.max_concurrency);
 
@@ -283,7 +306,11 @@ fn timeout<F>(fut: F,
 {
     match timeout {
         None => Box::new(fut),
-        Some(timeout) => Box::new(timer.timeout(fut, timeout)),
+        Some(duration) => {
+            let timer = timer.clone();
+            let fut = future::lazy(move || timer.timeout(fut, duration));
+            Box::new(fut)
+        }
     }
 }
 
@@ -303,7 +330,6 @@ pub struct SrcCtx {
     tx_bytes_total: usize,
     metrics: ConnMetrics,
 }
-impl SrcCtx {}
 impl ctx::Ctx for SrcCtx {
     fn read(&mut self, sz: usize) {
         self.rx_bytes_total += sz;
@@ -314,8 +340,9 @@ impl ctx::Ctx for SrcCtx {
         self.tx_bytes_total += sz;
         self.metrics.tx_bytes.incr(sz);
     }
-
-    fn complete(self, _result: &io::Result<()>) {
+}
+impl Drop for SrcCtx {
+    fn drop(&mut self) {
         self.metrics
             .rx_bytes_per_conn
             .add(self.rx_bytes_total as u64);

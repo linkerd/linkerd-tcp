@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time;
 
 const DEFAULT_MAX_WAITERS: usize = 1_000_000;
+const DEFAULT_MAX_CONSECUTIVE_FAILURES: usize = 5;
+const DEFAULT_FAILURE_PENALTY_SECS: u64 = 60;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "kind")]
@@ -61,9 +63,17 @@ pub struct ConnectorConfig {
 
     pub max_waiters: Option<usize>,
     pub min_connections: Option<usize>,
+
+    pub fail_fast: Option<FailFastConfig>,
     
-    // TODO fail_fast: Option<Boolean>
     // TODO requeue_budget: Option<RequeueBudget>
+}
+
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct FailFastConfig {
+    pub max_consecutive_failures: Option<usize>,
+    pub failure_penalty_secs: Option<u64>,
 }
 
 impl ConnectorConfig {
@@ -75,7 +85,23 @@ impl ConnectorConfig {
         let connect_timeout = self.connect_timeout_ms.map(time::Duration::from_millis);
         let max_waiters = self.max_waiters.unwrap_or(DEFAULT_MAX_WAITERS);
         let min_conns = self.min_connections.unwrap_or(0);
-        Ok(super::new(connect_timeout, tls, max_waiters, min_conns))
+        let max_fails = self.fail_fast
+            .as_ref()
+            .and_then(|c| c.max_consecutive_failures)
+            .unwrap_or(DEFAULT_MAX_CONSECUTIVE_FAILURES);
+        let fail_penalty = {
+            let s = self.fail_fast
+                .as_ref()
+                .and_then(|c| c.failure_penalty_secs)
+                .unwrap_or(DEFAULT_FAILURE_PENALTY_SECS);
+            time::Duration::from_secs(s)
+        };
+        Ok(super::new(connect_timeout,
+                      tls,
+                      max_waiters,
+                      min_conns,
+                      max_fails,
+                      fail_penalty))
     }
 
     pub fn update(&mut self, other: &ConnectorConfig) {

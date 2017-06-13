@@ -11,7 +11,7 @@ use hyper::{Body, Chunk, Client, Uri};
 use hyper::client::{Connect as HyperConnect, HttpConnector};
 use hyper::status::StatusCode;
 use serde_json as json;
-use std::{f32, net, time};
+use std::{net, time};
 use std::collections::HashMap;
 use std::rc::Rc;
 use tacho;
@@ -267,7 +267,7 @@ struct Meta {
     #[serde(rename = "nodeName")]
     node_name: Option<String>,
 
-    endpoint_addr_weight: Option<f32>,
+    endpoint_addr_weight: Option<f64>,
 }
 
 

@@ -2,19 +2,15 @@ use super::super::Path;
 use super::super::connection::{Connection as _Connection, ctx};
 use super::super::connector;
 use futures::{Future, Poll};
-use std::{cmp, io, net};
-use std::cell::RefCell;
+use std::{io, net};
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tacho;
-use tokio_timer::Timer;
 
 pub type Connection = _Connection<Ctx>;
 
-const BASE_BACKOFF_MS: u64 = 500;
-const MAX_BACKOFF_MS: u64 = 60 * 60 * 15; // 15 minutes
-
-pub fn new(dst_name: Path, peer_addr: net::SocketAddr, weight: f32) -> Endpoint {
+pub fn new(dst_name: Path, peer_addr: net::SocketAddr, weight: f64) -> Endpoint {
     Endpoint {
         dst_name,
         peer_addr,
@@ -23,35 +19,27 @@ pub fn new(dst_name: Path, peer_addr: net::SocketAddr, weight: f32) -> Endpoint 
     }
 }
 
+#[derive(Default)]
+pub struct State {
+    pub pending_conns: usize,
+    pub open_conns: usize,
+    pub consecutive_failures: usize,
+    pub rx_bytes: usize,
+    pub tx_bytes: usize,
+}
+
+impl State {
+    pub fn is_idle(&self) -> bool {
+        self.open_conns == 0
+    }
+}
+
 /// Represents a single concrete traffic destination
 pub struct Endpoint {
     dst_name: Path,
     peer_addr: net::SocketAddr,
-    weight: f32,
+    weight: f64,
     state: Rc<RefCell<State>>,
-}
-
-#[derive(Default)]
-struct State {
-    pending_conns: usize,
-    open_conns: usize,
-    consecutive_failures: usize,
-    rx_bytes: usize,
-    tx_bytes: usize,
-}
-impl State {
-    fn backoff(&self) -> Option<Duration> {
-        if self.consecutive_failures == 0 {
-            None
-        } else {
-            let bo = BASE_BACKOFF_MS * self.consecutive_failures as u64;
-            Some(Duration::from_millis(cmp::min(bo, MAX_BACKOFF_MS)))
-        }
-    }
-
-    pub fn is_idle(&self) -> bool {
-        self.open_conns == 0
-    }
 }
 
 impl Endpoint {
@@ -59,59 +47,60 @@ impl Endpoint {
         self.peer_addr
     }
 
-    // TODO should we account for available connections?
+    pub fn state(&self) -> Ref<State> {
+        self.state.borrow()
+    }
+
     // TODO we should be able to use throughput/bandwidth as well.
     pub fn load(&self) -> usize {
         let s = self.state.borrow();
-        s.open_conns + s.pending_conns + s.consecutive_failures.pow(2)
+        s.open_conns + s.pending_conns
     }
 
-    pub fn consecutive_failures(&self) -> usize {
-        self.state.borrow().consecutive_failures
-    }
-
-    pub fn set_weight(&mut self, w: f32) {
+    pub fn set_weight(&mut self, w: f64) {
         assert!(0.0 <= w && w <= 1.0);
         self.weight = w;
     }
 
-    pub fn weighted_load(&self) -> usize {
-        let load = (self.load() + 1) as f32;
-        let factor = 100.0 * (1.0 - self.weight);
-        (load * factor) as usize
+    pub fn weight(&self) -> f64 {
+        self.weight
     }
 
-    pub fn connect(&self,
-                   sock: connector::Connecting,
-                   duration: &tacho::Timer,
-                   timer: &Timer)
-                   -> Connecting {
-        let mut state = self.state.borrow_mut();
-        state.pending_conns += 1;
+    pub fn connect(&self, sock: connector::Connecting, duration: &tacho::Timer) -> Connecting {
         let conn = {
+            let peer_addr = self.peer_addr;
             let dst_name = self.dst_name.clone();
             let state = self.state.clone();
             let duration = duration.clone();
-            sock.map(move |sock| {
-                         let ctx = Ctx {
-                             state,
-                             duration,
-                             start: Instant::now(),
-                         };
-                         Connection::new(dst_name, sock, ctx)
-                     })
+            debug!("{}: connecting", peer_addr);
+            sock.then(move |res| match res {
+                          Err(e) => {
+                              error!("{}: connection failed: {}", peer_addr, e);
+                              let mut s = state.borrow_mut();
+                              s.consecutive_failures += 1;
+                              s.pending_conns -= 1;
+                              Err(e)
+                          }
+                          Ok(sock) => {
+                              debug!("{}: connected", peer_addr);
+                              {
+                                  let mut s = state.borrow_mut();
+                                  s.consecutive_failures = 0;
+                                  s.pending_conns -= 1;
+                                  s.open_conns += 1;
+                              }
+                              let ctx = Ctx {
+                                  state,
+                                  duration,
+                                  start: Instant::now(),
+                              };
+                              Ok(Connection::new(dst_name, sock, ctx))
+                          }
+                      })
         };
-        if let Some(backoff) = state.backoff() {
-            debug!("{}: delaying new connection (#{})",
-                   self.peer_addr,
-                   state.consecutive_failures);
-            let conn = timer
-                .sleep(backoff)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-                .and_then(move |_| conn);
-            return Connecting(Box::new(conn));
-        }
 
+        let mut state = self.state.borrow_mut();
+        state.pending_conns += 1;
         Connecting(Box::new(conn))
     }
 
@@ -133,9 +122,7 @@ pub struct Ctx {
     state: Rc<RefCell<State>>,
     duration: tacho::Timer,
     start: Instant,
-    // metrics: EndpointMetrics,
 }
-
 impl ctx::Ctx for Ctx {
     fn read(&mut self, sz: usize) {
         let mut state = self.state.borrow_mut();
@@ -146,15 +133,11 @@ impl ctx::Ctx for Ctx {
         let mut state = self.state.borrow_mut();
         state.tx_bytes += sz;
     }
-
-    fn complete(self, res: &io::Result<()>) {
+}
+impl Drop for Ctx {
+    fn drop(&mut self) {
         let mut state = self.state.borrow_mut();
         state.open_conns -= 1;
-        if res.is_ok() {
-            state.consecutive_failures = 0;
-        } else {
-            state.consecutive_failures += 1;
-        }
         self.duration.record_since(self.start)
     }
 }
