@@ -73,8 +73,7 @@ impl Dispatcher {
 
                 // Pick 2 candidate indices.
                 let (i0, i1) = if sz == 2 {
-                    // There are only two endpoints, so no need for an RNG.
-                    (0, 1)
+                    if rng.gen::<bool>() { (0, 1) } else { (1, 0) }
                 } else {
                     // 3 or more endpoints: choose two distinct endpoints at random.
                     let i0 = rng.gen_range(0, sz);
@@ -85,22 +84,32 @@ impl Dispatcher {
                     (i0, i1)
                 };
 
-                // Determine the index of the lesser-loaded endpoint
+                // Determine the the scores of each endpoint
                 let (addr0, ep0) = available.get_index(i0).unwrap();
-                let (addr1, ep1) = available.get_index(i1).unwrap();
-                let (load0, load1) = (ep0.load(), ep1.load());
-                let (weight0, weight1) = (ep0.weight(), ep1.weight());
+                let (load0, weight0) = (ep0.load(), ep0.weight());
+                let score0 = (load0 + 1) as f64 * (1.0 - weight0);
 
-                let v0 = (load0 + 1) as f64 * (1.0 - weight0);
-                let v1 = (load1 + 1) as f64 * (1.0 - weight1);
-                let sum = v0 + v1;
-                let boundary = sum - v0 / sum;
-                let roll = rng.next_f64();
-                if roll <= boundary {
-                    trace!("dst: {} {} (not {} {})", addr0, load0, addr1, load1);
+                let (addr1, ep1) = available.get_index(i1).unwrap();
+                let (load1, weight1) = (ep1.load(), ep1.weight());
+                let score1 = (load1 + 1) as f64 * (1.0 - weight1);
+
+                if score0 <= score1 {
+                    trace!("dst: {} {}*{} (not {} {}*{})",
+                           addr0,
+                           load0,
+                           weight0,
+                           addr1,
+                           load1,
+                           weight1);
                     Some(ep0)
                 } else {
-                    trace!("dst: {} {} (not {} {})", addr1, load1, addr0, load0);
+                    trace!("dst: {} {}*{} (not {} {}*{})",
+                           addr1,
+                           load1,
+                           weight0,
+                           addr0,
+                           load0,
+                           weight1);
                     Some(ep1)
                 }
             }
