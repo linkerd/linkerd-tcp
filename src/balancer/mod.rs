@@ -50,7 +50,6 @@ pub fn new(reactor: &Handle,
                                      metrics);
     let dispatch = rx.forward(dispatcher.sink_map_err(|_| {}));
     reactor.spawn(dispatch.map(|_| {}));
-
     Balancer(tx)
 }
 
