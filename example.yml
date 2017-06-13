@@ -1,30 +1,18 @@
 admin:
-  addr: 0.0.0.0:9989
+  port: 9989
   metricsIntervalSecs: 10
 
-proxies:
+routers:
 
   - label: default
     servers:
-      - kind: io.l5d.tcp
-        addr: 0.0.0.0:7474
-      # - kind: io.l5d.tls
-      #   addr: 0.0.0.0:7575
-      #   identities:
-      #     localhost:
-      #       privateKey: ../eg-ca/localhost.tls/private.pem
-      #       certs:
-      #         - ../eg-ca/localhost.tls/cert.pem
-      #         - ../eg-ca/localhost.tls/ca-chain.cert.pem
+      - port: 7474
+        dstName: /svc/default
+        connectTimeoutMs: 500
+        connectionLifetimeSecs: 60
 
-    namerd:
-      url: http://127.0.0.1:4180
-      path: /svc/default
-      intervalSecs: 5
-
-    # client:
-    #   tls:
-    #     dnsName: "www.google.com"
-    #     trustCerts:
-    #       - ../eg-ca/www.google.com.tls/ca-chain.cert.pem
-    #       #-  /usr/local/etc/openssl/cert.pem
+    interpreter:
+      kind: io.l5d.namerd.http
+      baseUrl: http://localhost:4180
+      namespace: default
+      periodSecs: 20

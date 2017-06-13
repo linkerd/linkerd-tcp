@@ -1,15 +1,17 @@
-//! A simple layer-4 load balancing library on tokio.
+//! linkerd-tcp: A load-balancing TCP/TLS stream routing proxy.
 //!
-//! Inspired by https://github.com/tailhook/tk-pool.
-//! Copyright 2016 The tk-pool Developers
+//!
 //!
 //! Copyright 2017 Buoyant, Inc.
+
+#![deny(missing_docs)]
 
 extern crate bytes;
 #[macro_use]
 extern crate log;
 extern crate futures;
 extern crate hyper;
+extern crate ordermap;
 extern crate rand;
 extern crate rustls;
 extern crate serde;
@@ -24,15 +26,37 @@ extern crate tokio_io;
 extern crate tokio_timer;
 extern crate url;
 
-use std::net;
-
-mod driver;
+mod admin;
 pub mod app;
-pub mod lb;
-pub mod namerd;
+mod balancer;
+mod connection;
+mod connector;
+mod path;
+mod resolver;
+mod router;
+mod server;
 
-use driver::Driver;
-pub use lb::Balancer;
+use balancer::WeightedAddr;
+use path::Path;
 
+/// Describes a configuratin error.
 #[derive(Clone, Debug)]
-pub struct WeightedAddr(pub net::SocketAddr, pub f32);
+pub struct ConfigError(String);
+
+impl<'a> From<&'a str> for ConfigError {
+    fn from(msg: &'a str) -> ConfigError {
+        ConfigError(msg.into())
+    }
+}
+
+impl<'a> From<String> for ConfigError {
+    fn from(msg: String) -> ConfigError {
+        ConfigError(msg)
+    }
+}
+
+impl ::std::fmt::Display for ConfigError {
+    fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
+        fmt.write_str(&self.0)
+    }
+}
