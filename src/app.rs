@@ -301,7 +301,7 @@ impl AdminRunner {
 
         let serving = {
             let listener = {
-                println!("Listening on http://{}.", addr);
+                info!("admin listening on http://{}.", addr);
                 TcpListener::bind(&addr, &handle).expect("unable to listen")
             };
 

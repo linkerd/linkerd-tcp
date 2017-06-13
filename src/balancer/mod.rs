@@ -117,6 +117,7 @@ impl Endpoints {
     pub fn update_failed(&mut self, max_failures: usize, penalty: Duration) {
         let mut available = VecDeque::with_capacity(self.failed.len());
         let mut failed = VecDeque::with_capacity(self.failed.len());
+
         for (_, ep) in self.available.drain(..) {
             if ep.state().consecutive_failures < max_failures {
                 available.push_back(ep);
@@ -124,6 +125,7 @@ impl Endpoints {
                 failed.push_back((Instant::now(), ep));
             }
         }
+
         for (_, (start, ep)) in self.failed.drain(..) {
             if start + penalty <= Instant::now() {
                 available.push_back(ep);
@@ -131,6 +133,7 @@ impl Endpoints {
                 failed.push_back((start, ep));
             }
         }
+
         if available.is_empty() {
             while let Some((_, ep)) = failed.pop_front() {
                 self.available.insert(ep.peer_addr(), ep);
@@ -227,10 +230,18 @@ impl Endpoints {
         // Add new endpoints or update the base weights of existing endpoints.
         //let metrics = self.endpoint_metrics.clone();
         for (addr, weight) in dsts.drain(..) {
+            if let Some(&mut (_, ref mut ep)) = self.failed.get_mut(&addr) {
+                ep.set_weight(weight);
+                continue;
+            }
+
+            if let Some(mut ep) = self.available.get_mut(&addr) {
+                ep.set_weight(weight);
+                continue;
+            }
+
             self.available
-                .entry(addr)
-                .or_insert_with(|| endpoint::new(dst_name.clone(), addr, weight))
-                .set_weight(weight);
+                .insert(addr, endpoint::new(dst_name.clone(), addr, weight));
         }
     }
 

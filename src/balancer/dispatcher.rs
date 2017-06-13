@@ -60,7 +60,8 @@ pub struct Dispatcher {
 impl Dispatcher {
     /// Selects an endpoint using the power of two choices.
     ///
-    /// We select 2 endpoints randomly, compare their weighted loads
+    /// Two endpoints are chosen randomly and return the lesser-loaded endpoint.
+    /// If no endpoints are available, `None` is retruned.
     fn select_endpoint(available: &EndpointMap) -> Option<&Endpoint> {
         match available.len() {
             0 => None,
@@ -106,10 +107,10 @@ impl Dispatcher {
                     trace!("dst: {} {}*{} (not {} {}*{})",
                            addr1,
                            load1,
-                           weight0,
+                           weight1,
                            addr0,
                            load0,
-                           weight1);
+                           weight0);
                     Some(ep1)
                 }
             }
@@ -346,25 +347,25 @@ struct Metrics {
 }
 
 impl Metrics {
-    fn new(root: &tacho::Scope) -> Metrics {
-        let ep = root.clone().prefixed("endpoint");
-        let conn = root.clone().prefixed("connection");
+    fn new(base: &tacho::Scope) -> Metrics {
+        let ep = base.clone().prefixed("endpoint");
+        let conn = base.clone().prefixed("connection");
         Metrics {
             available: ep.gauge("available"),
             failed: ep.gauge("failed"),
             retired: ep.gauge("retired"),
             pending: conn.gauge("pending"),
             open: conn.gauge("open"),
-            waiters: root.gauge("waiters"),
-            poll_time: root.timer_us("poll_time_us"),
-            unavailable: root.counter("unavailable"),
+            waiters: base.gauge("waiters"),
+            poll_time: base.timer_us("poll_time_us"),
+            unavailable: base.counter("unavailable"),
             attempts: conn.counter("attempts"),
             connects: conn.counter("connects"),
             timeouts: conn.clone().labeled("cause", "timeout").counter("failure"),
             refused: conn.clone().labeled("cause", "refused").counter("failure"),
             failures: conn.clone().labeled("cause", "other").counter("failure"),
             connect_latency: conn.timer_us("latency_us"),
-            connection_duration: conn.timer_us("duration_ms"),
+            connection_duration: conn.timer_ms("duration_ms"),
         }
     }
 

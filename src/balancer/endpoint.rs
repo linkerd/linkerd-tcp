@@ -29,6 +29,9 @@ pub struct State {
 }
 
 impl State {
+    pub fn load(&self) -> usize {
+        self.open_conns + self.pending_conns
+    }
     pub fn is_idle(&self) -> bool {
         self.open_conns == 0
     }
@@ -53,8 +56,7 @@ impl Endpoint {
 
     // TODO we should be able to use throughput/bandwidth as well.
     pub fn load(&self) -> usize {
-        let s = self.state.borrow();
-        s.open_conns + s.pending_conns
+        self.state.borrow().load()
     }
 
     pub fn set_weight(&mut self, w: f64) {
