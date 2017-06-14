@@ -1,10 +1,10 @@
-use super::{Endpoints, EndpointMap, Waiter};
+use super::{Endpoints, EndpointMap, Waiter, WeightedAddr};
 use super::endpoint::{self, Endpoint};
 use super::super::Path;
 use super::super::connection::Connection;
 use super::super::connector::Connector;
 use super::super::resolver::Resolve;
-use futures::{Future, Stream, Sink, Poll, Async, AsyncSink, StartSend};
+use futures::{Future, Stream, Poll, Async};
 use rand::{self, Rng};
 use std::collections::VecDeque;
 use std::io;
@@ -13,20 +13,24 @@ use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
-pub fn new(reactor: Handle,
-           timer: Timer,
-           dst_name: Path,
-           connector: Connector,
-           resolve: Resolve,
-           endpoints: Endpoints,
-           metrics: &tacho::Scope)
-           -> Dispatcher {
+pub fn new<S>(reactor: Handle,
+              timer: Timer,
+              dst_name: Path,
+              connector: Connector,
+              resolve: Resolve,
+              waiters_rx: S,
+              endpoints: Endpoints,
+              metrics: &tacho::Scope)
+              -> Dispatcher<S>
+    where S: Stream<Item = Waiter>
+{
     Dispatcher {
         reactor,
         timer,
         dst_name,
         endpoints,
         resolve,
+        waiters_rx,
         max_waiters: connector.max_waiters(),
         min_connections: connector.min_connections(),
         fail_limit: connector.failure_limit(),
@@ -39,111 +43,149 @@ pub fn new(reactor: Handle,
     }
 }
 
-/// Accepts connection requests
-pub struct Dispatcher {
+/// Initiates load balanced outbound connections.
+pub struct Dispatcher<S> {
     reactor: Handle,
     timer: Timer,
+
+    /// Names the destination replica set to which connections are being dispatched.
     dst_name: Path,
+
+    /// Handles destination-specific connection policy.
     connector: Connector,
+
+    /// Provides new service discovery resolutions as a Stream.
     resolve: Resolve,
+
+    /// Holds the state of all available/failed/retired endpoints.
     endpoints: Endpoints,
-    connecting: VecDeque<tacho::Timed<endpoint::Connecting>>,
-    min_connections: usize,
-    connected: VecDeque<Connection<endpoint::Ctx>>,
-    waiters: VecDeque<Waiter>,
-    max_waiters: usize,
+
+    /// Limits the number of consecutive failures allowed before an endpoint is marked as
+    /// failed.
     fail_limit: usize,
+
+    /// Controls how long an endpoint will be marked as failed before being considered for
+    /// new connections.s
     fail_penalty: Duration,
+
+    /// Controls the minimum number of connecting/connected connections to be maintained
+    /// at all times.
+    min_connections: usize,
+
+    /// A queue of pending connections.
+    connecting: VecDeque<tacho::Timed<endpoint::Connecting>>,
+
+    /// A queue of ready connections to be dispatched ot waiters.
+    connected: VecDeque<Connection<endpoint::Ctx>>,
+
+    /// Provides new connection requests as a Stream..
+    waiters_rx: S,
+
+    /// A queue of waiters that have not yet received a connection.
+    waiters: VecDeque<Waiter>,
+
+    /// Limits the size of `waiters`.
+    max_waiters: usize,
+
     metrics: Metrics,
 }
 
-impl Dispatcher {
-    /// Selects an endpoint using the power of two choices.
+impl<S> Dispatcher<S>
+    where S: Stream<Item = Waiter>
+{
+    /// Receives and attempts to dispatch new waiters.
     ///
-    /// Two endpoints are chosen randomly and return the lesser-loaded endpoint.
-    /// If no endpoints are available, `None` is retruned.
-    fn select_endpoint(available: &EndpointMap) -> Option<&Endpoint> {
-        match available.len() {
-            0 => None,
-            1 => {
-                // One endpoint, use it.
-                available.get_index(0).map(|(_, ep)| ep)
-            }
-            sz => {
-                let mut rng = rand::thread_rng();
-
-                // Pick 2 candidate indices.
-                let (i0, i1) = if sz == 2 {
-                    if rng.gen::<bool>() { (0, 1) } else { (1, 0) }
-                } else {
-                    // 3 or more endpoints: choose two distinct endpoints at random.
-                    let i0 = rng.gen_range(0, sz);
-                    let mut i1 = rng.gen_range(0, sz);
-                    while i0 == i1 {
-                        i1 = rng.gen_range(0, sz);
+    /// If there are no available connections to be dispatched, up to `max_waiters` are
+    /// buffered.
+    fn recv_waiters(&mut self) {
+        while self.waiters.len() < self.max_waiters {
+            match self.waiters_rx.poll() {
+                Ok(Async::Ready(None)) |
+                Ok(Async::NotReady) => return,
+                Err(_) => {
+                    error!("{}: error from waiters channel", self.dst_name);
+                }
+                Ok(Async::Ready(Some(w))) => {
+                    match self.connected.pop_front() {
+                        None => self.waiters.push_back(w),
+                        Some(conn) => {
+                            if let Err(conn) = w.send(conn) {
+                                self.connected.push_front(conn);
+                            }
+                        }
                     }
-                    (i0, i1)
-                };
-
-                // Determine the the scores of each endpoint
-                let (addr0, ep0) = available.get_index(i0).unwrap();
-                let (load0, weight0) = (ep0.load(), ep0.weight());
-                let score0 = (load0 + 1) as f64 * (1.0 - weight0);
-
-                let (addr1, ep1) = available.get_index(i1).unwrap();
-                let (load1, weight1) = (ep1.load(), ep1.weight());
-                let score1 = (load1 + 1) as f64 * (1.0 - weight1);
-
-                if score0 <= score1 {
-                    trace!("dst: {} {}*{} (not {} {}*{})",
-                           addr0,
-                           load0,
-                           weight0,
-                           addr1,
-                           load1,
-                           weight1);
-                    Some(ep0)
-                } else {
-                    trace!("dst: {} {}*{} (not {} {}*{})",
-                           addr1,
-                           load1,
-                           weight1,
-                           addr0,
-                           load0,
-                           weight0);
-                    Some(ep1)
                 }
             }
         }
     }
 
-    fn dispatch_to_next_waiter(&mut self,
-                               conn: endpoint::Connection)
-                               -> Result<(), endpoint::Connection> {
-        match self.waiters.pop_front() {
-            None => Err(conn),
-            Some(waiter) => {
-                match waiter.send(conn) {
-                    Ok(()) => Ok(()),
-                    Err(conn) => self.dispatch_to_next_waiter(conn),
+    fn poll_connecting(&mut self) {
+        debug!("polling {} pending connections", self.connecting.len());
+        for _ in 0..self.connecting.len() {
+            let mut connecting = self.connecting.pop_front().unwrap();
+            match connecting.poll() {
+                Err(e) => {
+                    debug!("connection failed: {}", e);
+                    self.metrics.pending.decr(1);
+                    self.metrics.failure(&e);
+                }
+                Ok(Async::NotReady) => {
+                    trace!("connection pending");
+                    self.connecting.push_back(connecting);
+                }
+                Ok(Async::Ready(connected)) => {
+                    debug!("connected");
+                    self.metrics.connects.incr(1);
+                    self.metrics.pending.decr(1);
+                    self.metrics.open.incr(1);
+                    self.connected.push_back(connected)
                 }
             }
         }
     }
 
-    fn dispatch_connected_to_waiters(&mut self) {
-        debug!("dispatching {} connections to {} waiters",
-               self.connected.len(),
-               self.waiters.len());
-        while let Some(conn) = self.connected.pop_front() {
-            if let Err(conn) = self.dispatch_to_next_waiter(conn) {
-                self.connected.push_front(conn);
-                return;
+    fn update_endpoints(&mut self) {
+        if let Some(addrs) = self.poll_resolve() {
+            self.endpoints.update_resolved(&addrs);
+            debug!("balancer updated: available={} failed={}, retired={}",
+                   self.endpoints.available().len(),
+                   self.endpoints.failed().len(),
+                   self.endpoints.retired().len());
+        }
+
+        self.endpoints
+            .update_failed(self.fail_limit, self.fail_penalty);
+
+    }
+
+    fn poll_resolve(&mut self) -> Option<Vec<WeightedAddr>> {
+        // Poll the resolution until it's
+        let mut addrs = None;
+        loop {
+            match self.resolve.poll() {
+                Ok(Async::NotReady) => {
+                    return addrs;
+                }
+                Ok(Async::Ready(None)) => {
+                    info!("resolution complete! no further updates will be received");
+                    return addrs;
+                }
+                //
+                Err(e) => {
+                    error!("{}: resolver error: {:?}", self.dst_name, e);
+                }
+                Ok(Async::Ready(Some(Err(e)))) => {
+                    error!("{}: resolver error: {:?}", self.dst_name, e);
+                }
+                Ok(Async::Ready(Some(Ok(a)))) => {
+                    addrs = Some(a);
+                }
             }
         }
     }
 
-    fn connect(&mut self) {
+    //
+    fn init_connecting(&mut self) {
         let available = self.endpoints.available();
         if available.is_empty() {
             trace!("no available endpoints");
@@ -161,8 +203,9 @@ impl Dispatcher {
         };
         debug!("initiating {} connections", needed);
 
+        let mut rng = rand::thread_rng();
         for _ in 0..needed {
-            match Dispatcher::select_endpoint(available) {
+            match select_endpoint(&mut rng, available) {
                 None => {
                     trace!("no endpoints ready");
                     self.metrics.unavailable.incr(1);
@@ -199,51 +242,27 @@ impl Dispatcher {
         }
     }
 
-    fn poll_resolve(&mut self) {
-        loop {
-            match self.resolve.poll() {
-                Err(e) => {
-                    error!("{}: resolver error: {:?}", self.dst_name, e);
-                }
-                Ok(Async::Ready(Some(Err(e)))) => {
-                    error!("{}: resolver error: {:?}", self.dst_name, e);
-                }
-                Ok(Async::NotReady) => break,
-                Ok(Async::Ready(None)) => {
-                    info!("resolution complete! no further updates will be received");
-                    break;
-                }
-                Ok(Async::Ready(Some(Ok(addrs)))) => {
-                    self.endpoints.update_resolved(&self.dst_name, &addrs);
-                }
+    fn dispatch_connected_to_waiters(&mut self) {
+        debug!("dispatching {} connections to {} waiters",
+               self.connected.len(),
+               self.waiters.len());
+        while let Some(conn) = self.connected.pop_front() {
+            if let Err(conn) = self.dispatch_to_next_waiter(conn) {
+                self.connected.push_front(conn);
+                return;
             }
         }
-        debug!("balancer updated: available={} failed={}, retired={}",
-               self.endpoints.available().len(),
-               self.endpoints.failed().len(),
-               self.endpoints.retired().len());
     }
 
-    fn poll_connecting(&mut self) {
-        debug!("polling {} pending connections", self.connecting.len());
-        for _ in 0..self.connecting.len() {
-            let mut conn = self.connecting.pop_front().unwrap();
-            match conn.poll() {
-                Err(e) => {
-                    debug!("connection failed: {}", e);
-                    self.metrics.pending.decr(1);
-                    self.metrics.failure(&e);
-                }
-                Ok(Async::NotReady) => {
-                    trace!("connection pending");
-                    self.connecting.push_back(conn);
-                }
-                Ok(Async::Ready(conn)) => {
-                    debug!("connected");
-                    self.metrics.connects.incr(1);
-                    self.metrics.pending.decr(1);
-                    self.metrics.open.incr(1);
-                    self.connected.push_back(conn)
+    fn dispatch_to_next_waiter(&mut self,
+                               conn: endpoint::Connection)
+                               -> Result<(), endpoint::Connection> {
+        match self.waiters.pop_front() {
+            None => Err(conn),
+            Some(waiter) => {
+                match waiter.send(conn) {
+                    Ok(()) => Ok(()),
+                    Err(conn) => self.dispatch_to_next_waiter(conn),
                 }
             }
         }
@@ -286,45 +305,115 @@ impl Dispatcher {
         self.metrics.waiters.set(self.waiters.len());
         self.metrics.poll_time.record_since(t0);
     }
+}
 
-    fn assess_failure(&mut self) {
-        self.endpoints
-            .update_failed(self.fail_limit, self.fail_penalty);
-    }
+/// Buffers up to `max_waiters` concurrent connection requests, along with corresponding
+/// connection attempts.
+impl<S> Future for Dispatcher<S>
+    where S: Stream<Item = Waiter>
+{
+    type Item = ();
+    type Error = io::Error;
 
-    fn poll(&mut self) {
+    fn poll(&mut self) -> Poll<(), io::Error> {
         let t0 = Instant::now();
+
+        // Poll all pending connections. Newly established connections are added to the
+        // `connected` queue, to be dispatched.
         self.poll_connecting();
-        // We drive resolution from this task so that updates can trigger dispatch i.e. if
-        // waiters are waiting for endpoints to be added.
-        self.poll_resolve();
-        self.connect();
+
+        // Now that we may have new established connnections, dispatch them to waiters.
         self.dispatch_connected_to_waiters();
-        self.assess_failure();
+
+        // Having dispatched, we're ready to refill the waiters queue from the channel. No
+        // more than `max_waiters` items are retained at once.
+        //
+        // We may end up in a situation where we haven't received `Async::NotReady` from
+        // `waiters_rx.poll()`. We rely on the fact that connection events will be
+        // necessary to satisfy existing waiters, and another `recv_waiters()` call will
+        // be triggered from those events.
+        self.recv_waiters();
+
+        // Update our lists of endpoints from service discovery before initiating new
+        // connections for pending waiters.
+        self.update_endpoints();
+        self.init_connecting();
+
+        // Dispatch any remaining available connections to any remaining waiters. This is
+        // necessary because `init_connecting()` can technically satisfy connections
+        // immediately. If this were to happen, there would be gauranteed event to trigger
+        // a subsequent dispatch.
+        self.dispatch_connected_to_waiters();
+
+        // And because we've potentially drained the waiters queue again, we have to
+        // refill it to ensure that this task is polled again.
+        self.recv_waiters();
+
+        // Update gauges & record the time it took to poll.
         self.record(t0);
+
+        // This Future never completes.
+        // TODO graceful shutdown.
+        Ok(Async::NotReady)
     }
 }
 
-/// Buffers up to `max_waiters` concurrent connection requests, along with corresponding connection attempts.
-impl Sink for Dispatcher {
-    type SinkItem = Waiter;
-    type SinkError = io::Error;
-
-    fn start_send(&mut self, waiter: Waiter) -> StartSend<Waiter, io::Error> {
-        if self.waiters.len() == self.max_waiters {
-            return Ok(AsyncSink::NotReady(waiter));
+/// Selects an endpoint using the power of two choices.
+///
+/// Two endpoints are chosen randomly and return the lesser-loaded endpoint.
+/// If no endpoints are available, `None` is retruned.
+fn select_endpoint<'r, 'e, R: Rng>(rng: &'r mut R,
+                                   available: &'e EndpointMap)
+                                   -> Option<&'e Endpoint> {
+    match available.len() {
+        0 => None,
+        1 => {
+            // One endpoint, use it.
+            available.get_index(0).map(|(_, ep)| ep)
         }
-        self.waiters.push_back(waiter);
-        self.poll();
-        Ok(AsyncSink::Ready)
-    }
+        sz => {
+            // Pick 2 candidate indices.
+            let (i0, i1) = if sz == 2 {
+                if rng.gen::<bool>() { (0, 1) } else { (1, 0) }
+            } else {
+                // 3 or more endpoints: choose two distinct endpoints at random.
+                let i0 = rng.gen_range(0, sz);
+                let mut i1 = rng.gen_range(0, sz);
+                while i0 == i1 {
+                    i1 = rng.gen_range(0, sz);
+                }
+                (i0, i1)
+            };
 
-    fn poll_complete(&mut self) -> Poll<(), io::Error> {
-        if self.connecting.is_empty() && self.waiters.is_empty() {
-            return Ok(Async::Ready(()));
+            // Determine the the scores of each endpoint
+            let (addr0, ep0) = available.get_index(i0).unwrap();
+            let (load0, weight0) = (ep0.load(), ep0.weight());
+            let score0 = (load0 + 1) as f64 * (1.0 - weight0);
+
+            let (addr1, ep1) = available.get_index(i1).unwrap();
+            let (load1, weight1) = (ep1.load(), ep1.weight());
+            let score1 = (load1 + 1) as f64 * (1.0 - weight1);
+
+            if score0 <= score1 {
+                trace!("dst: {} {}*{} (not {} {}*{})",
+                       addr0,
+                       load0,
+                       weight0,
+                       addr1,
+                       load1,
+                       weight1);
+                Some(ep0)
+            } else {
+                trace!("dst: {} {}*{} (not {} {}*{})",
+                       addr1,
+                       load1,
+                       weight1,
+                       addr0,
+                       load0,
+                       weight0);
+                Some(ep1)
+            }
         }
-        self.poll();
-        Ok(Async::NotReady)
     }
 }
 
