@@ -7,9 +7,8 @@
 use super::{WeightedAddr, Result, Error};
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
 use futures::{Async, Future, IntoFuture, Poll, Stream};
-use hyper::{Body, Chunk, Client, Uri};
+use hyper::{Body, Chunk, Client, StatusCode, Uri};
 use hyper::client::{Connect as HyperConnect, HttpConnector};
-use hyper::status::StatusCode;
 use serde_json as json;
 use std::{net, time};
 use std::collections::HashMap;
