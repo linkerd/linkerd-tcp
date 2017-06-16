@@ -1,4 +1,3 @@
-use super::super::Path;
 use super::super::connection::{Connection as _Connection, ctx};
 use super::super::connector;
 use futures::{Future, Poll};
@@ -10,9 +9,8 @@ use tacho;
 
 pub type Connection = _Connection<Ctx>;
 
-pub fn new(dst_name: Path, peer_addr: net::SocketAddr, weight: f64) -> Endpoint {
+pub fn new(peer_addr: net::SocketAddr, weight: f64) -> Endpoint {
     Endpoint {
-        dst_name,
         peer_addr,
         weight,
         state: Rc::new(RefCell::new(State::default())),
@@ -39,7 +37,6 @@ impl State {
 
 /// Represents a single concrete traffic destination
 pub struct Endpoint {
-    dst_name: Path,
     peer_addr: net::SocketAddr,
     weight: f64,
     state: Rc<RefCell<State>>,
@@ -71,7 +68,6 @@ impl Endpoint {
     pub fn connect(&self, sock: connector::Connecting, duration: &tacho::Timer) -> Connecting {
         let conn = {
             let peer_addr = self.peer_addr;
-            let dst_name = self.dst_name.clone();
             let state = self.state.clone();
             let duration = duration.clone();
             debug!("{}: connecting", peer_addr);
@@ -96,7 +92,7 @@ impl Endpoint {
                                   duration,
                                   start: Instant::now(),
                               };
-                              Ok(Connection::new(dst_name, sock, ctx))
+                              Ok(Connection::new(sock, ctx))
                           }
                       })
         };

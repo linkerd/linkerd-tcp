@@ -1,4 +1,4 @@
-use super::{ConfigError, Path};
+use super::Path;
 use super::connection::secure;
 use super::connection::socket::{self, Socket};
 use futures::{Future, Poll};
@@ -11,7 +11,8 @@ use tokio_timer::Timer;
 
 mod config;
 
-pub use self::config::{ConnectorFactoryConfig, ConnectorConfig, TlsConnectorFactoryConfig};
+pub use self::config::{ConnectorFactoryConfig, ConnectorConfig, TlsConnectorFactoryConfig,
+                       Error as ConfigError};
 
 /// Builds a connector for each name.
 pub struct ConnectorFactory(ConnectorFactoryInner);
@@ -35,7 +36,7 @@ impl ConnectorFactory {
         ConnectorFactory(ConnectorFactoryInner::StaticPrefixed(f))
     }
 
-    pub fn mk_connector(&self, dst_name: &Path) -> Result<Connector, ConfigError> {
+    pub fn mk_connector(&self, dst_name: &Path) -> config::Result<Connector> {
         match self.0 {
             ConnectorFactoryInner::StaticGlobal(ref c) => Ok(c.clone()),
             ConnectorFactoryInner::StaticPrefixed(ref f) => f.mk_connector(dst_name),
@@ -46,7 +47,7 @@ impl ConnectorFactory {
 struct StaticPrefixConnectorFactory(Vec<(Path, ConnectorConfig)>);
 impl StaticPrefixConnectorFactory {
     /// Builds a new connector by applying all configurations with a matching prefix.
-    fn mk_connector(&self, dst_name: &Path) -> Result<Connector, ConfigError> {
+    fn mk_connector(&self, dst_name: &Path) -> config::Result<Connector> {
         let mut config = ConnectorConfig::default();
         for &(ref pfx, ref c) in &self.0 {
             if pfx.starts_with(dst_name) {

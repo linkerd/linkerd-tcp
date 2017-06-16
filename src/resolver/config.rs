@@ -1,8 +1,15 @@
 use super::namerd::Namerd;
-use super::super::ConfigError;
 use std::time::Duration;
 use tacho;
-use url::Url;
+use url::{self, Url};
+
+pub type Result<T> = ::std::result::Result<T, Error>;
+
+#[derive(Debug)]
+pub enum Error {
+    InvalidPeriod(u64),
+    InvalidBaseUrl(String, url::ParseError),
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -13,14 +20,14 @@ pub struct NamerdConfig {
 }
 
 impl NamerdConfig {
-    pub fn into_namerd(self, metrics: &tacho::Scope) -> Result<Namerd, ConfigError> {
+    pub fn into_namerd(self, metrics: &tacho::Scope) -> Result<Namerd> {
         if self.period_secs == 0 {
-            return Err("namerd period must be greater than 0".into());
+            return Err(Error::InvalidPeriod(self.period_secs));
         }
         let period = Duration::from_secs(self.period_secs);
 
         if let Err(e) = Url::parse(&self.base_url) {
-            return Err(format!("invalid base_url {}: {}", self.base_url, e).into());
+            return Err(Error::InvalidBaseUrl(self.base_url, e));
         }
 
         let metrics = metrics

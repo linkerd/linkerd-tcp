@@ -1,5 +1,4 @@
 use super::{Unbound, sni};
-use super::super::ConfigError;
 use super::super::router::Router;
 use rustls;
 use std::cell::RefCell;
@@ -9,6 +8,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tacho;
+
+pub type Result<T> = ::std::result::Result<T, Error>;
+
+#[derive(Debug)]
+pub enum Error {
+    NoDstName,
+    Sni(sni::Error),
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -28,7 +35,7 @@ impl ServerConfig {
                      router: Router,
                      buf: Rc<RefCell<Vec<u8>>>,
                      metrics: &tacho::Scope)
-                     -> Result<Unbound, ConfigError> {
+                     -> Result<Unbound> {
         match *self {
             ServerConfig {
                 port,
@@ -40,7 +47,7 @@ impl ServerConfig {
                 ref max_concurrency,
             } => {
                 if dst_name.is_none() {
-                    return Err("`dst_name` required".into());
+                    return Err(Error::NoDstName);
                 }
                 let dst_name = dst_name.as_ref().unwrap().clone();
                 let ip = ip.unwrap_or_else(|| net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1)));
@@ -56,7 +63,7 @@ impl ServerConfig {
                         if let Some(protos) = alpn_protocols.as_ref() {
                             tls.set_protocols(protos);
                         }
-                        let sni = sni::new(identities, default_identity)?;
+                        let sni = sni::new(identities, default_identity).map_err(Error::Sni)?;
                         tls.cert_resolver = Box::new(sni);
                         Some(super::UnboundTls { config: Arc::new(tls) })
                     }

@@ -17,7 +17,7 @@ use tokio_timer::Timer;
 
 mod config;
 mod sni;
-pub use self::config::ServerConfig;
+pub use self::config::{Error as ConfigError, ServerConfig};
 
 const DEFAULT_MAX_CONCURRENCY: usize = 100000;
 
@@ -66,8 +66,7 @@ impl Unbound {
         &self.dst_name
     }
 
-    fn init_src_connection(dst_name: Path,
-                           src_tcp: TcpStream,
+    fn init_src_connection(src_tcp: TcpStream,
                            metrics: &Metrics,
                            tls: &Option<BoundTls>)
                            -> Box<Future<Item = Connection<SrcCtx>, Error = io::Error>> {
@@ -90,7 +89,7 @@ impl Unbound {
                                     tx_bytes_total: 0,
                                     metrics,
                                 };
-                                Connection::new(dst_name, sock, ctx)
+                                Connection::new(sock, ctx)
                             });
         Box::new(conn)
     }
@@ -152,7 +151,7 @@ impl Unbound {
 
                 // Finish accepting the connection from the server.
                 // TODO determine dst_addr dynamically.
-                let src = Unbound::init_src_connection(dst_name.clone(), src_tcp, &metrics, &tls);
+                let src = Unbound::init_src_connection(src_tcp, &metrics, &tls);
 
                 // Obtain a balancing endpoint selector for the given destination.
                 let balancer = router.route(&dst_name, &reactor, &timer);

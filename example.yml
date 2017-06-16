@@ -5,14 +5,29 @@ admin:
 routers:
 
   - label: default
+    interpreter:
+      kind: io.l5d.namerd.http
+      baseUrl: http://localhost:4180
+      namespace: default
+      periodSecs: 20
+
     servers:
       - port: 7474
         dstName: /svc/default
         connectTimeoutMs: 500
         connectionLifetimeSecs: 60
 
-    interpreter:
-      kind: io.l5d.namerd.http
-      baseUrl: http://localhost:4180
-      namespace: default
-      periodSecs: 20
+      # - port: 7473
+      #   dstName: /svc/default
+      #   connectTimeoutMs: 500
+      #   tls:
+      #     defaultIdentity:
+      #       privateKey: ../../eg-ca/foo.bird.tls/private.pem
+      #       certs:
+      #         - ../../eg-ca/foo.bird.tls/cert.pem
+      #         - ../../eg-ca/ca/intermediate/certs/ca-chain.cert.pem
+
+    client:
+      kind: io.l5d.global
+      minConnections: 3
+      connectTimeoutMs: 500

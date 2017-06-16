@@ -1,5 +1,4 @@
 use super::{Connector, ConnectorFactory, Tls};
-use super::super::ConfigError;
 use rustls;
 use std::fs::File;
 use std::io::BufReader;
@@ -9,6 +8,14 @@ use std::time;
 const DEFAULT_MAX_WAITERS: usize = 1_000_000;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES: usize = 5;
 const DEFAULT_FAILURE_PENALTY_SECS: u64 = 60;
+
+pub type Result<T> = ::std::result::Result<T, Error>;
+
+#[derive(Clone, Debug)]
+pub enum Error {
+    GlobalWithPrefix,
+    StaticWithoutPrefix,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "kind")]
@@ -27,11 +34,11 @@ impl Default for ConnectorFactoryConfig {
 }
 
 impl ConnectorFactoryConfig {
-    pub fn mk_connector_factory(&self) -> Result<ConnectorFactory, ConfigError> {
+    pub fn mk_connector_factory(&self) -> Result<ConnectorFactory> {
         match *self {
             ConnectorFactoryConfig::Global(ref cfg) => {
                 if cfg.prefix.is_some() {
-                    return Err("`prefix` not supported in io.l5d.global".into());
+                    return Err(Error::GlobalWithPrefix);
                 }
                 let conn = cfg.mk_connector()?;
                 Ok(ConnectorFactory::new_global(conn))
@@ -41,7 +48,7 @@ impl ConnectorFactoryConfig {
                 for cfg in configs {
                     match cfg.prefix {
                         None => {
-                            return Err("`prefix` required in io.l5d.static".into());
+                            return Err(Error::StaticWithoutPrefix);
                         }
                         Some(ref pfx) => {
                             pfx_configs.push((pfx.clone().into(), cfg.clone()));
@@ -77,7 +84,7 @@ pub struct FailFastConfig {
 }
 
 impl ConnectorConfig {
-    pub fn mk_connector(&self) -> Result<Connector, ConfigError> {
+    pub fn mk_connector(&self) -> Result<Connector> {
         let tls = match self.tls {
             None => None,
             Some(ref tls) => Some(tls.mk_tls()?),
@@ -122,7 +129,7 @@ pub struct TlsConnectorFactoryConfig {
 }
 
 impl TlsConnectorFactoryConfig {
-    pub fn mk_tls(&self) -> Result<Tls, ConfigError> {
+    pub fn mk_tls(&self) -> Result<Tls> {
         let mut config = rustls::ClientConfig::new();
         if let Some(ref certs) = self.trust_certs {
             for p in certs {
