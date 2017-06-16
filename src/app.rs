@@ -1,11 +1,11 @@
 //! Provides all of the utilities needed to load a configuration and run a process.
 
-use super::{ConfigError, admin, resolver, router, server};
+use super::{admin, resolver, router, server};
 use super::balancer::BalancerFactory;
-use super::connector::ConnectorFactoryConfig;
-use super::resolver::NamerdConfig;
-use futures::{Future, Stream};
-use futures::sync::oneshot;
+use super::connector::{ConfigError as ConnectorConfigError, ConnectorFactoryConfig};
+use super::resolver::{ConfigError as ResolverConfigError, NamerdConfig};
+use super::server::ConfigError as ServerConfigError;
+use futures::{Future, Stream, sync};
 use hyper::server::Http;
 use serde_json;
 use serde_yaml;
@@ -24,15 +24,37 @@ const DEFAULT_BUFFER_SIZE_BYTES: usize = 16 * 1024;
 const DEFAULT_GRACE_SECS: u64 = 10;
 const DEFAULT_METRICS_INTERVAL_SECS: u64 = 60;
 
+/// An app-specific Result type.
+pub type Result<T> = ::std::result::Result<T, Error>;
+
+/// Describes a configuration error.
+#[derive(Debug)]
+pub enum Error {
+    /// A JSON syntax error.
+    Json(serde_json::Error),
+
+    /// A Yaml syntax error.
+    Yaml(serde_yaml::Error),
+
+    /// Indicates a a misconfigured client.
+    Connector(ConnectorConfigError),
+
+    /// Indicates a misconfigured interpreter.
+    Interpreter(ResolverConfigError),
+
+    /// Indicats a misconfigured server.
+    Server(ServerConfigError),
+}
+
 /// Signals a receiver to shutdown by the provided deadline.
-pub type Closer = oneshot::Sender<Instant>;
+pub type Closer = sync::oneshot::Sender<Instant>;
 
 /// Signals that the receiver should release its resources by the provided deadline.
-pub type Closed = oneshot::Receiver<Instant>;
+pub type Closed = sync::oneshot::Receiver<Instant>;
 
 /// Creates a thread-safe shutdown latch.
 pub fn closer() -> (Closer, Closed) {
-    oneshot::channel()
+    sync::oneshot::channel()
 }
 
 /// Holds the configuration for a linkerd-tcp instance.
@@ -50,22 +72,22 @@ pub struct AppConfig {
 }
 
 impl ::std::str::FromStr for AppConfig {
-    type Err = ConfigError;
+    type Err = Error;
 
     /// Parses a JSON- or YAML-formatted configuration file.
-    fn from_str(txt: &str) -> Result<AppConfig, ConfigError> {
+    fn from_str(txt: &str) -> Result<AppConfig> {
         let txt = txt.trim_left();
         if txt.starts_with('{') {
-            serde_json::from_str(txt).map_err(|e| format!("json error: {}", e).into())
+            serde_json::from_str(txt).map_err(Error::Json)
         } else {
-            serde_yaml::from_str(txt).map_err(|e| format!("yaml error: {}", e).into())
+            serde_yaml::from_str(txt).map_err(Error::Yaml)
         }
     }
 }
 
 impl AppConfig {
     /// Build an App from a configuration.
-    pub fn into_app(mut self) -> Result<App, ConfigError> {
+    pub fn into_app(mut self) -> Result<App> {
         // Create a shared transfer buffer to be used for all stream proxying.
         let buf = {
             let sz = self.buffer_size_bytes.unwrap_or(DEFAULT_BUFFER_SIZE_BYTES);
@@ -171,28 +193,34 @@ impl RouterConfig {
     fn into_router(mut self,
                    buf: Rc<RefCell<Vec<u8>>>,
                    metrics: &tacho::Scope)
-                   -> Result<RouterSpawner, ConfigError> {
+                   -> Result<RouterSpawner> {
         let metrics = metrics.clone().labeled("rt", self.label);
 
         // Each router has its own resolver/executor pair. The resolver is used by the
         // router. The resolver executor is used to drive execution in another thread.
         let (resolver, resolver_exec) = match self.interpreter {
             InterpreterConfig::NamerdHttp(config) => {
-                let namerd = config.into_namerd(&metrics)?;
+                let namerd = config.into_namerd(&metrics).map_err(Error::Interpreter)?;
                 resolver::new(namerd)
             }
         };
 
         let balancer = {
             let metrics = metrics.clone().prefixed("balancer");
-            let client = self.client.unwrap_or_default().mk_connector_factory()?;
+            let client = self.client
+                .unwrap_or_default()
+                .mk_connector_factory()
+                .map_err(Error::Connector)?;
             BalancerFactory::new(client, &metrics)
         };
         let router = router::new(resolver, balancer, &metrics);
 
         let mut servers = VecDeque::with_capacity(self.servers.len());
         for config in self.servers.drain(..) {
-            let server = config.mk_server(router.clone(), buf.clone(), &metrics)?;
+            // The router and transfer buffer are shareable across servers.
+            let server = config
+                .mk_server(router.clone(), buf.clone(), &metrics)
+                .map_err(Error::Server)?;
             servers.push_back(server);
         }
 
@@ -213,7 +241,7 @@ impl RouterSpawner {
     /// Spawns a router by spawning all of its serving interfaces.
     ///
     /// Returns successfully if all servers have been bound and spawned correctly.
-    pub fn spawn(mut self, reactor: &Handle, timer: &Timer) -> Result<(), ConfigError> {
+    pub fn spawn(mut self, reactor: &Handle, timer: &Timer) -> Result<()> {
         while let Some(unbound) = self.servers.pop_front() {
             info!("routing on {} to {}",
                   unbound.listen_addr(),
@@ -268,7 +296,7 @@ impl AdminRunner {
     ///
     /// When the _shutdown_ endpoint is triggered, a shutdown deadline is sent on
     /// `closer`.
-    pub fn run(self, closer: Closer, reactor: &mut Core, timer: &Timer) -> Result<(), ConfigError> {
+    pub fn run(self, closer: Closer, reactor: &mut Core, timer: &Timer) -> Result<()> {
         let AdminRunner {
             addr,
             grace,

@@ -44,7 +44,7 @@ pub fn new<S>(reactor: Handle,
 }
 
 /// Initiates load balanced outbound connections.
-pub struct Dispatcher<S> {
+pub struct Dispatcher<W> {
     reactor: Handle,
     timer: Timer,
 
@@ -79,7 +79,7 @@ pub struct Dispatcher<S> {
     connected: VecDeque<Connection<endpoint::Ctx>>,
 
     /// Provides new connection requests as a Stream..
-    waiters_rx: S,
+    waiters_rx: W,
 
     /// A queue of waiters that have not yet received a connection.
     waiters: VecDeque<Waiter>,
@@ -90,8 +90,8 @@ pub struct Dispatcher<S> {
     metrics: Metrics,
 }
 
-impl<S> Dispatcher<S>
-    where S: Stream<Item = Waiter>
+impl<W> Dispatcher<W>
+    where W: Stream<Item = Waiter>
 {
     /// Receives and attempts to dispatch new waiters.
     ///
@@ -184,7 +184,6 @@ impl<S> Dispatcher<S>
         }
     }
 
-    //
     fn init_connecting(&mut self) {
         let available = self.endpoints.available();
         if available.is_empty() {

@@ -6,7 +6,7 @@ use tokio_timer::{Timer, TimerError};
 
 mod config;
 mod namerd;
-pub use self::config::NamerdConfig;
+pub use self::config::{Error as ConfigError, NamerdConfig};
 pub use self::namerd::{Namerd, Addrs};
 
 #[derive(Debug)]

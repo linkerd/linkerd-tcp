@@ -75,6 +75,14 @@ routers:
   # Each router has a 'label' for reporting purposes.
   - label: default
 
+    # Each router is configured to resolve names.
+    # Currently, only namerd's HTTP interface is supported:
+    interpreter:
+      kind: io.l5d.namerd.http
+      baseUrl: http://localhost:4180
+      namespace: default
+      periodSecs: 20
+
     servers:
 
       # Each router has one or more 'servers' listening for incoming connections.
@@ -100,14 +108,6 @@ routers:
             certs:
               - cert.pem
               - ../eg-ca/ca/intermediate/certs/ca-chain.cert.pem
-
-    # Each router is configured to resolve names.
-    # Currently, only namerd's HTTP interface is supported:
-    interpreter:
-      kind: io.l5d.namerd.http
-      baseUrl: http://localhost:4180
-      namespace: default
-      periodSecs: 20
 
     # Clients may also be configured to perform a TLS handshake.
     client:

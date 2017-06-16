@@ -1,5 +1,4 @@
 use super::config::TlsServerIdentityConfig;
-use super::super::ConfigError;
 use rustls::{Certificate, ResolvesServerCert, SignatureScheme, sign};
 use rustls::internal::pemfile;
 use std::collections::HashMap;
@@ -9,10 +8,10 @@ use std::sync::Arc;
 
 pub fn new(identities: &Option<HashMap<String, TlsServerIdentityConfig>>,
            default: &Option<TlsServerIdentityConfig>)
-           -> Result<Sni, ConfigError> {
+           -> Result<Sni, Error> {
     let n_identities = identities.as_ref().map(|ids| ids.len()).unwrap_or(0);
     if default.is_none() && n_identities > 0 {
-        return Err("No TLS server identities specified".into());
+        return Err(Error::NoIdentities);
     }
     let sni = Sni {
         default: default.as_ref().map(|c| ServerIdentity::load(c)),
@@ -29,6 +28,11 @@ pub fn new(identities: &Option<HashMap<String, TlsServerIdentityConfig>>,
         },
     };
     Ok(sni)
+}
+
+#[derive(Debug)]
+pub enum Error {
+    NoIdentities,
 }
 
 pub struct Sni {

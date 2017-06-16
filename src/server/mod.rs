@@ -17,7 +17,7 @@ use tokio_timer::Timer;
 
 mod config;
 mod sni;
-pub use self::config::ServerConfig;
+pub use self::config::{Error as ConfigError, ServerConfig};
 
 const DEFAULT_MAX_CONCURRENCY: usize = 100000;
 
