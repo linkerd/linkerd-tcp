@@ -1,9 +1,9 @@
-use super::{EndpointMap, Waiter};
+use super::{channelq, EndpointMap, Waiter};
 use super::endpoint::{self, Endpoint};
 use super::super::Path;
 use super::super::connection::Connection;
 use super::super::connector::Connector;
-use futures::{Future, Stream, Poll, Async};
+use futures::{Future, Stream, Poll, Async, Sink, AsyncSink, sink};
 use rand::{self, Rng};
 use std::collections::VecDeque;
 use std::io;
@@ -31,15 +31,9 @@ pub struct Dispatcher<W> {
 
     /// Provides new connection requests as a Stream.
     rx: Option<Rx<W>>,
+    pending: Option<Waiter>,
 
-    /// A queue of pending connections.
-    connecting: ConnectingQ,
-
-    /// A queue of ready connections to be dispatched ot waiters.
-    connected: ConnectedQ,
-
-    /// A queue of waiters that have not yet received a connection.
-    waiters: WaiterQ,
+    channelq: channelq::ChannelQ<Waiter>,
 
     metrics: Metrics,
 }
@@ -58,78 +52,36 @@ impl<W> Dispatcher<W>
             recv,
             is_ready: true,
         };
+        let channelq = channelq::channel(connector.max_waiters());
         Dispatcher {
             reactor,
             timer,
             dst_name,
             connector,
             rx: Some(rx),
-            connecting: ConnectingQ::default(),
-            connected: ConnectedQ::default(),
-            waiters: WaiterQ::default(),
+            pending: None,
+            channelq,
             metrics: Metrics::new(metrics),
         }
     }
 
-    fn is_done(&self) -> bool {
-        self.rx.is_none() && self.waiters.is_empty()
-    }
+    // pub fn poll(&mut self) -> State {
+    //     self.recv_waiters();
+    //     //self.metrics.waiters.set(self.waiters.len());
 
-    fn is_not_ready(&self) -> bool {
-        self.rx.as_ref().map(|rx| !rx.is_ready).unwrap_or(false) || !self.connecting.is_empty()
-    }
+    //     self.state()
+    // }
 
-    fn state(&self) -> State {
-        if self.is_done() {
-            State::Done
-        } else if self.is_not_ready() {
-            State::NotReady
-        } else {
-            State::NeedsPoll
-        }
-    }
+    // pub fn init(&mut self, available: &EndpointMap) -> State {
+    //     self.init_connecting(available);
+    //     self.dispatch_connected_to_waiters();
+    //     self.recv_waiters();
+    //     // TODO self.metrics.waiters.set(self.waiters.len());
+    //     self.state()
+    // }
 
-    pub fn poll(&mut self) -> State {
-        // Poll all pending connections. Newly established connections are added to the
-        // `connected` queue, to be dispatched.
-        self.poll_connecting();
-
-        // Now that we may have new established connnections, dispatch them to waiters.
-        self.dispatch_connected_to_waiters();
-
-        // Having dispatched, we're ready to refill the waiters queue from the channel. No
-        // more than `max_waiters` items are retained at once.
-        //
-        // We may end up in a situation where we haven't received `Async::NotReady` from
-        // `waiters_rx.poll()`. We rely on the fact that connection events will be
-        // necessary to satisfy existing waiters, and another `recv_waiters()` call will
-        // be triggered from those events.
-        self.recv_waiters();
-        self.metrics.waiters.set(self.waiters.len());
-
-        self.state()
-    }
-
-    pub fn init(&mut self, available: &EndpointMap) -> State {
-        self.init_connecting(available);
-        self.dispatch_connected_to_waiters();
-        self.recv_waiters();
-        self.metrics.waiters.set(self.waiters.len());
-        self.state()
-    }
-
-    fn init_connecting(&mut self, available: &EndpointMap) {
-        let needed = {
-            let needed = self.connector.min_connections() + self.waiters.len();
-            let pending = self.connecting.len() + self.connected.len();
-            if needed < pending {
-                0
-            } else {
-                needed - pending
-            }
-        };
+    fn init_connecting(&mut self, available: &EndpointMap, needed: usize) {
         debug!("initiating {} connections", needed);
-
         if available.is_empty() {
             trace!("no available endpoints");
             return;
@@ -148,27 +100,26 @@ impl<W> Dispatcher<W>
                     let mut conn = {
                         let sock = self.connector
                             .connect(&ep.peer_addr(), &self.reactor, &self.timer);
+                        let waiter = self.channelq.recv();
                         let c = ep.connect(sock, &self.metrics.connection_duration);
-                        self.metrics.connect_latency.time(c)
+                        self.metrics
+                            .connect_latency
+                            .time(c)
+                            .map_err(|e| {
+                                         error!("connection error: {}", e);
+                                         ()
+                                     })
+                            .and_then(move |dst| {
+                                waiter.then(|res| match res {
+                                                Err(_) => Err(()),
+                                                Ok(w) => {
+                                                    w.send(dst);
+                                                    Ok(())
+                                                }
+                                            })
+                            })
                     };
-                    match conn.poll() {
-                        Err(e) => {
-                            debug!("connection failed: {}", e);
-                            self.metrics.failure(&e);
-                        }
-                        Ok(Async::NotReady) => {
-                            trace!("connection pending");
-                            self.metrics.pending.incr(1);
-                            self.connecting.push_back(conn);
-                        }
-                        Ok(Async::Ready(conn)) => {
-                            debug!("connected");
-                            self.metrics.connects.incr(1);
-                            self.metrics.pending.decr(1);
-                            self.metrics.open.incr(1);
-                            self.connected.push_back(conn);
-                        }
-                    }
+                    self.reactor.spawn(conn);
                 }
             }
         }
@@ -178,86 +129,42 @@ impl<W> Dispatcher<W>
     ///
     /// If there are no available connections to be dispatched, up to `max_waiters` are
     /// buffered.
-    fn recv_waiters(&mut self) {
-        if let Some(mut rx) = self.rx.take() {
-            while self.waiters.len() < self.connector.max_waiters() {
-                match rx.poll() {
-                    Err(_) => {
-                        error!("{}: error from waiters channel", self.dst_name);
-                    }
-                    Ok(Async::Ready(Some(w))) => {
-                        match self.connected.pop_front() {
-                            None => self.waiters.push_back(w),
-                            Some(conn) => {
-                                if let Err(conn) = w.send(conn) {
-                                    self.connected.push_front(conn);
-                                }
+    pub fn start_recv(&mut self) -> Async<()> {
+        if let Some(pending) = self.pending.take() {
+            if let Ok(AsyncSink::NotReady(p)) = self.channelq.start_send(pending) {
+                self.pending = Some(p);
+                return Async::NotReady;
+            }
+        }
+
+        match self.rx.take() {
+            None => Async::Ready(()),
+            Some(mut rx) => {
+                loop {
+                    match rx.poll() {
+                        Err(_) => {}
+                        Ok(Async::Ready(None)) => {
+                            return Async::Ready(());
+                        }
+                        Ok(Async::Ready(Some(waiter))) => {
+                            if let Ok(AsyncSink::NotReady(waiter)) =
+                                self.channelq.start_send(waiter) {
+                                self.pending = Some(waiter);
+                                self.rx = Some(rx);
+                                return Async::NotReady;
                             }
                         }
+                        Ok(Async::NotReady) => {
+                            self.rx = Some(rx);
+                            return Async::NotReady;
+                        }
                     }
-                    Ok(Async::Ready(None)) => {
-                        return;
-                    }
-                    Ok(Async::NotReady) => {
-                        self.rx = Some(rx);
-                        return;
-                    }
-                }
-            }
-            self.rx = Some(rx);
-        }
-    }
-
-    fn poll_connecting(&mut self) {
-        debug!("polling {} pending connections", self.connecting.len());
-        for _ in 0..self.connecting.len() {
-            let mut connecting = self.connecting.pop_front().unwrap();
-            match connecting.poll() {
-                Err(e) => {
-                    debug!("connection failed: {}", e);
-                    self.metrics.pending.decr(1);
-                    self.metrics.failure(&e);
-                }
-                Ok(Async::NotReady) => {
-                    trace!("connection pending");
-                    self.connecting.push_back(connecting);
-                }
-                Ok(Async::Ready(connected)) => {
-                    debug!("connected");
-                    self.metrics.connects.incr(1);
-                    self.metrics.pending.decr(1);
-                    self.metrics.open.incr(1);
-                    self.connected.push_back(connected);
                 }
             }
         }
     }
 
-    fn dispatch_connected_to_waiters(&mut self) {
-        debug!("dispatching {} connections to {} waiters",
-               self.connected.len(),
-               self.waiters.len());
-        while let Some(conn) = self.connected.pop_front() {
-            if let Err(conn) = self.dispatch_to_next_waiter(conn) {
-                self.connected.push_front(conn);
-                return;
-            }
-        }
-    }
-
-    fn dispatch_to_next_waiter(&mut self,
-                               conn: endpoint::Connection)
-                               -> Result<(), endpoint::Connection> {
-        match self.waiters.pop_front() {
-            None => Err(conn),
-            Some(waiter) => {
-                match waiter.send(conn) {
-                    Ok(()) => Ok(()),
-                    Err(conn) => self.dispatch_to_next_waiter(conn),
-                }
-            }
-        }
-    }
+    pub fn poll_complete(&mut self, ) 
 }
 
 struct Rx<W> {
@@ -375,14 +282,3 @@ impl Metrics {
         }
     }
 }
-
-// use futures::{Sink, AsyncSink, StartSend};
-// struct DispatcherSink {}
-// impl Sink for DispatcherSink {
-//     type SinkItem = Waiter;
-//     type SinkError = ();
-
-//     fn start_send(&mut self, waiter: Waiter) -> StartSend<Waiter, ()> {
-
-//     }
-// }

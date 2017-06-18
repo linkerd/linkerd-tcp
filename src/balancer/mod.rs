@@ -7,6 +7,7 @@ use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
+mod channelq;
 mod dispatcher;
 mod endpoint;
 mod endpoints;

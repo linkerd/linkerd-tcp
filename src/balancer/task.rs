@@ -56,19 +56,8 @@ impl<S> Future for Task<S>
         if let Some(mut dispatcher) = self.dispatcher.take() {
             let t0 = Instant::now();
 
-            let mut state = DispatchState::NeedsPoll;
-            while state == DispatchState::NeedsPoll {
-                state = match dispatcher.poll() {
-                    s @ DispatchState::Done => s,
-                    _ => {
-                        let available = self.endpoints.updated_available();
-                        dispatcher.init(available)
-                    }
-                };
-            }
-
-            trace!("dispatcher state: {:?}", state);
-            if state != DispatchState::Done {
+            if dispatcher.start_recv().is_not_ready() {
+                let available = self.endpoints.updated_available();
                 self.dispatcher = Some(dispatcher);
             }
 
