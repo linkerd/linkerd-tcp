@@ -21,15 +21,32 @@ pub use self::config::{Error as ConfigError, ServerConfig};
 
 const DEFAULT_MAX_CONCURRENCY: usize = 100000;
 
+pub struct Settings {
+    tls: Option<UnboundTls>,
+    connect_timeout: Option<Duration>,
+    connection_lifetime: Option<Duration>,
+    max_concurrency: usize,
+}
+
+pub fn settings(tls: Option<UnboundTls>,
+                connect_timeout: Option<Duration>,
+                connection_lifetime: Option<Duration>,
+                max_concurrency: usize)
+                -> Settings {
+    Settings {
+        tls,
+        connect_timeout,
+        connection_lifetime,
+        max_concurrency,
+    }
+}
+
 /// Builds a server that is not yet bound on a port.
 fn unbound(listen_addr: net::SocketAddr,
            dst_name: Path,
            router: Router,
            buf: Rc<RefCell<Vec<u8>>>,
-           tls: Option<UnboundTls>,
-           connect_timeout: Option<Duration>,
-           connection_lifetime: Option<Duration>,
-           max_concurrency: usize,
+           settings: Settings,
            metrics: &tacho::Scope)
            -> Unbound {
     let metrics = metrics.clone().prefixed("srv");
@@ -38,10 +55,7 @@ fn unbound(listen_addr: net::SocketAddr,
         dst_name,
         router,
         buf,
-        tls,
-        connect_timeout,
-        connection_lifetime,
-        max_concurrency,
+        settings,
         metrics,
     }
 }
@@ -51,11 +65,8 @@ pub struct Unbound {
     dst_name: Path,
     router: Router,
     buf: Rc<RefCell<Vec<u8>>>,
-    tls: Option<UnboundTls>,
+    settings: Settings,
     metrics: tacho::Scope,
-    connect_timeout: Option<Duration>,
-    connection_lifetime: Option<Duration>,
-    max_concurrency: usize,
 }
 impl Unbound {
     pub fn listen_addr(&self) -> net::SocketAddr {
@@ -100,7 +111,15 @@ impl Unbound {
         let bound_addr = listen.local_addr().unwrap();
 
         let metrics = self.metrics.labeled("srv_addr", format!("{}", bound_addr));
-        let tls = self.tls
+        // TODO determine dst_addr dynamically.
+        let dst_name = self.dst_name;
+        let router = self.router;
+        let buf = self.buf;
+        let connect_timeout = self.settings.connect_timeout;
+        let connection_lifetime = self.settings.connection_lifetime;
+        let max_concurrency = self.settings.max_concurrency;
+        let tls = self.settings
+            .tls
             .map(|tls| {
                      BoundTls {
                          config: tls.config,
@@ -129,13 +148,6 @@ impl Unbound {
             stream_failures: FailureMetrics::new(&stream_metrics, "failure"),
             per_conn,
         };
-
-        // TODO determine dst_addr dynamically.
-        let dst_name = self.dst_name;
-        let router = self.router;
-        let connect_timeout = self.connect_timeout;
-        let connection_lifetime = self.connection_lifetime;
-        let buf = self.buf;
 
         let reactor = reactor.clone();
         let timer = timer.clone();
@@ -232,7 +244,7 @@ impl Unbound {
                     Ok(())
                 })
             })
-            .buffer_unordered(self.max_concurrency);
+            .buffer_unordered(max_concurrency);
 
         Ok(Bound(Box::new(serving)))
     }

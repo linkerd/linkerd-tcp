@@ -75,10 +75,7 @@ impl ServerConfig {
                                   dst_name.into(),
                                   router,
                                   buf,
-                                  tls,
-                                  timeout,
-                                  lifetime,
-                                  max_concurrency,
+                                  super::settings(tls, timeout, lifetime, max_concurrency),
                                   metrics))
             }
         }

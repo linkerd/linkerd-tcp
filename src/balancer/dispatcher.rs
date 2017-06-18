@@ -1,91 +1,45 @@
-use super::{Endpoints, EndpointMap, Waiter, WeightedAddr};
+use super::{EndpointMap, Waiter};
 use super::endpoint::{self, Endpoint};
 use super::super::Path;
 use super::super::connection::Connection;
 use super::super::connector::Connector;
-use super::super::resolver::Resolve;
 use futures::{Future, Stream, Poll, Async};
 use rand::{self, Rng};
 use std::collections::VecDeque;
 use std::io;
-use std::time::{Duration, Instant};
 use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
-pub fn new<S>(reactor: Handle,
-              timer: Timer,
-              dst_name: Path,
-              connector: Connector,
-              resolve: Resolve,
-              waiters_rx: S,
-              endpoints: Endpoints,
-              metrics: &tacho::Scope)
-              -> Dispatcher<S>
-    where S: Stream<Item = Waiter>
-{
-    Dispatcher {
-        reactor,
-        timer,
-        dst_name,
-        endpoints,
-        resolve,
-        waiters_rx,
-        max_waiters: connector.max_waiters(),
-        min_connections: connector.min_connections(),
-        fail_limit: connector.failure_limit(),
-        fail_penalty: connector.failure_penalty(),
-        connector,
-        connecting: VecDeque::default(),
-        connected: VecDeque::default(),
-        waiters: VecDeque::default(),
-        metrics: Metrics::new(metrics),
-    }
+type ConnectingQ = VecDeque<tacho::Timed<endpoint::Connecting>>;
+type ConnectedQ = VecDeque<Connection<endpoint::Ctx>>;
+type WaiterQ = VecDeque<Waiter>;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum State {
+    Done,
+    NotReady,
+    NeedsPoll,
 }
 
-/// Initiates load balanced outbound connections.
 pub struct Dispatcher<W> {
+    dst_name: Path,
+
+    connector: Connector,
     reactor: Handle,
     timer: Timer,
 
-    /// Names the destination replica set to which connections are being dispatched.
-    dst_name: Path,
-
-    /// Handles destination-specific connection policy.
-    connector: Connector,
-
-    /// Provides new service discovery resolutions as a Stream.
-    resolve: Resolve,
-
-    /// Holds the state of all available/failed/retired endpoints.
-    endpoints: Endpoints,
-
-    /// Limits the number of consecutive failures allowed before an endpoint is marked as
-    /// failed.
-    fail_limit: usize,
-
-    /// Controls how long an endpoint will be marked as failed before being considered for
-    /// new connections.s
-    fail_penalty: Duration,
-
-    /// Controls the minimum number of connecting/connected connections to be maintained
-    /// at all times.
-    min_connections: usize,
+    /// Provides new connection requests as a Stream.
+    rx: Option<Rx<W>>,
 
     /// A queue of pending connections.
-    connecting: VecDeque<tacho::Timed<endpoint::Connecting>>,
+    connecting: ConnectingQ,
 
     /// A queue of ready connections to be dispatched ot waiters.
-    connected: VecDeque<Connection<endpoint::Ctx>>,
-
-    /// Provides new connection requests as a Stream..
-    waiters_rx: W,
+    connected: ConnectedQ,
 
     /// A queue of waiters that have not yet received a connection.
-    waiters: VecDeque<Waiter>,
-
-    /// Limits the size of `waiters`.
-    max_waiters: usize,
+    waiters: WaiterQ,
 
     metrics: Metrics,
 }
@@ -93,106 +47,80 @@ pub struct Dispatcher<W> {
 impl<W> Dispatcher<W>
     where W: Stream<Item = Waiter>
 {
-    /// Receives and attempts to dispatch new waiters.
-    ///
-    /// If there are no available connections to be dispatched, up to `max_waiters` are
-    /// buffered.
-    fn recv_waiters(&mut self) {
-        while self.waiters.len() < self.max_waiters {
-            match self.waiters_rx.poll() {
-                Ok(Async::Ready(None)) |
-                Ok(Async::NotReady) => return,
-                Err(_) => {
-                    error!("{}: error from waiters channel", self.dst_name);
-                }
-                Ok(Async::Ready(Some(w))) => {
-                    match self.connected.pop_front() {
-                        None => self.waiters.push_back(w),
-                        Some(conn) => {
-                            if let Err(conn) = w.send(conn) {
-                                self.connected.push_front(conn);
-                            }
-                        }
-                    }
-                }
-            }
+    pub fn new(reactor: Handle,
+               timer: Timer,
+               dst_name: Path,
+               recv: W,
+               connector: Connector,
+               metrics: &tacho::Scope)
+               -> Dispatcher<W> {
+        let rx = Rx {
+            recv,
+            is_ready: true,
+        };
+        Dispatcher {
+            reactor,
+            timer,
+            dst_name,
+            connector,
+            rx: Some(rx),
+            connecting: ConnectingQ::default(),
+            connected: ConnectedQ::default(),
+            waiters: WaiterQ::default(),
+            metrics: Metrics::new(metrics),
         }
     }
 
-    fn poll_connecting(&mut self) {
-        debug!("polling {} pending connections", self.connecting.len());
-        for _ in 0..self.connecting.len() {
-            let mut connecting = self.connecting.pop_front().unwrap();
-            match connecting.poll() {
-                Err(e) => {
-                    debug!("connection failed: {}", e);
-                    self.metrics.pending.decr(1);
-                    self.metrics.failure(&e);
-                }
-                Ok(Async::NotReady) => {
-                    trace!("connection pending");
-                    self.connecting.push_back(connecting);
-                }
-                Ok(Async::Ready(connected)) => {
-                    debug!("connected");
-                    self.metrics.connects.incr(1);
-                    self.metrics.pending.decr(1);
-                    self.metrics.open.incr(1);
-                    self.connected.push_back(connected)
-                }
-            }
+    fn is_done(&self) -> bool {
+        self.rx.is_none() && self.waiters.is_empty()
+    }
+
+    fn is_not_ready(&self) -> bool {
+        self.rx.as_ref().map(|rx| !rx.is_ready).unwrap_or(false) || !self.connecting.is_empty()
+    }
+
+    fn state(&self) -> State {
+        if self.is_done() {
+            State::Done
+        } else if self.is_not_ready() {
+            State::NotReady
+        } else {
+            State::NeedsPoll
         }
     }
 
-    fn update_endpoints(&mut self) {
-        if let Some(addrs) = self.poll_resolve() {
-            self.endpoints.update_resolved(&addrs);
-            debug!("balancer updated: available={} failed={}, retired={}",
-                   self.endpoints.available().len(),
-                   self.endpoints.failed().len(),
-                   self.endpoints.retired().len());
-        }
+    pub fn poll(&mut self) -> State {
+        // Poll all pending connections. Newly established connections are added to the
+        // `connected` queue, to be dispatched.
+        self.poll_connecting();
 
-        self.endpoints
-            .update_failed(self.fail_limit, self.fail_penalty);
+        // Now that we may have new established connnections, dispatch them to waiters.
+        self.dispatch_connected_to_waiters();
 
+        // Having dispatched, we're ready to refill the waiters queue from the channel. No
+        // more than `max_waiters` items are retained at once.
+        //
+        // We may end up in a situation where we haven't received `Async::NotReady` from
+        // `waiters_rx.poll()`. We rely on the fact that connection events will be
+        // necessary to satisfy existing waiters, and another `recv_waiters()` call will
+        // be triggered from those events.
+        self.recv_waiters();
+        self.metrics.waiters.set(self.waiters.len());
+
+        self.state()
     }
 
-    fn poll_resolve(&mut self) -> Option<Vec<WeightedAddr>> {
-        // Poll the resolution until it's
-        let mut addrs = None;
-        loop {
-            match self.resolve.poll() {
-                Ok(Async::NotReady) => {
-                    return addrs;
-                }
-                Ok(Async::Ready(None)) => {
-                    info!("resolution complete! no further updates will be received");
-                    return addrs;
-                }
-                //
-                Err(e) => {
-                    error!("{}: resolver error: {:?}", self.dst_name, e);
-                }
-                Ok(Async::Ready(Some(Err(e)))) => {
-                    error!("{}: resolver error: {:?}", self.dst_name, e);
-                }
-                Ok(Async::Ready(Some(Ok(a)))) => {
-                    addrs = Some(a);
-                }
-            }
-        }
+    pub fn init(&mut self, available: &EndpointMap) -> State {
+        self.init_connecting(available);
+        self.dispatch_connected_to_waiters();
+        self.recv_waiters();
+        self.metrics.waiters.set(self.waiters.len());
+        self.state()
     }
 
-    fn init_connecting(&mut self) {
-        let available = self.endpoints.available();
-        if available.is_empty() {
-            trace!("no available endpoints");
-            return;
-        }
-
+    fn init_connecting(&mut self, available: &EndpointMap) {
         let needed = {
-            let needed = self.min_connections + self.waiters.len();
+            let needed = self.connector.min_connections() + self.waiters.len();
             let pending = self.connecting.len() + self.connected.len();
             if needed < pending {
                 0
@@ -201,6 +129,11 @@ impl<W> Dispatcher<W>
             }
         };
         debug!("initiating {} connections", needed);
+
+        if available.is_empty() {
+            trace!("no available endpoints");
+            return;
+        }
 
         let mut rng = rand::thread_rng();
         for _ in 0..needed {
@@ -241,6 +174,65 @@ impl<W> Dispatcher<W>
         }
     }
 
+    /// Receives and attempts to dispatch new waiters.
+    ///
+    /// If there are no available connections to be dispatched, up to `max_waiters` are
+    /// buffered.
+    fn recv_waiters(&mut self) {
+        if let Some(mut rx) = self.rx.take() {
+            while self.waiters.len() < self.connector.max_waiters() {
+                match rx.poll() {
+                    Err(_) => {
+                        error!("{}: error from waiters channel", self.dst_name);
+                    }
+                    Ok(Async::Ready(Some(w))) => {
+                        match self.connected.pop_front() {
+                            None => self.waiters.push_back(w),
+                            Some(conn) => {
+                                if let Err(conn) = w.send(conn) {
+                                    self.connected.push_front(conn);
+                                }
+                            }
+                        }
+                    }
+                    Ok(Async::Ready(None)) => {
+                        return;
+                    }
+                    Ok(Async::NotReady) => {
+                        self.rx = Some(rx);
+                        return;
+                    }
+                }
+            }
+            self.rx = Some(rx);
+        }
+    }
+
+    fn poll_connecting(&mut self) {
+        debug!("polling {} pending connections", self.connecting.len());
+        for _ in 0..self.connecting.len() {
+            let mut connecting = self.connecting.pop_front().unwrap();
+            match connecting.poll() {
+                Err(e) => {
+                    debug!("connection failed: {}", e);
+                    self.metrics.pending.decr(1);
+                    self.metrics.failure(&e);
+                }
+                Ok(Async::NotReady) => {
+                    trace!("connection pending");
+                    self.connecting.push_back(connecting);
+                }
+                Ok(Async::Ready(connected)) => {
+                    debug!("connected");
+                    self.metrics.connects.incr(1);
+                    self.metrics.pending.decr(1);
+                    self.metrics.open.incr(1);
+                    self.connected.push_back(connected);
+                }
+            }
+        }
+    }
+
     fn dispatch_connected_to_waiters(&mut self) {
         debug!("dispatching {} connections to {} waiters",
                self.connected.len(),
@@ -266,94 +258,21 @@ impl<W> Dispatcher<W>
             }
         }
     }
-
-    fn record(&self, t0: Instant) {
-        {
-            let mut open = 0;
-            let mut pending = 0;
-            {
-                let available = self.endpoints.available();
-                self.metrics.available.set(available.len());
-                for ep in available.values() {
-                    let state = ep.state();
-                    open += state.open_conns;
-                    pending += state.pending_conns;
-                }
-            }
-            {
-                let failed = self.endpoints.failed();
-                self.metrics.failed.set(failed.len());
-                for &(_, ref ep) in failed.values() {
-                    let state = ep.state();
-                    open += state.open_conns;
-                    pending += state.pending_conns;
-                }
-            }
-            {
-                let retired = self.endpoints.retired();
-                self.metrics.retired.set(retired.len());
-                for ep in retired.values() {
-                    let state = ep.state();
-                    open += state.open_conns;
-                    pending += state.pending_conns;
-                }
-            }
-            self.metrics.open.set(open);
-            self.metrics.pending.set(pending);
-        }
-        self.metrics.waiters.set(self.waiters.len());
-        self.metrics.poll_time.record_since(t0);
-    }
 }
 
-/// Buffers up to `max_waiters` concurrent connection requests, along with corresponding
-/// connection attempts.
-impl<S> Future for Dispatcher<S>
-    where S: Stream<Item = Waiter>
+struct Rx<W> {
+    recv: W,
+    is_ready: bool,
+}
+impl<W> Stream for Rx<W>
+    where W: Stream<Item = Waiter>
 {
-    type Item = ();
-    type Error = io::Error;
-
-    fn poll(&mut self) -> Poll<(), io::Error> {
-        let t0 = Instant::now();
-
-        // Poll all pending connections. Newly established connections are added to the
-        // `connected` queue, to be dispatched.
-        self.poll_connecting();
-
-        // Now that we may have new established connnections, dispatch them to waiters.
-        self.dispatch_connected_to_waiters();
-
-        // Having dispatched, we're ready to refill the waiters queue from the channel. No
-        // more than `max_waiters` items are retained at once.
-        //
-        // We may end up in a situation where we haven't received `Async::NotReady` from
-        // `waiters_rx.poll()`. We rely on the fact that connection events will be
-        // necessary to satisfy existing waiters, and another `recv_waiters()` call will
-        // be triggered from those events.
-        self.recv_waiters();
-
-        // Update our lists of endpoints from service discovery before initiating new
-        // connections for pending waiters.
-        self.update_endpoints();
-        self.init_connecting();
-
-        // Dispatch any remaining available connections to any remaining waiters. This is
-        // necessary because `init_connecting()` can technically satisfy connections
-        // immediately. If this were to happen, there would be gauranteed event to trigger
-        // a subsequent dispatch.
-        self.dispatch_connected_to_waiters();
-
-        // And because we've potentially drained the waiters queue again, we have to
-        // refill it to ensure that this task is polled again.
-        self.recv_waiters();
-
-        // Update gauges & record the time it took to poll.
-        self.record(t0);
-
-        // This Future never completes.
-        // TODO graceful shutdown.
-        Ok(Async::NotReady)
+    type Item = W::Item;
+    type Error = W::Error;
+    fn poll(&mut self) -> Poll<Option<W::Item>, W::Error> {
+        let poll = self.recv.poll();
+        self.is_ready = poll.as_ref().map(|p| p.is_ready()).unwrap_or(true);
+        poll
     }
 }
 
@@ -417,13 +336,9 @@ fn select_endpoint<'r, 'e, R: Rng>(rng: &'r mut R,
 }
 
 struct Metrics {
-    available: tacho::Gauge,
-    failed: tacho::Gauge,
-    retired: tacho::Gauge,
     pending: tacho::Gauge,
     open: tacho::Gauge,
     waiters: tacho::Gauge,
-    poll_time: tacho::Timer,
     attempts: tacho::Counter,
     unavailable: tacho::Counter,
     connects: tacho::Counter,
@@ -436,16 +351,11 @@ struct Metrics {
 
 impl Metrics {
     fn new(base: &tacho::Scope) -> Metrics {
-        let ep = base.clone().prefixed("endpoint");
         let conn = base.clone().prefixed("connection");
         Metrics {
-            available: ep.gauge("available"),
-            failed: ep.gauge("failed"),
-            retired: ep.gauge("retired"),
             pending: conn.gauge("pending"),
             open: conn.gauge("open"),
             waiters: base.gauge("waiters"),
-            poll_time: base.timer_us("poll_time_us"),
             unavailable: base.counter("unavailable"),
             attempts: conn.counter("attempts"),
             connects: conn.counter("connects"),
@@ -465,3 +375,14 @@ impl Metrics {
         }
     }
 }
+
+// use futures::{Sink, AsyncSink, StartSend};
+// struct DispatcherSink {}
+// impl Sink for DispatcherSink {
+//     type SinkItem = Waiter;
+//     type SinkError = ();
+
+//     fn start_send(&mut self, waiter: Waiter) -> StartSend<Waiter, ()> {
+
+//     }
+// }
