@@ -1,6 +1,6 @@
 use super::super::connection::{Connection as _Connection, ctx};
 use super::super::connector;
-use futures::{Future, Poll};
+use futures::{self, Future, Poll};
 use std::{io, net};
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
@@ -10,10 +10,11 @@ use tacho;
 pub type Connection = _Connection<Ctx>;
 
 pub fn new(peer_addr: net::SocketAddr, weight: f64) -> Endpoint {
+    let state = Rc::new(RefCell::new(State::default()));
     Endpoint {
         peer_addr,
         weight,
-        state: Rc::new(RefCell::new(State::default())),
+        state,
     }
 }
 
@@ -70,35 +71,44 @@ impl Endpoint {
             let peer_addr = self.peer_addr;
             let state = self.state.clone();
             let duration = duration.clone();
-            debug!("{}: connecting", peer_addr);
-            sock.then(move |res| match res {
-                          Err(e) => {
-                              error!("{}: connection failed: {}", peer_addr, e);
-                              let mut s = state.borrow_mut();
-                              s.consecutive_failures += 1;
-                              s.pending_conns -= 1;
-                              Err(e)
-                          }
-                          Ok(sock) => {
-                              debug!("{}: connected", peer_addr);
-                              {
+            futures::lazy(move || {
+                debug!("{}: connecting", peer_addr);
+                state.borrow_mut().pending_conns += 1;
+                sock.then(move |res| match res {
+                              Err(e) => {
                                   let mut s = state.borrow_mut();
-                                  s.consecutive_failures = 0;
+                                  s.consecutive_failures += 1;
                                   s.pending_conns -= 1;
-                                  s.open_conns += 1;
+                                  error!("{}: connection failed: {} [pending={}, failures={}]",
+                                         peer_addr,
+                                         e,
+                                         s.pending_conns,
+                                         s.consecutive_failures);
+                                  Err(e)
                               }
-                              let ctx = Ctx {
-                                  state,
-                                  duration,
-                                  start: Instant::now(),
-                              };
-                              Ok(Connection::new(sock, ctx))
-                          }
-                      })
+                              Ok(sock) => {
+                                  {
+                                      let mut s = state.borrow_mut();
+                                      s.consecutive_failures = 0;
+                                      s.pending_conns -= 1;
+                                      s.open_conns += 1;
+                                      debug!("{}: connected [pending={}, open={}]",
+                                             peer_addr,
+                                             s.pending_conns,
+                                             s.open_conns);
+                                  }
+
+                                  let ctx = Ctx {
+                                      state,
+                                      duration,
+                                      start: Instant::now(),
+                                  };
+                                  Ok(Connection::new(sock, ctx))
+                              }
+                          })
+            })
         };
 
-        let mut state = self.state.borrow_mut();
-        state.pending_conns += 1;
         Connecting(Box::new(conn))
     }
 
@@ -134,8 +144,11 @@ impl ctx::Ctx for Ctx {
 }
 impl Drop for Ctx {
     fn drop(&mut self) {
-        let mut state = self.state.borrow_mut();
-        state.open_conns -= 1;
+        {
+            let mut s = self.state.borrow_mut();
+            s.open_conns -= 1;
+            debug!("connection dropped [open={}]", s.open_conns);
+        }
         self.duration.record_since(self.start)
     }
 }

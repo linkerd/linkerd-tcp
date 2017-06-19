@@ -52,7 +52,7 @@ impl ConnectorFactoryConfig {
                         }
                         Some(ref pfx) => {
                             pfx_configs.push((pfx.clone().into(), cfg.clone()));
-                        } 
+                        }
                     }
                 }
                 Ok(ConnectorFactory::new_prefixed(pfx_configs))
@@ -72,7 +72,7 @@ pub struct ConnectorConfig {
     pub min_connections: Option<usize>,
 
     pub fail_fast: Option<FailFastConfig>,
-    
+
     // TODO requeue_budget: Option<RequeueBudget>
 }
 

@@ -1,21 +1,20 @@
 use super::Path;
 use super::connector::Connector;
 use super::resolver::Resolve;
-use futures::{Async, Future, Poll, unsync};
-use ordermap::OrderMap;
-use std::{cmp, io, net};
-use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use futures::{Async, Future, Stream, Poll, unsync};
+use std::{io, net};
 use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
 mod dispatcher;
+mod dispatchq;
 mod endpoint;
+mod endpoints;
 mod factory;
 
 pub use self::endpoint::{Connection as EndpointConnection, Ctx as EndpointCtx};
-use self::endpoint::Endpoint;
+use self::endpoints::{EndpointMap, Endpoints};
 pub use self::factory::BalancerFactory;
 
 type Waiter = unsync::oneshot::Sender<endpoint::Connection>;
@@ -41,15 +40,17 @@ pub fn new(reactor: &Handle,
            metrics: &tacho::Scope)
            -> Balancer {
     let (tx, rx) = unsync::mpsc::unbounded();
+    let endpoints = Endpoints::new(dst.clone(),
+                                   resolve,
+                                   connector.failure_limit(),
+                                   connector.failure_penalty(),
+                                   &metrics.clone().prefixed("endpoint"));
     let dispatcher = dispatcher::new(reactor.clone(),
                                      timer.clone(),
-                                     dst.clone(),
                                      connector,
-                                     resolve,
-                                     rx,
-                                     Endpoints::default(),
+                                     endpoints,
                                      metrics);
-    reactor.spawn(dispatcher.map_err(|_| {}));
+    reactor.spawn(rx.forward(dispatcher).map(|_| {}));
     Balancer(tx)
 }
 
@@ -82,170 +83,5 @@ impl Future for Connect {
                 Ok(Async::NotReady)
             }
         }
-    }
-}
-
-pub type EndpointMap = OrderMap<net::SocketAddr, Endpoint>;
-pub type FailedMap = OrderMap<net::SocketAddr, (Instant, Endpoint)>;
-
-#[derive(Default)]
-pub struct Endpoints {
-    //minimum_connections: usize,
-    /// Endpoints considered available for new connections.
-    available: EndpointMap,
-
-    /// Endpoints that are still active but considered unavailable for new connections.
-    retired: EndpointMap,
-
-    failed: FailedMap,
-}
-
-impl Endpoints {
-    pub fn available(&self) -> &EndpointMap {
-        &self.available
-    }
-
-    pub fn failed(&self) -> &FailedMap {
-        &self.failed
-    }
-
-    pub fn retired(&self) -> &EndpointMap {
-        &self.retired
-    }
-
-    pub fn update_failed(&mut self, max_failures: usize, penalty: Duration) {
-        let mut available = VecDeque::with_capacity(self.failed.len());
-        let mut failed = VecDeque::with_capacity(self.failed.len());
-
-        for (_, ep) in self.available.drain(..) {
-            if ep.state().consecutive_failures < max_failures {
-                available.push_back(ep);
-            } else {
-                failed.push_back((Instant::now(), ep));
-            }
-        }
-
-        for (_, (start, ep)) in self.failed.drain(..) {
-            if start + penalty <= Instant::now() {
-                available.push_back(ep);
-            } else {
-                failed.push_back((start, ep));
-            }
-        }
-
-        if available.is_empty() {
-            while let Some((_, ep)) = failed.pop_front() {
-                self.available.insert(ep.peer_addr(), ep);
-            }
-        } else {
-            while let Some(ep) = available.pop_front() {
-                self.available.insert(ep.peer_addr(), ep);
-            }
-            while let Some((since, ep)) = failed.pop_front() {
-                self.failed.insert(ep.peer_addr(), (since, ep));
-            }
-        }
-    }
-
-    // TODO: we need to do some sort of probation deal to manage endpoints that are
-    // retired.
-    pub fn update_resolved(&mut self, resolved: &[WeightedAddr]) {
-        let mut temp = {
-            let sz = cmp::max(self.available.len(), self.retired.len());
-            VecDeque::with_capacity(sz)
-        };
-        let dsts = Endpoints::dsts_by_addr(resolved);
-        self.check_retired(&dsts, &mut temp);
-        self.check_available(&dsts, &mut temp);
-        self.check_failed(&dsts);
-        self.update_available_from_new(dsts);
-    }
-
-    /// Checks active endpoints.
-    fn check_available(&mut self,
-                       dsts: &OrderMap<net::SocketAddr, f64>,
-                       temp: &mut VecDeque<Endpoint>) {
-        for (addr, ep) in self.available.drain(..) {
-            if dsts.contains_key(&addr) {
-                temp.push_back(ep);
-            } else if ep.is_idle() {
-                drop(ep);
-            } else {
-                self.retired.insert(addr, ep);
-            }
-        }
-
-        for _ in 0..temp.len() {
-            let ep = temp.pop_front().unwrap();
-            self.available.insert(ep.peer_addr(), ep);
-        }
-    }
-
-    /// Checks retired endpoints.
-    ///
-    /// Endpoints are either salvaged backed into the active pool, maintained as
-    /// retired if still active, or dropped if inactive.
-    fn check_retired(&mut self,
-                     dsts: &OrderMap<net::SocketAddr, f64>,
-                     temp: &mut VecDeque<Endpoint>) {
-        for (addr, ep) in self.retired.drain(..) {
-            if dsts.contains_key(&addr) {
-                self.available.insert(addr, ep);
-            } else if ep.is_idle() {
-                drop(ep);
-            } else {
-                temp.push_back(ep);
-            }
-        }
-
-        for _ in 0..temp.len() {
-            let ep = temp.pop_front().unwrap();
-            self.retired.insert(ep.peer_addr(), ep);
-        }
-    }
-
-    /// Checks failed endpoints.
-    fn check_failed(&mut self, dsts: &OrderMap<net::SocketAddr, f64>) {
-        let mut temp = VecDeque::with_capacity(self.failed.len());
-        for (addr, (since, ep)) in self.failed.drain(..) {
-            if dsts.contains_key(&addr) {
-                temp.push_back((since, ep));
-            } else if ep.is_idle() {
-                drop(ep);
-            } else {
-                self.retired.insert(addr, ep);
-            }
-        }
-
-        for _ in 0..temp.len() {
-            let (instant, ep) = temp.pop_front().unwrap();
-            self.failed.insert(ep.peer_addr(), (instant, ep));
-        }
-    }
-
-    fn update_available_from_new(&mut self, mut dsts: OrderMap<net::SocketAddr, f64>) {
-        // Add new endpoints or update the base weights of existing endpoints.
-        //let metrics = self.endpoint_metrics.clone();
-        for (addr, weight) in dsts.drain(..) {
-            if let Some(&mut (_, ref mut ep)) = self.failed.get_mut(&addr) {
-                ep.set_weight(weight);
-                continue;
-            }
-
-            if let Some(mut ep) = self.available.get_mut(&addr) {
-                ep.set_weight(weight);
-                continue;
-            }
-
-            self.available.insert(addr, endpoint::new(addr, weight));
-        }
-    }
-
-    fn dsts_by_addr(dsts: &[WeightedAddr]) -> OrderMap<net::SocketAddr, f64> {
-        let mut by_addr = OrderMap::with_capacity(dsts.len());
-        for &WeightedAddr { addr, weight } in dsts {
-            by_addr.insert(addr, weight);
-        }
-        by_addr
     }
 }

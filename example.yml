@@ -14,8 +14,8 @@ routers:
     servers:
       - port: 7474
         dstName: /svc/default
-        connectTimeoutMs: 500
-        connectionLifetimeSecs: 60
+        #connectTimeoutMs: 500
+        #connectionLifetimeSecs: 60
 
       # - port: 7473
       #   dstName: /svc/default
@@ -29,5 +29,5 @@ routers:
 
     client:
       kind: io.l5d.global
-      minConnections: 3
-      connectTimeoutMs: 500
+      #connectTimeoutMs: 500
+
