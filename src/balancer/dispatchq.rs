@@ -46,18 +46,18 @@ impl<T> Sender<T> {
                     return Async::NotReady;
                 }
                 Ok(Async::Ready(None)) => {
-                    trace!("dispatch: recvq done");
+                    error!("dispatch: recvq done");
                     return Async::Ready(());
                 }
                 Err(_) => {
-                    trace!("dispatch: recvq failed");
+                    warn!("dispatch: recvq failed");
                     sendq.push_front(v);
                 }
                 Ok(Async::Ready(Some(recv))) => {
                     *self.pending.borrow_mut() -= 1;
                     trace!("dispatch: recvq satisfied: sending waiter");
                     if let Err(v) = recv.send(v) {
-                        trace!("dispatch: sending waiter failed");
+                        warn!("dispatch: sending waiter failed");
                         sendq.push_front(v);
                     }
                 }
@@ -74,21 +74,24 @@ impl<T> Sink for Sender<T> {
     fn start_send(&mut self, item: T) -> StartSend<T, ()> {
         {
             let mut sendq = self.sendq.borrow_mut();
-            trace!("start_send: dispatching sendq={}/{}",
-                   sendq.len(),
-                   sendq.capacity());
             if sendq.capacity() == sendq.len() {
+                warn!("start_send: sendq at capacity");
                 return Ok(AsyncSink::NotReady(item));
             }
 
             sendq.push_back(item);
+            trace!("start_send: dispatching sendq={}/{} recvq={}",
+                   sendq.len(),
+                   sendq.capacity(),
+                   *self.pending.borrow());
         }
         self.dispatch();
         {
             let sendq = self.sendq.borrow();
-            trace!("start_send: dispatched sendq={}/{}",
+            trace!("start_send: dispatched sendq={}/{} recvq={}",
                    sendq.len(),
-                   sendq.capacity());
+                   sendq.capacity(),
+                   *self.pending.borrow());
         }
         Ok(AsyncSink::Ready)
     }
@@ -96,16 +99,18 @@ impl<T> Sink for Sender<T> {
     fn poll_complete(&mut self) -> Poll<(), ()> {
         {
             let sendq = self.sendq.borrow();
-            trace!("poll_complete: dispatching sendq={}/{}",
+            trace!("poll_complete: dispatching sendq={}/{} recvq={}",
                    sendq.len(),
-                   sendq.capacity());
+                   sendq.capacity(),
+                   *self.pending.borrow());
         }
         let res = self.dispatch();
         {
             let sendq = self.sendq.borrow();
-            trace!("poll_complete: dispatched sendq={}/{} ready={}",
+            trace!("poll_complete: dispatched sendq={}/{} recvq={} ready={}",
                    sendq.len(),
                    sendq.capacity(),
+                   *self.pending.borrow(),
                    res.is_ready());
         }
         Ok(res)

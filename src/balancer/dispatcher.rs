@@ -48,17 +48,24 @@ impl Sink for Dispatcher {
     /// buffered.
     fn start_send(&mut self, w: Waiter) -> StartSend<Waiter, ()> {
         let t0 = Instant::now();
+        debug!("start_send: dispatching waiter");
         let res = self.dispatch_tx.start_send(w);
         self.init_connecting();
         self.record(t0);
+        debug!("start_send: dispatched waiter ready={}",
+               res.as_ref().map(|a| a.is_ready()).unwrap_or(false));
         res
     }
 
     fn poll_complete(&mut self) -> Poll<(), ()> {
         let t0 = Instant::now();
+        debug!("poll_complete: connecting");
         let dispatch_ready = self.dispatch_tx.poll_complete()?.is_ready();
         let connecting_ready = self.init_connecting().is_ready();
         self.record(t0);
+        debug!("poll_complete: dispatch={} connect={}",
+               dispatch_ready,
+               connecting_ready);
         if dispatch_ready && connecting_ready {
             Ok(Async::Ready(()))
         } else {
