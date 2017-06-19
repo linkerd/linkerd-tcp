@@ -31,11 +31,12 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    pub fn mk_server(&self,
-                     router: Router,
-                     buf: Rc<RefCell<Vec<u8>>>,
-                     metrics: &tacho::Scope)
-                     -> Result<Unbound> {
+    pub fn mk_server(
+        &self,
+        router: Router,
+        buf: Rc<RefCell<Vec<u8>>>,
+        metrics: &tacho::Scope,
+    ) -> Result<Unbound> {
         match *self {
             ServerConfig {
                 port,
@@ -71,15 +72,17 @@ impl ServerConfig {
                 let timeout = connect_timeout_ms.map(Duration::from_millis);
                 let lifetime = connection_lifetime_secs.map(Duration::from_secs);
                 let max_concurrency = max_concurrency.unwrap_or(super::DEFAULT_MAX_CONCURRENCY);
-                Ok(super::unbound(addr,
-                                  dst_name.into(),
-                                  router,
-                                  buf,
-                                  tls,
-                                  timeout,
-                                  lifetime,
-                                  max_concurrency,
-                                  metrics))
+                Ok(super::unbound(
+                    addr,
+                    dst_name.into(),
+                    router,
+                    buf,
+                    tls,
+                    timeout,
+                    lifetime,
+                    max_concurrency,
+                    metrics,
+                ))
             }
         }
     }

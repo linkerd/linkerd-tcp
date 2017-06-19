@@ -18,7 +18,7 @@ impl Path {
         let &Path(ref other) = other;
         if self.0.len() > other.len() {
             self.0.starts_with(other) &&
-            (self.0.ends_with('/') || other[self.0.len()..].starts_with('/'))
+                (self.0.ends_with('/') || other[self.0.len()..].starts_with('/'))
         } else if other.len() == self.0.len() {
             self.0 == *other
         } else {

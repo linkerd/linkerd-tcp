@@ -30,10 +30,12 @@ fn main() {
     let opts = ClapApp::new(crate_name!())
         .version(crate_version!())
         .about(crate_description!())
-        .arg(Arg::with_name(CONFIG_PATH_ARG)
-                 .required(true)
-                 .index(1)
-                 .help("Config file path."))
+        .arg(
+            Arg::with_name(CONFIG_PATH_ARG)
+                .required(true)
+                .index(1)
+                .help("Config file path."),
+        )
         .get_matches();
 
     // Parse configuration file.
@@ -60,7 +62,8 @@ fn main() {
 
     let (closer, closed) = app::closer();
 
-    // A single timer for the whole process.  The default hashwheel timer has a granularity of 100ms.
+    // A single timer for the whole process.  The default hashwheel timer has a
+    // granularity of 100ms.
     let timer = Timer::default();
 
     // Create a background admin thread that runs an admin server and executes executes
@@ -76,12 +79,12 @@ fn spawn_admin(admin: AdminRunner, closer: app::Closer, timer: &Timer) -> thread
     thread::Builder::new()
         .name("admin".into())
         .spawn(move || {
-                   debug!("running admin server");
-                   let mut core = Core::new().expect("failed to initialize admin reactor");
-                   admin
-                       .run(closer, &mut core, &timer)
-                       .expect("failed to run the admin server");
-               })
+            debug!("running admin server");
+            let mut core = Core::new().expect("failed to initialize admin reactor");
+            admin.run(closer, &mut core, &timer).expect(
+                "failed to run the admin server",
+            );
+        })
         .expect("failed to spawn admin thread")
 }
 

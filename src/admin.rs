@@ -23,12 +23,13 @@ pub struct Admin {
 type RspFuture = Box<Future<Item = Response, Error = hyper::Error>>;
 
 impl Admin {
-    pub fn new(prometheus: Rc<RefCell<String>>,
-               closer: Closer,
-               grace: Duration,
-               reactor: Handle,
-               timer: Timer)
-               -> Admin {
+    pub fn new(
+        prometheus: Rc<RefCell<String>>,
+        closer: Closer,
+        grace: Duration,
+        reactor: Handle,
+        timer: Timer,
+    ) -> Admin {
         Admin {
             closer: Rc::new(RefCell::new(Some(closer))),
             prometheus,

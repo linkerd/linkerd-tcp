@@ -36,10 +36,11 @@ impl<C: Ctx> Connection<C> {
     }
 
     /// Transfers data between connections bidirectionally.
-    pub fn into_duplex<D: Ctx>(self,
-                               other: Connection<D>,
-                               buf: Rc<RefCell<Vec<u8>>>)
-                               -> Duplex<C, D> {
+    pub fn into_duplex<D: Ctx>(
+        self,
+        other: Connection<D>,
+        buf: Rc<RefCell<Vec<u8>>>,
+    ) -> Duplex<C, D> {
         duplex::new(self, other, buf)
     }
 }

@@ -22,16 +22,17 @@ pub use self::config::{Error as ConfigError, ServerConfig};
 const DEFAULT_MAX_CONCURRENCY: usize = 100000;
 
 /// Builds a server that is not yet bound on a port.
-fn unbound(listen_addr: net::SocketAddr,
-           dst_name: Path,
-           router: Router,
-           buf: Rc<RefCell<Vec<u8>>>,
-           tls: Option<UnboundTls>,
-           connect_timeout: Option<Duration>,
-           connection_lifetime: Option<Duration>,
-           max_concurrency: usize,
-           metrics: &tacho::Scope)
-           -> Unbound {
+fn unbound(
+    listen_addr: net::SocketAddr,
+    dst_name: Path,
+    router: Router,
+    buf: Rc<RefCell<Vec<u8>>>,
+    tls: Option<UnboundTls>,
+    connect_timeout: Option<Duration>,
+    connection_lifetime: Option<Duration>,
+    max_concurrency: usize,
+    metrics: &tacho::Scope,
+) -> Unbound {
     let metrics = metrics.clone().prefixed("srv");
     Unbound {
         listen_addr,
@@ -66,10 +67,11 @@ impl Unbound {
         &self.dst_name
     }
 
-    fn init_src_connection(src_tcp: TcpStream,
-                           metrics: &Metrics,
-                           tls: &Option<BoundTls>)
-                           -> Box<Future<Item = Connection<SrcCtx>, Error = io::Error>> {
+    fn init_src_connection(
+        src_tcp: TcpStream,
+        metrics: &Metrics,
+        tls: &Option<BoundTls>,
+    ) -> Box<Future<Item = Connection<SrcCtx>, Error = io::Error>> {
 
         let sock: Box<Future<Item = Socket, Error = io::Error>> = match tls.as_ref() {
             None => future::ok(socket::plain(src_tcp)).boxed(),
@@ -84,13 +86,13 @@ impl Unbound {
 
         let metrics = metrics.per_conn.clone();
         let conn = sock.map(move |sock| {
-                                let ctx = SrcCtx {
-                                    rx_bytes_total: 0,
-                                    tx_bytes_total: 0,
-                                    metrics,
-                                };
-                                Connection::new(sock, ctx)
-                            });
+            let ctx = SrcCtx {
+                rx_bytes_total: 0,
+                tx_bytes_total: 0,
+                metrics,
+            };
+            Connection::new(sock, ctx)
+        });
         Box::new(conn)
     }
 
@@ -100,14 +102,12 @@ impl Unbound {
         let bound_addr = listen.local_addr().unwrap();
 
         let metrics = self.metrics.labeled("srv_addr", format!("{}", bound_addr));
-        let tls = self.tls
-            .map(|tls| {
-                     BoundTls {
-                         config: tls.config,
-                         handshake_latency:
-                             metrics.clone().prefixed("tls").timer_us("handshake_us"),
-                     }
-                 });
+        let tls = self.tls.map(|tls| {
+            BoundTls {
+                config: tls.config,
+                handshake_latency: metrics.clone().prefixed("tls").timer_us("handshake_us"),
+            }
+        });
 
         let connect_metrics = metrics.clone().prefixed("connect");
         let stream_metrics = metrics.clone().prefixed("stream");
@@ -160,32 +160,33 @@ impl Unbound {
                 // outbound connection and begin streaming. We obtain an outbound connection after
                 // the incoming handshake is complete so that we don't waste outbound connections
                 // on failed inbound connections.
-                let connect = src.join(balancer)
-                    .and_then(move |(src, b)| b.connect().map(move |dst| (src, dst)));
+                let connect = src.join(balancer).and_then(move |(src, b)| {
+                    b.connect().map(move |dst| (src, dst))
+                });
 
                 // Enforce a connection timeout, measure successful connection
                 // latencies and failure counts.
                 let connect = {
                     // Measure the time until the connection is established, if it completes.
-                    let c = timeout(metrics.per_conn.latency.time(connect),
-                                    connect_timeout,
-                                    &timer);
+                    let c = timeout(
+                        metrics.per_conn.latency.time(connect),
+                        connect_timeout,
+                        &timer,
+                    );
                     let fails = metrics.connect_failures.clone();
                     c.then(move |res| match res {
-                               Ok((src, dst)) => {
-                                   trace!("connection ready for {} to {}",
-                                          src_addr,
-                                          dst.peer_addr());
-                                   waiters.decr(1);
-                                   Ok((src, dst))
-                               }
-                               Err(e) => {
-                                   trace!("connection failed for {}: {}", src_addr, e);
-                                   waiters.decr(1);
-                                   fails.record(&e);
-                                   Err(e)
-                               }
-                           })
+                        Ok((src, dst)) => {
+                            trace!("connection ready for {} to {}", src_addr, dst.peer_addr());
+                            waiters.decr(1);
+                            Ok((src, dst))
+                        }
+                        Err(e) => {
+                            trace!("connection failed for {}: {}", src_addr, e);
+                            waiters.decr(1);
+                            fails.record(&e);
+                            Err(e)
+                        }
+                    })
                 };
 
                 // Copy data between the endpoints.
@@ -199,24 +200,19 @@ impl Unbound {
                         // Enforce a timeout on total connection lifetime.
                         let dst_addr = dst.peer_addr();
                         let duplex = src.into_duplex(dst, buf);
-                        duration
-                            .time(timeout(duplex, lifetime, &timer))
-                            .then(move |res| match res {
-                                      Ok(_) => {
-                                          trace!("stream succeeded for {} to {}",
-                                                 src_addr,
-                                                 dst_addr);
-                                          Ok(())
-                                      }
-                                      Err(e) => {
-                                          trace!("stream failed for {} to {}: {}",
-                                                 src_addr,
-                                                 dst_addr,
-                                                 e);
-                                          stream_fails.record(&e);
-                                          Err(e)
-                                      }
-                                  })
+                        duration.time(timeout(duplex, lifetime, &timer)).then(
+                            move |res| match res {
+                                Ok(_) => {
+                                    trace!("stream succeeded for {} to {}", src_addr, dst_addr);
+                                    Ok(())
+                                }
+                                Err(e) => {
+                                    trace!("stream failed for {} to {}: {}", src_addr, dst_addr, e);
+                                    stream_fails.record(&e);
+                                    Err(e)
+                                }
+                            },
+                        )
                     })
                 };
 
@@ -297,11 +293,13 @@ struct ConnMetrics {
     latency: tacho::Timer,
 }
 
-fn timeout<F>(fut: F,
-              timeout: Option<Duration>,
-              timer: &Timer)
-              -> Box<Future<Item = F::Item, Error = io::Error>>
-    where F: Future<Error = io::Error> + 'static
+fn timeout<F>(
+    fut: F,
+    timeout: Option<Duration>,
+    timer: &Timer,
+) -> Box<Future<Item = F::Item, Error = io::Error>>
+where
+    F: Future<Error = io::Error> + 'static,
 {
     match timeout {
         None => Box::new(fut),
@@ -342,11 +340,11 @@ impl ctx::Ctx for SrcCtx {
 }
 impl Drop for SrcCtx {
     fn drop(&mut self) {
-        self.metrics
-            .rx_bytes_per_conn
-            .add(self.rx_bytes_total as u64);
-        self.metrics
-            .tx_bytes_per_conn
-            .add(self.tx_bytes_total as u64);
+        self.metrics.rx_bytes_per_conn.add(
+            self.rx_bytes_total as u64,
+        );
+        self.metrics.tx_bytes_per_conn.add(
+            self.tx_bytes_total as u64,
+        );
     }
 }
