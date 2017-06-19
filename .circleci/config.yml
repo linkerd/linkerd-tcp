@@ -13,12 +13,14 @@ jobs:
       - restore_cache:
           key: rust-{{ checksum "/rust/update-hashes/nightly-x86_64-unknown-linux-gnu" }}.0
 
-      # FIXME https://github.com/Manishearth/rust-clippy/issues/1778
-      #- run:
-      #    name: install clippy
-      #    command: |
-      #      #if [ ! -x /cargo/bin/cargo-fmt ]; then cargo install rustfmt ; fi
-      #      if [ ! -x /cargo/bin/cargo-clippy ]; then cargo install clippy ; fi
+      - run:
+          name: install clippy
+          command: if [ ! -x /cargo/bin/cargo-clippy ]; then cargo install clippy ; fi
+
+      # TODO when rustfmt is more stable.
+      # - run:
+      #     name: install rustfmt
+      #     command: if [ ! -x /cargo/bin/cargo-fmt ]; then cargo install rustfmt ; fi
 
       - save_cache:
           key: rust-{{ checksum "/rust/update-hashes/nightly-x86_64-unknown-linux-gnu" }}.0
@@ -44,11 +46,11 @@ jobs:
           paths:
             - target
 
-      #- run:
-      #    name: lint
-      #    command: cargo clippy
+      - run:
+          name: lint
+          command: cargo clippy
 
-      # TODO when rustfmt is more stable.'
-      #- run:
+      # TODO when rustfmt is more stable.
+      # - run:
       #    name: format
       #    command: cargo fmt -- --write-mode=diff

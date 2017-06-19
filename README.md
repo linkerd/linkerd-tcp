@@ -27,7 +27,7 @@ Status: _beta_
 
 1. Install [Rust and Cargo][install-rust].
 2. Run [namerd][namerd].  `./namerd.sh` fetches, configures, and runs namerd using a local-fs-backed discovery (in ./tmp.discovery).
-3. From this repository, run: `cargo run -- example.yml`
+3. From this repository, run: `rustup run nightly cargo run -- example.yml`
 
 We :heart: pull requests! See [CONTRIBUTING.md](CONTRIBUTING.md) for info on
 contributing changes.
@@ -75,6 +75,14 @@ routers:
   # Each router has a 'label' for reporting purposes.
   - label: default
 
+    # Each router is configured to resolve names.
+    # Currently, only namerd's HTTP interface is supported:
+    interpreter:
+      kind: io.l5d.namerd.http
+      baseUrl: http://localhost:4180
+      namespace: default
+      periodSecs: 20
+
     servers:
 
       # Each router has one or more 'servers' listening for incoming connections.
@@ -100,14 +108,6 @@ routers:
             certs:
               - cert.pem
               - ../eg-ca/ca/intermediate/certs/ca-chain.cert.pem
-
-    # Each router is configured to resolve names.
-    # Currently, only namerd's HTTP interface is supported:
-    interpreter:
-      kind: io.l5d.namerd.http
-      baseUrl: http://localhost:4180
-      namespace: default
-      periodSecs: 20
 
     # Clients may also be configured to perform a TLS handshake.
     client:

@@ -1,6 +1,6 @@
 use super::Balancer;
-use super::super::{ConfigError, Path};
-use super::super::connector::ConnectorFactory;
+use super::super::Path;
+use super::super::connector::{ConfigError, ConnectorFactory};
 use super::super::resolver::Resolve;
 use std::cell::RefCell;
 use std::rc::Rc;

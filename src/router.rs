@@ -1,4 +1,4 @@
-use super::{ConfigError, Path};
+use super::{Path, connector};
 use super::balancer::{Balancer, BalancerFactory};
 use super::resolver::Resolver;
 use futures::{Future, Poll, Async};
@@ -64,7 +64,7 @@ impl InnerRouter {
                 dst: &Path,
                 reactor: &Handle,
                 timer: &Timer)
-                -> Result<Balancer, ConfigError> {
+                -> Result<Balancer, connector::ConfigError> {
         // Try to get a balancer from the cache.
         if let Some(route) = self.routes.get(dst) {
             self.route_found.incr(1);
@@ -90,7 +90,7 @@ impl InnerRouter {
 ///
 ///
 #[derive(Clone)]
-pub struct Route(Option<Result<Balancer, ConfigError>>);
+pub struct Route(Option<Result<Balancer, connector::ConfigError>>);
 impl Future for Route {
     type Item = Balancer;
     type Error = io::Error;
@@ -99,7 +99,7 @@ impl Future for Route {
         match self.0
                   .take()
                   .expect("route must not be polled more than once") {
-            Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("config error: {}", e))),
+            Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("config error: {:?}", e))),
             Ok(selector) => Ok(Async::Ready(selector)),
         }
     }

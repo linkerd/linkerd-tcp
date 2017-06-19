@@ -1,7 +1,7 @@
 use super::Path;
 use super::connector::Connector;
 use super::resolver::Resolve;
-use futures::{Async, Future, Poll, Sink, Stream, unsync};
+use futures::{Async, Future, Poll, unsync};
 use ordermap::OrderMap;
 use std::{cmp, io, net};
 use std::collections::VecDeque;
@@ -46,10 +46,10 @@ pub fn new(reactor: &Handle,
                                      dst.clone(),
                                      connector,
                                      resolve,
+                                     rx,
                                      Endpoints::default(),
                                      metrics);
-    let dispatch = rx.forward(dispatcher.sink_map_err(|_| {}));
-    reactor.spawn(dispatch.map(|_| {}));
+    reactor.spawn(dispatcher.map_err(|_| {}));
     Balancer(tx)
 }
 
@@ -149,7 +149,7 @@ impl Endpoints {
 
     // TODO: we need to do some sort of probation deal to manage endpoints that are
     // retired.
-    pub fn update_resolved(&mut self, dst_name: &Path, resolved: &[WeightedAddr]) {
+    pub fn update_resolved(&mut self, resolved: &[WeightedAddr]) {
         let mut temp = {
             let sz = cmp::max(self.available.len(), self.retired.len());
             VecDeque::with_capacity(sz)
@@ -158,7 +158,7 @@ impl Endpoints {
         self.check_retired(&dsts, &mut temp);
         self.check_available(&dsts, &mut temp);
         self.check_failed(&dsts);
-        self.update_available_from_new(dst_name, dsts);
+        self.update_available_from_new(dsts);
     }
 
     /// Checks active endpoints.
@@ -223,9 +223,7 @@ impl Endpoints {
         }
     }
 
-    fn update_available_from_new(&mut self,
-                                 dst_name: &Path,
-                                 mut dsts: OrderMap<net::SocketAddr, f64>) {
+    fn update_available_from_new(&mut self, mut dsts: OrderMap<net::SocketAddr, f64>) {
         // Add new endpoints or update the base weights of existing endpoints.
         //let metrics = self.endpoint_metrics.clone();
         for (addr, weight) in dsts.drain(..) {
@@ -239,8 +237,7 @@ impl Endpoints {
                 continue;
             }
 
-            self.available
-                .insert(addr, endpoint::new(dst_name.clone(), addr, weight));
+            self.available.insert(addr, endpoint::new(addr, weight));
         }
     }
 
