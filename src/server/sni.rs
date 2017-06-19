@@ -6,9 +6,10 @@ use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
 
-pub fn new(identities: &Option<HashMap<String, TlsServerIdentityConfig>>,
-           default: &Option<TlsServerIdentityConfig>)
-           -> Result<Sni, Error> {
+pub fn new(
+    identities: &Option<HashMap<String, TlsServerIdentityConfig>>,
+    default: &Option<TlsServerIdentityConfig>,
+) -> Result<Sni, Error> {
     let n_identities = identities.as_ref().map(|ids| ids.len()).unwrap_or(0);
     if default.is_none() && n_identities > 0 {
         return Err(Error::NoIdentities);
@@ -45,20 +46,21 @@ fn to_chain_and_signer(id: &ServerIdentity) -> sign::CertChainAndSigner {
 }
 
 impl ResolvesServerCert for Sni {
-    fn resolve(&self,
-               server_name: Option<&str>,
-               _sigschemes: &[SignatureScheme])
-               -> Option<sign::CertChainAndSigner> {
+    fn resolve(
+        &self,
+        server_name: Option<&str>,
+        _sigschemes: &[SignatureScheme],
+    ) -> Option<sign::CertChainAndSigner> {
         debug!("finding cert resolver for {:?}", server_name);
         server_name
             .and_then(|n| {
-                          debug!("found match for {}", n);
-                          self.identities.get(n)
-                      })
+                debug!("found match for {}", n);
+                self.identities.get(n)
+            })
             .or_else(|| {
-                         debug!("reverting to default");
-                         self.default.as_ref()
-                     })
+                debug!("reverting to default");
+                self.default.as_ref()
+            })
             .map(to_chain_and_signer)
     }
 }
@@ -94,5 +96,7 @@ fn load_private_key(filename: &str) -> Box<sign::Signer> {
     let mut r = BufReader::new(keyfile);
     let keys = pemfile::rsa_private_keys(&mut r).unwrap();
     assert_eq!(keys.len(), 1);
-    Box::new(sign::RSASigner::new(&keys[0]).expect("Invalid RSA private key"))
+    Box::new(sign::RSASigner::new(&keys[0]).expect(
+        "Invalid RSA private key",
+    ))
 }

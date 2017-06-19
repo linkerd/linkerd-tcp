@@ -52,7 +52,7 @@ impl ConnectorFactoryConfig {
                         }
                         Some(ref pfx) => {
                             pfx_configs.push((pfx.clone().into(), cfg.clone()));
-                        } 
+                        }
                     }
                 }
                 Ok(ConnectorFactory::new_prefixed(pfx_configs))
@@ -72,7 +72,7 @@ pub struct ConnectorConfig {
     pub min_connections: Option<usize>,
 
     pub fail_fast: Option<FailFastConfig>,
-    
+
     // TODO requeue_budget: Option<RequeueBudget>
 }
 
@@ -103,12 +103,14 @@ impl ConnectorConfig {
                 .unwrap_or(DEFAULT_FAILURE_PENALTY_SECS);
             time::Duration::from_secs(s)
         };
-        Ok(super::new(connect_timeout,
-                      tls,
-                      max_waiters,
-                      min_conns,
-                      max_fails,
-                      fail_penalty))
+        Ok(super::new(
+            connect_timeout,
+            tls,
+            max_waiters,
+            min_conns,
+            max_fails,
+            fail_penalty,
+        ))
     }
 
     pub fn update(&mut self, other: &ConnectorConfig) {

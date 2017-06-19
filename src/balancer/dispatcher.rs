@@ -13,16 +13,18 @@ use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
-pub fn new<S>(reactor: Handle,
-              timer: Timer,
-              dst_name: Path,
-              connector: Connector,
-              resolve: Resolve,
-              waiters_rx: S,
-              endpoints: Endpoints,
-              metrics: &tacho::Scope)
-              -> Dispatcher<S>
-    where S: Stream<Item = Waiter>
+pub fn new<S>(
+    reactor: Handle,
+    timer: Timer,
+    dst_name: Path,
+    connector: Connector,
+    resolve: Resolve,
+    waiters_rx: S,
+    endpoints: Endpoints,
+    metrics: &tacho::Scope,
+) -> Dispatcher<S>
+where
+    S: Stream<Item = Waiter>,
 {
     Dispatcher {
         reactor,
@@ -91,7 +93,8 @@ pub struct Dispatcher<W> {
 }
 
 impl<W> Dispatcher<W>
-    where W: Stream<Item = Waiter>
+where
+    W: Stream<Item = Waiter>,
 {
     /// Receives and attempts to dispatch new waiters.
     ///
@@ -147,14 +150,18 @@ impl<W> Dispatcher<W>
     fn update_endpoints(&mut self) {
         if let Some(addrs) = self.poll_resolve() {
             self.endpoints.update_resolved(&addrs);
-            debug!("balancer updated: available={} failed={}, retired={}",
-                   self.endpoints.available().len(),
-                   self.endpoints.failed().len(),
-                   self.endpoints.retired().len());
+            debug!(
+                "balancer updated: available={} failed={}, retired={}",
+                self.endpoints.available().len(),
+                self.endpoints.failed().len(),
+                self.endpoints.retired().len()
+            );
         }
 
-        self.endpoints
-            .update_failed(self.fail_limit, self.fail_penalty);
+        self.endpoints.update_failed(
+            self.fail_limit,
+            self.fail_penalty,
+        );
 
     }
 
@@ -213,8 +220,11 @@ impl<W> Dispatcher<W>
                 Some(ep) => {
                     self.metrics.attempts.incr(1);
                     let mut conn = {
-                        let sock = self.connector
-                            .connect(&ep.peer_addr(), &self.reactor, &self.timer);
+                        let sock = self.connector.connect(
+                            &ep.peer_addr(),
+                            &self.reactor,
+                            &self.timer,
+                        );
                         let c = ep.connect(sock, &self.metrics.connection_duration);
                         self.metrics.connect_latency.time(c)
                     };
@@ -242,9 +252,11 @@ impl<W> Dispatcher<W>
     }
 
     fn dispatch_connected_to_waiters(&mut self) {
-        debug!("dispatching {} connections to {} waiters",
-               self.connected.len(),
-               self.waiters.len());
+        debug!(
+            "dispatching {} connections to {} waiters",
+            self.connected.len(),
+            self.waiters.len()
+        );
         while let Some(conn) = self.connected.pop_front() {
             if let Err(conn) = self.dispatch_to_next_waiter(conn) {
                 self.connected.push_front(conn);
@@ -253,9 +265,10 @@ impl<W> Dispatcher<W>
         }
     }
 
-    fn dispatch_to_next_waiter(&mut self,
-                               conn: endpoint::Connection)
-                               -> Result<(), endpoint::Connection> {
+    fn dispatch_to_next_waiter(
+        &mut self,
+        conn: endpoint::Connection,
+    ) -> Result<(), endpoint::Connection> {
         match self.waiters.pop_front() {
             None => Err(conn),
             Some(waiter) => {
@@ -309,7 +322,8 @@ impl<W> Dispatcher<W>
 /// Buffers up to `max_waiters` concurrent connection requests, along with corresponding
 /// connection attempts.
 impl<S> Future for Dispatcher<S>
-    where S: Stream<Item = Waiter>
+where
+    S: Stream<Item = Waiter>,
 {
     type Item = ();
     type Error = io::Error;
@@ -361,9 +375,10 @@ impl<S> Future for Dispatcher<S>
 ///
 /// Two endpoints are chosen randomly and return the lesser-loaded endpoint.
 /// If no endpoints are available, `None` is retruned.
-fn select_endpoint<'r, 'e, R: Rng>(rng: &'r mut R,
-                                   available: &'e EndpointMap)
-                                   -> Option<&'e Endpoint> {
+fn select_endpoint<'r, 'e, R: Rng>(
+    rng: &'r mut R,
+    available: &'e EndpointMap,
+) -> Option<&'e Endpoint> {
     match available.len() {
         0 => None,
         1 => {
@@ -394,22 +409,26 @@ fn select_endpoint<'r, 'e, R: Rng>(rng: &'r mut R,
             let score1 = (load1 + 1) as f64 * (1.0 - weight1);
 
             if score0 <= score1 {
-                trace!("dst: {} {}*{} (not {} {}*{})",
-                       addr0,
-                       load0,
-                       weight0,
-                       addr1,
-                       load1,
-                       weight1);
+                trace!(
+                    "dst: {} {}*{} (not {} {}*{})",
+                    addr0,
+                    load0,
+                    weight0,
+                    addr1,
+                    load1,
+                    weight1
+                );
                 Some(ep0)
             } else {
-                trace!("dst: {} {}*{} (not {} {}*{})",
-                       addr1,
-                       load1,
-                       weight1,
-                       addr0,
-                       load0,
-                       weight0);
+                trace!(
+                    "dst: {} {}*{} (not {} {}*{})",
+                    addr1,
+                    load1,
+                    weight1,
+                    addr0,
+                    load0,
+                    weight0
+                );
                 Some(ep1)
             }
         }

@@ -33,22 +33,25 @@ impl WeightedAddr {
     }
 }
 
-pub fn new(reactor: &Handle,
-           timer: &Timer,
-           dst: &Path,
-           connector: Connector,
-           resolve: Resolve,
-           metrics: &tacho::Scope)
-           -> Balancer {
+pub fn new(
+    reactor: &Handle,
+    timer: &Timer,
+    dst: &Path,
+    connector: Connector,
+    resolve: Resolve,
+    metrics: &tacho::Scope,
+) -> Balancer {
     let (tx, rx) = unsync::mpsc::unbounded();
-    let dispatcher = dispatcher::new(reactor.clone(),
-                                     timer.clone(),
-                                     dst.clone(),
-                                     connector,
-                                     resolve,
-                                     rx,
-                                     Endpoints::default(),
-                                     metrics);
+    let dispatcher = dispatcher::new(
+        reactor.clone(),
+        timer.clone(),
+        dst.clone(),
+        connector,
+        resolve,
+        rx,
+        Endpoints::default(),
+        metrics,
+    );
     reactor.spawn(dispatcher.map_err(|_| {}));
     Balancer(tx)
 }
@@ -71,9 +74,9 @@ impl Future for Connect {
     type Item = endpoint::Connection;
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let mut recv = self.0
-            .take()
-            .expect("connect must not be polled after completion")?;
+        let mut recv = self.0.take().expect(
+            "connect must not be polled after completion",
+        )?;
         match recv.poll() {
             Err(_) => Err(io::Error::new(io::ErrorKind::Interrupted, "canceled")),
             Ok(Async::Ready(conn)) => Ok(Async::Ready(conn)),
@@ -162,9 +165,11 @@ impl Endpoints {
     }
 
     /// Checks active endpoints.
-    fn check_available(&mut self,
-                       dsts: &OrderMap<net::SocketAddr, f64>,
-                       temp: &mut VecDeque<Endpoint>) {
+    fn check_available(
+        &mut self,
+        dsts: &OrderMap<net::SocketAddr, f64>,
+        temp: &mut VecDeque<Endpoint>,
+    ) {
         for (addr, ep) in self.available.drain(..) {
             if dsts.contains_key(&addr) {
                 temp.push_back(ep);
@@ -185,9 +190,11 @@ impl Endpoints {
     ///
     /// Endpoints are either salvaged backed into the active pool, maintained as
     /// retired if still active, or dropped if inactive.
-    fn check_retired(&mut self,
-                     dsts: &OrderMap<net::SocketAddr, f64>,
-                     temp: &mut VecDeque<Endpoint>) {
+    fn check_retired(
+        &mut self,
+        dsts: &OrderMap<net::SocketAddr, f64>,
+        temp: &mut VecDeque<Endpoint>,
+    ) {
         for (addr, ep) in self.retired.drain(..) {
             if dsts.contains_key(&addr) {
                 self.available.insert(addr, ep);

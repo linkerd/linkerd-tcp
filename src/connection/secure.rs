@@ -37,7 +37,8 @@ impl<S: Session> fmt::Debug for SecureStream<S> {
 }
 
 impl<S> SecureStream<S>
-    where S: Session
+where
+    S: Session,
 {
     fn new(tcp: TcpStream, session: S) -> SecureStream<S> {
         SecureStream {
@@ -105,7 +106,8 @@ impl<S> SecureStream<S>
 }
 
 impl<S> Read for SecureStream<S>
-    where S: Session
+where
+    S: Session,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         trace!("read: {}", self.peer);
@@ -129,7 +131,8 @@ impl<S> Read for SecureStream<S>
 }
 
 impl<S> Write for SecureStream<S>
-    where S: Session
+where
+    S: Session,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         trace!("write: {}", self.peer);
@@ -158,7 +161,8 @@ impl<S> Write for SecureStream<S>
 }
 
 impl<S> AsyncWrite for SecureStream<S>
-    where S: Session
+where
+    S: Session,
 {
     fn shutdown(&mut self) -> Poll<(), io::Error> {
         self.session.send_close_notify();
@@ -176,9 +180,9 @@ impl Future for ServerHandshake {
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         trace!("{:?}.poll()", self);
-        let mut ss = self.0
-            .take()
-            .expect("poll must not be called after completion");
+        let mut ss = self.0.take().expect(
+            "poll must not be called after completion",
+        );
 
         // Read and write the handshake.
         {
@@ -189,13 +193,14 @@ impl Future for ServerHandshake {
                     return Err(e);
                 };
                 trace!("server handshake: write_session_to_tcp: {}", ss.peer);
-                wrote =
-                    ss.session.wants_write() &&
+                wrote = ss.session.wants_write() &&
                     match ss.write_session_to_tcp() {
                         Ok(sz) => {
-                            trace!("server handshake: write_session_to_tcp: {}: wrote {}",
-                                   ss.peer,
-                                   sz);
+                            trace!(
+                                "server handshake: write_session_to_tcp: {}: wrote {}",
+                                ss.peer,
+                                sz
+                            );
                             sz > 0
                         }
                         Err(e) => {
@@ -221,14 +226,18 @@ impl Future for ServerHandshake {
             trace!("server handshake: write_session_to_tcp: {}: final", ss.peer);
             match ss.write_session_to_tcp() {
                 Ok(sz) => {
-                    trace!("server handshake: write_session_to_tcp: {}: final: wrote {}B",
-                           ss.peer,
-                           sz);
+                    trace!(
+                        "server handshake: write_session_to_tcp: {}: final: wrote {}B",
+                        ss.peer,
+                        sz
+                    );
                 }
                 Err(e) => {
-                    trace!("server handshake: write_session_to_tcp: {}: final: {}",
-                           ss.peer,
-                           e);
+                    trace!(
+                        "server handshake: write_session_to_tcp: {}: final: {}",
+                        ss.peer,
+                        e
+                    );
                     if e.kind() != io::ErrorKind::WouldBlock {
                         return Err(e);
                     }
@@ -250,9 +259,9 @@ impl Future for ClientHandshake {
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         trace!("{:?}.poll()", self);
-        let mut ss = self.0
-            .take()
-            .expect("poll must not be called after completion");
+        let mut ss = self.0.take().expect(
+            "poll must not be called after completion",
+        );
 
         // Read and write the handshake.
         {
@@ -262,43 +271,53 @@ impl Future for ClientHandshake {
                 trace!("client handshake: read_tcp_to_session: {}", ss.peer);
                 read_ok = match ss.read_tcp_to_session() {
                     None => {
-                        trace!("client handshake: read_tcp_to_session: {}: not ready",
-                               ss.peer);
+                        trace!(
+                            "client handshake: read_tcp_to_session: {}: not ready",
+                            ss.peer
+                        );
                         false
                     }
                     Some(Ok(sz)) => {
-                        trace!("client handshake: read_tcp_to_session: {}: {}B",
-                               ss.peer,
-                               sz);
+                        trace!(
+                            "client handshake: read_tcp_to_session: {}: {}B",
+                            ss.peer,
+                            sz
+                        );
                         sz > 0
                     }
                     Some(Err(e)) => {
-                        trace!("client handshake: read_tcp_to_session: {}: error: {}",
-                               ss.peer,
-                               e);
+                        trace!(
+                            "client handshake: read_tcp_to_session: {}: error: {}",
+                            ss.peer,
+                            e
+                        );
                         return Err(e);
                     }
                 };
 
                 trace!("client handshake: write_session_to_tcp: {}", ss.peer);
                 write_ok = ss.session.wants_write() &&
-                           match ss.write_session_to_tcp() {
-                               Ok(sz) => {
-                                   trace!("client handshake: write_session_to_tcp: {}: wrote {}",
-                                          ss.peer_addr(),
-                                          sz);
-                                   sz > 0
-                               }
-                               Err(e) => {
-                                   trace!("client handshake: write_session_to_tcp: {}: {}",
-                                          ss.peer_addr(),
-                                          e);
-                                   if e.kind() != io::ErrorKind::WouldBlock {
-                                       return Err(e);
-                                   }
-                                   false
-                               }
-                           };
+                    match ss.write_session_to_tcp() {
+                        Ok(sz) => {
+                            trace!(
+                                "client handshake: write_session_to_tcp: {}: wrote {}",
+                                ss.peer_addr(),
+                                sz
+                            );
+                            sz > 0
+                        }
+                        Err(e) => {
+                            trace!(
+                                "client handshake: write_session_to_tcp: {}: {}",
+                                ss.peer_addr(),
+                                e
+                            );
+                            if e.kind() != io::ErrorKind::WouldBlock {
+                                return Err(e);
+                            }
+                            false
+                        }
+                    };
             }
         }
 

@@ -70,13 +70,14 @@ impl Tls {
     }
 }
 
-fn new(connect_timeout: Option<time::Duration>,
-       tls: Option<Tls>,
-       max_waiters: usize,
-       min_connections: usize,
-       fail_limit: usize,
-       fail_penalty: time::Duration)
-       -> Connector {
+fn new(
+    connect_timeout: Option<time::Duration>,
+    tls: Option<Tls>,
+    max_waiters: usize,
+    min_connections: usize,
+    fail_limit: usize,
+    fail_penalty: time::Duration,
+) -> Connector {
     Connector {
         connect_timeout,
         tls,
@@ -114,7 +115,8 @@ impl Connector {
     }
 
     fn timeout<F>(&self, fut: F, timer: &Timer) -> Box<Future<Item = F::Item, Error = io::Error>>
-        where F: Future<Error = io::Error> + 'static
+    where
+        F: Future<Error = io::Error> + 'static,
     {
         match self.connect_timeout {
             None => Box::new(fut),
@@ -131,8 +133,9 @@ impl Connector {
             }
             Some(ref tls) => {
                 let tls = tls.clone();
-                let f = tcp.and_then(move |tcp| tls.handshake(tcp))
-                    .map(socket::secure_client);
+                let f = tcp.and_then(move |tcp| tls.handshake(tcp)).map(
+                    socket::secure_client,
+                );
                 Box::new(self.timeout(f, timer))
             }
         };

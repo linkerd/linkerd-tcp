@@ -40,11 +40,12 @@ pub struct Namerd {
 }
 
 impl Namerd {
-    pub fn new(base_url: String,
-               period: time::Duration,
-               namespace: String,
-               metrics: tacho::Scope)
-               -> Namerd {
+    pub fn new(
+        base_url: String,
+        period: time::Duration,
+        namespace: String,
+        metrics: tacho::Scope,
+    ) -> Namerd {
         Namerd {
             base_url: format!("{}/api/1/resolve/{}", base_url, namespace),
             stats: Stats::new(metrics),
@@ -157,13 +158,13 @@ fn request<C: HyperConnect>(client: Rc<Client<C>>, uri: Uri, stats: Stats) -> Ad
         .request_latency
         .time(client.get(uri).then(handle_response))
         .then(move |rsp| {
-                  if rsp.is_ok() {
-                      stats.success_count.incr(1);
-                  } else {
-                      stats.failure_count.incr(1);
-                  }
-                  rsp
-              });
+            if rsp.is_ok() {
+                stats.success_count.incr(1);
+            } else {
+                stats.failure_count.incr(1);
+            }
+            rsp
+        });
     Box::new(rsp)
 }
 
@@ -189,12 +190,12 @@ fn parse_body(body: Body) -> AddrsFuture {
     trace!("parsing namerd response");
     body.collect()
         .then(|res| match res {
-                  Ok(ref chunks) => parse_chunks(chunks),
-                  Err(e) => {
-                      info!("error: {}", e);
-                      Err(Error::Hyper(e))
-                  }
-              })
+            Ok(ref chunks) => parse_chunks(chunks),
+            Err(e) => {
+                info!("error: {}", e);
+                Err(Error::Hyper(e))
+            }
+        })
         .boxed()
 }
 

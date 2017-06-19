@@ -106,9 +106,9 @@ impl AppConfig {
         let mut resolvers = VecDeque::with_capacity(self.routers.len());
         for config in self.routers.drain(..) {
             let mut r = config.into_router(buf.clone(), &metrics)?;
-            let e = r.resolver_executor
-                .take()
-                .expect("router missing resolver executor");
+            let e = r.resolver_executor.take().expect(
+                "router missing resolver executor",
+            );
             routers.push_back(r);
             resolvers.push_back(e);
         }
@@ -116,14 +116,12 @@ impl AppConfig {
         // Read the admin server configuration and bundle it an AdminRunner.
         let admin = {
             let addr = {
-                let ip = self.admin
-                    .as_ref()
-                    .and_then(|a| a.ip)
-                    .unwrap_or_else(localhost_addr);
-                let port = self.admin
-                    .as_ref()
-                    .and_then(|a| a.port)
-                    .unwrap_or(DEFAULT_ADMIN_PORT);
+                let ip = self.admin.as_ref().and_then(|a| a.ip).unwrap_or_else(
+                    localhost_addr,
+                );
+                let port = self.admin.as_ref().and_then(|a| a.port).unwrap_or(
+                    DEFAULT_ADMIN_PORT,
+                );
                 net::SocketAddr::new(ip, port)
             };
             let grace = {
@@ -150,9 +148,9 @@ impl AppConfig {
         };
 
         Ok(App {
-               routers: routers,
-               admin: admin,
-           })
+            routers: routers,
+            admin: admin,
+        })
     }
 }
 
@@ -190,10 +188,11 @@ pub struct RouterConfig {
 
 impl RouterConfig {
     /// Consumes and validates this configuration to produce a router initializer.
-    fn into_router(mut self,
-                   buf: Rc<RefCell<Vec<u8>>>,
-                   metrics: &tacho::Scope)
-                   -> Result<RouterSpawner> {
+    fn into_router(
+        mut self,
+        buf: Rc<RefCell<Vec<u8>>>,
+        metrics: &tacho::Scope,
+    ) -> Result<RouterSpawner> {
         let metrics = metrics.clone().labeled("rt", self.label);
 
         // Each router has its own resolver/executor pair. The resolver is used by the
@@ -225,9 +224,9 @@ impl RouterConfig {
         }
 
         Ok(RouterSpawner {
-               servers: servers,
-               resolver_executor: Some(resolver_exec),
-           })
+            servers: servers,
+            resolver_executor: Some(resolver_exec),
+        })
     }
 }
 
@@ -243,9 +242,11 @@ impl RouterSpawner {
     /// Returns successfully if all servers have been bound and spawned correctly.
     pub fn spawn(mut self, reactor: &Handle, timer: &Timer) -> Result<()> {
         while let Some(unbound) = self.servers.pop_front() {
-            info!("routing on {} to {}",
-                  unbound.listen_addr(),
-                  unbound.dst_name());
+            info!(
+                "routing on {} to {}",
+                unbound.listen_addr(),
+                unbound.dst_name()
+            );
             let bound = unbound.bind(reactor, timer).expect("failed to bind server");
             reactor.spawn(bound.map_err(|_| {}));
         }
@@ -313,17 +314,16 @@ impl AdminRunner {
         let prom_export = Rc::new(RefCell::new(String::with_capacity(8 * 1024)));
         let reporting = {
             let prom_export = prom_export.clone();
-            timer
-                .interval(metrics_interval)
-                .map_err(|_| {})
-                .for_each(move |_| {
-                              let report = reporter.take();
-                              let mut prom_export = prom_export.borrow_mut();
-                              prom_export.clear();
-                              tacho::prometheus::write(&mut *prom_export, &report)
-                                  .expect("error foramtting metrics for prometheus");
-                              Ok(())
-                          })
+            timer.interval(metrics_interval).map_err(|_| {}).for_each(
+                move |_| {
+                    let report = reporter.take();
+                    let mut prom_export = prom_export.borrow_mut();
+                    prom_export.clear();
+                    tacho::prometheus::write(&mut *prom_export, &report)
+                        .expect("error foramtting metrics for prometheus");
+                    Ok(())
+                },
+            )
         };
         handle.spawn(reporting);
 
@@ -336,12 +336,10 @@ impl AdminRunner {
             let server =
                 admin::Admin::new(prom_export, closer, grace, handle.clone(), timer.clone());
             let http = Http::new();
-            listener
-                .incoming()
-                .for_each(move |(tcp, src)| {
-                              http.bind_connection(&handle, tcp, src, server.clone());
-                              Ok(())
-                          })
+            listener.incoming().for_each(move |(tcp, src)| {
+                http.bind_connection(&handle, tcp, src, server.clone());
+                Ok(())
+            })
         };
         reactor.run(serving).unwrap();
 

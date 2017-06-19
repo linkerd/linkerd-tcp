@@ -72,29 +72,29 @@ impl Endpoint {
             let duration = duration.clone();
             debug!("{}: connecting", peer_addr);
             sock.then(move |res| match res {
-                          Err(e) => {
-                              error!("{}: connection failed: {}", peer_addr, e);
-                              let mut s = state.borrow_mut();
-                              s.consecutive_failures += 1;
-                              s.pending_conns -= 1;
-                              Err(e)
-                          }
-                          Ok(sock) => {
-                              debug!("{}: connected", peer_addr);
-                              {
-                                  let mut s = state.borrow_mut();
-                                  s.consecutive_failures = 0;
-                                  s.pending_conns -= 1;
-                                  s.open_conns += 1;
-                              }
-                              let ctx = Ctx {
-                                  state,
-                                  duration,
-                                  start: Instant::now(),
-                              };
-                              Ok(Connection::new(sock, ctx))
-                          }
-                      })
+                Err(e) => {
+                    error!("{}: connection failed: {}", peer_addr, e);
+                    let mut s = state.borrow_mut();
+                    s.consecutive_failures += 1;
+                    s.pending_conns -= 1;
+                    Err(e)
+                }
+                Ok(sock) => {
+                    debug!("{}: connected", peer_addr);
+                    {
+                        let mut s = state.borrow_mut();
+                        s.consecutive_failures = 0;
+                        s.pending_conns -= 1;
+                        s.open_conns += 1;
+                    }
+                    let ctx = Ctx {
+                        state,
+                        duration,
+                        start: Instant::now(),
+                    };
+                    Ok(Connection::new(sock, ctx))
+                }
+            })
         };
 
         let mut state = self.state.borrow_mut();
