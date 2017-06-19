@@ -27,7 +27,7 @@ Status: _beta_
 
 1. Install [Rust and Cargo][install-rust].
 2. Run [namerd][namerd].  `./namerd.sh` fetches, configures, and runs namerd using a local-fs-backed discovery (in ./tmp.discovery).
-3. From this repository, run: `rustup run nightly cargo run -- example.yml`
+3. From this repository, run: `cargo run -- example.yml`
 
 We :heart: pull requests! See [CONTRIBUTING.md](CONTRIBUTING.md) for info on
 contributing changes.
