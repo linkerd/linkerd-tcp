@@ -55,8 +55,9 @@ impl Resolver {
         let addrs = {
             let reqs = &self.requests;
             let (tx, rx) = mpsc::unbounded();
-            reqs.send((path, tx))
-                .expect("failed to send resolution request");
+            reqs.send((path, tx)).expect(
+                "failed to send resolution request",
+            );
             rx
         };
         Resolve(addrs)
@@ -83,16 +84,15 @@ impl Executor {
     pub fn execute(self, handle: &Handle, timer: &Timer) -> Execute {
         let handle = handle.clone();
         let namerd = self.namerd.with_client(&handle, timer);
-        let f = self.requests
-            .for_each(move |(path, rsp_tx)| {
-                // Stream namerd resolutions to the response channel.
-                let resolve = namerd.resolve(path.as_str());
-                let respond = resolve.forward(rsp_tx).map_err(|_| {}).map(|_| {});
-                // Do all of this work in another task so that we can receive
-                // additional requests.
-                handle.spawn(respond);
-                Ok(())
-            });
+        let f = self.requests.for_each(move |(path, rsp_tx)| {
+            // Stream namerd resolutions to the response channel.
+            let resolve = namerd.resolve(path.as_str());
+            let respond = resolve.forward(rsp_tx).map_err(|_| {}).map(|_| {});
+            // Do all of this work in another task so that we can receive
+            // additional requests.
+            handle.spawn(respond);
+            Ok(())
+        });
         Execute(Box::new(f))
     }
 }

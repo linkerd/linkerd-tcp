@@ -32,24 +32,29 @@ impl WeightedAddr {
     }
 }
 
-pub fn new(reactor: &Handle,
-           timer: &Timer,
-           dst: &Path,
-           connector: Connector,
-           resolve: Resolve,
-           metrics: &tacho::Scope)
-           -> Balancer {
+pub fn new(
+    reactor: &Handle,
+    timer: &Timer,
+    dst: &Path,
+    connector: Connector,
+    resolve: Resolve,
+    metrics: &tacho::Scope,
+) -> Balancer {
     let (tx, rx) = unsync::mpsc::unbounded();
-    let endpoints = Endpoints::new(dst.clone(),
-                                   resolve,
-                                   connector.failure_limit(),
-                                   connector.failure_penalty(),
-                                   &metrics.clone().prefixed("endpoint"));
-    let dispatcher = dispatcher::new(reactor.clone(),
-                                     timer.clone(),
-                                     connector,
-                                     endpoints,
-                                     metrics);
+    let endpoints = Endpoints::new(
+        dst.clone(),
+        resolve,
+        connector.failure_limit(),
+        connector.failure_penalty(),
+        &metrics.clone().prefixed("endpoint"),
+    );
+    let dispatcher = dispatcher::new(
+        reactor.clone(),
+        timer.clone(),
+        connector,
+        endpoints,
+        metrics,
+    );
     reactor.spawn(rx.forward(dispatcher).map(|_| {}));
     Balancer(tx)
 }
@@ -72,9 +77,9 @@ impl Future for Connect {
     type Item = endpoint::Connection;
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let mut recv = self.0
-            .take()
-            .expect("connect must not be polled after completion")?;
+        let mut recv = self.0.take().expect(
+            "connect must not be polled after completion",
+        )?;
         match recv.poll() {
             Err(_) => Err(io::Error::new(io::ErrorKind::Interrupted, "canceled")),
             Ok(Async::Ready(conn)) => Ok(Async::Ready(conn)),

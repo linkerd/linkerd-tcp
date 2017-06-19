@@ -8,12 +8,14 @@ use std::rc::Rc;
 //use tacho;
 use tokio_io::AsyncWrite;
 
-pub fn new<R, W>(reader: Rc<RefCell<Connection<R>>>,
-                 writer: Rc<RefCell<Connection<W>>>,
-                 buf: Rc<RefCell<Vec<u8>>>)
-                 -> HalfDuplex<R, W>
-    where R: Ctx,
-          W: Ctx
+pub fn new<R, W>(
+    reader: Rc<RefCell<Connection<R>>>,
+    writer: Rc<RefCell<Connection<W>>>,
+    buf: Rc<RefCell<Vec<u8>>>,
+) -> HalfDuplex<R, W>
+where
+    R: Ctx,
+    W: Ctx,
 {
     HalfDuplex {
         reader,
@@ -53,8 +55,9 @@ pub struct HalfDuplex<R, W> {
 }
 
 impl<R, W> Future for HalfDuplex<R, W>
-    where R: Ctx,
-          W: Ctx
+where
+    R: Ctx,
+    W: Ctx,
 {
     type Item = usize;
     type Error = io::Error;

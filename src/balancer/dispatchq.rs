@@ -80,18 +80,22 @@ impl<T> Sink for Sender<T> {
             }
 
             sendq.push_back(item);
-            trace!("start_send: dispatching sendq={}/{} recvq={}",
-                   sendq.len(),
-                   sendq.capacity(),
-                   *self.pending.borrow());
+            trace!(
+                "start_send: dispatching sendq={}/{} recvq={}",
+                sendq.len(),
+                sendq.capacity(),
+                *self.pending.borrow()
+            );
         }
         self.dispatch();
         {
             let sendq = self.sendq.borrow();
-            trace!("start_send: dispatched sendq={}/{} recvq={}",
-                   sendq.len(),
-                   sendq.capacity(),
-                   *self.pending.borrow());
+            trace!(
+                "start_send: dispatched sendq={}/{} recvq={}",
+                sendq.len(),
+                sendq.capacity(),
+                *self.pending.borrow()
+            );
         }
         Ok(AsyncSink::Ready)
     }
@@ -99,19 +103,23 @@ impl<T> Sink for Sender<T> {
     fn poll_complete(&mut self) -> Poll<(), ()> {
         {
             let sendq = self.sendq.borrow();
-            trace!("poll_complete: dispatching sendq={}/{} recvq={}",
-                   sendq.len(),
-                   sendq.capacity(),
-                   *self.pending.borrow());
+            trace!(
+                "poll_complete: dispatching sendq={}/{} recvq={}",
+                sendq.len(),
+                sendq.capacity(),
+                *self.pending.borrow()
+            );
         }
         let res = self.dispatch();
         {
             let sendq = self.sendq.borrow();
-            trace!("poll_complete: dispatched sendq={}/{} recvq={} ready={}",
-                   sendq.len(),
-                   sendq.capacity(),
-                   *self.pending.borrow(),
-                   res.is_ready());
+            trace!(
+                "poll_complete: dispatched sendq={}/{} recvq={} ready={}",
+                sendq.len(),
+                sendq.capacity(),
+                *self.pending.borrow(),
+                res.is_ready()
+            );
         }
         Ok(res)
     }
@@ -154,9 +162,11 @@ impl<T> Future for Recv<T> {
     type Item = T;
     type Error = ();
     fn poll(&mut self) -> Poll<T, ()> {
-        trace!("recv: poll (rx={}, pending={})",
-               self.rx.is_some(),
-               *self.pending.borrow());
+        trace!(
+            "recv: poll (rx={}, pending={})",
+            self.rx.is_some(),
+            *self.pending.borrow()
+        );
         let mut rx = match self.rx.take() {
             Some(rx) => rx,
             None => {
@@ -172,9 +182,11 @@ impl<T> Future for Recv<T> {
         };
 
         let res = rx.poll().map_err(|_| {})?;
-        trace!("recv: poll (ready={}, pending={})",
-               res.is_ready(),
-               *self.pending.borrow());
+        trace!(
+            "recv: poll (ready={}, pending={})",
+            res.is_ready(),
+            *self.pending.borrow()
+        );
         if !res.is_ready() {
             self.rx = Some(rx);
         }

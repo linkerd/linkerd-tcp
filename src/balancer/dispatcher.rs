@@ -10,12 +10,13 @@ use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
-pub fn new(reactor: Handle,
-           timer: Timer,
-           connector: Connector,
-           endpoints: Endpoints,
-           metrics: &tacho::Scope)
-           -> Dispatcher {
+pub fn new(
+    reactor: Handle,
+    timer: Timer,
+    connector: Connector,
+    endpoints: Endpoints,
+    metrics: &tacho::Scope,
+) -> Dispatcher {
     let (dispatch_tx, dispatch_rx) = dispatchq::channel(connector.max_waiters());
     Dispatcher {
         reactor,
@@ -52,8 +53,10 @@ impl Sink for Dispatcher {
         let res = self.dispatch_tx.start_send(w);
         self.init_connecting();
         self.record(t0);
-        debug!("start_send: dispatched waiter ready={}",
-               res.as_ref().map(|a| a.is_ready()).unwrap_or(false));
+        debug!(
+            "start_send: dispatched waiter ready={}",
+            res.as_ref().map(|a| a.is_ready()).unwrap_or(false)
+        );
         res
     }
 
@@ -63,9 +66,11 @@ impl Sink for Dispatcher {
         let dispatch_ready = self.dispatch_tx.poll_complete()?.is_ready();
         let connecting_ready = self.init_connecting().is_ready();
         self.record(t0);
-        debug!("poll_complete: dispatch={} connect={}",
-               dispatch_ready,
-               connecting_ready);
+        debug!(
+            "poll_complete: dispatch={} connect={}",
+            dispatch_ready,
+            connecting_ready
+        );
         if dispatch_ready && connecting_ready {
             Ok(Async::Ready(()))
         } else {
@@ -77,8 +82,10 @@ impl Sink for Dispatcher {
 impl Dispatcher {
     fn init_connecting(&mut self) -> Async<()> {
         let needed = {
-            let required = cmp::max(self.dispatch_tx.sendq_size(),
-                                    self.connector.min_connections());
+            let required = cmp::max(
+                self.dispatch_tx.sendq_size(),
+                self.connector.min_connections(),
+            );
             let listeners = self.dispatch_rx.pending();
             let needed = if listeners < required {
                 required - listeners
@@ -111,41 +118,47 @@ impl Dispatcher {
                 Some(ep) => {
                     self.metrics.attempts.incr(1);
                     let conn = {
-                        let sock = self.connector
-                            .connect(&ep.peer_addr(), &self.reactor, &self.timer);
+                        let sock = self.connector.connect(
+                            &ep.peer_addr(),
+                            &self.reactor,
+                            &self.timer,
+                        );
                         let c = ep.connect(sock, &self.metrics.connection_duration);
                         self.metrics.connect_latency.time(c)
                     };
-                    Dispatcher::dispatch(conn,
-                                         &self.reactor,
-                                         self.dispatch_rx.clone(),
-                                         self.metrics.connects.clone(),
-                                         self.metrics.failures.clone());
+                    Dispatcher::dispatch(
+                        conn,
+                        &self.reactor,
+                        self.dispatch_rx.clone(),
+                        self.metrics.connects.clone(),
+                        self.metrics.failures.clone(),
+                    );
                 }
             }
         }
         Async::Ready(())
     }
 
-    fn dispatch<C>(conn: C,
-                   reactor: &Handle,
-                   dispatch_rx: dispatchq::Receiver<Waiter>,
-                   connects: tacho::Counter,
-                   failures: Failures)
-        where C: Future<Item = Connection, Error = io::Error> + 'static
+    fn dispatch<C>(
+        conn: C,
+        reactor: &Handle,
+        dispatch_rx: dispatchq::Receiver<Waiter>,
+        connects: tacho::Counter,
+        failures: Failures,
+    ) where
+        C: Future<Item = Connection, Error = io::Error> + 'static,
     {
         let task = conn.map_err(move |e| {
-                                    error!("connection error: {}", e);
-                                    failures.record(&e);
-                                })
-            .and_then(move |dst| {
+            error!("connection error: {}", e);
+            failures.record(&e);
+        }).and_then(move |dst| {
                 debug!("receiving inbound waiter for {}", dst.peer_addr());
                 connects.incr(1);
                 let rx = dispatch_rx.recv();
                 let tx = rx.and_then(move |w| {
-                                         trace!("dispatching outbound to waiter");
-                                         w.send(dst).map_err(|_| {})
-                                     });
+                    trace!("dispatching outbound to waiter");
+                    w.send(dst).map_err(|_| {})
+                });
                 tx.map(|_| trace!("dispatched outbound to waiter"))
                     .map_err(|_| warn!("dropped outbound connection"))
             });
@@ -156,9 +169,10 @@ impl Dispatcher {
     ///
     /// Two endpoints are chosen randomly and return the lesser-loaded endpoint.
     /// If no endpoints are available, `None` is retruned.
-    fn select_endpoint<'r, 'e, R: Rng>(rng: &'r mut R,
-                                       available: &'e EndpointMap)
-                                       -> Option<&'e Endpoint> {
+    fn select_endpoint<'r, 'e, R: Rng>(
+        rng: &'r mut R,
+        available: &'e EndpointMap,
+    ) -> Option<&'e Endpoint> {
         match available.len() {
             0 => None,
             1 => {
@@ -189,22 +203,26 @@ impl Dispatcher {
                 let score1 = (load1 + 1) as f64 * (1.0 - weight1);
 
                 if score0 <= score1 {
-                    trace!("dst: {} {}*{} (not {} {}*{})",
-                           addr0,
-                           load0,
-                           weight0,
-                           addr1,
-                           load1,
-                           weight1);
+                    trace!(
+                        "dst: {} {}*{} (not {} {}*{})",
+                        addr0,
+                        load0,
+                        weight0,
+                        addr1,
+                        load1,
+                        weight1
+                    );
                     Some(ep0)
                 } else {
-                    trace!("dst: {} {}*{} (not {} {}*{})",
-                           addr1,
-                           load1,
-                           weight1,
-                           addr0,
-                           load0,
-                           weight0);
+                    trace!(
+                        "dst: {} {}*{} (not {} {}*{})",
+                        addr1,
+                        load1,
+                        weight1,
+                        addr0,
+                        load0,
+                        weight0
+                    );
                     Some(ep1)
                 }
             }

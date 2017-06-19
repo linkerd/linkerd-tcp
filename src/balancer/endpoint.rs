@@ -75,37 +75,41 @@ impl Endpoint {
                 debug!("{}: connecting", peer_addr);
                 state.borrow_mut().pending_conns += 1;
                 sock.then(move |res| match res {
-                              Err(e) => {
-                                  let mut s = state.borrow_mut();
-                                  s.consecutive_failures += 1;
-                                  s.pending_conns -= 1;
-                                  error!("{}: connection failed: {} [pending={}, failures={}]",
-                                         peer_addr,
-                                         e,
-                                         s.pending_conns,
-                                         s.consecutive_failures);
-                                  Err(e)
-                              }
-                              Ok(sock) => {
-                                  {
-                                      let mut s = state.borrow_mut();
-                                      s.consecutive_failures = 0;
-                                      s.pending_conns -= 1;
-                                      s.open_conns += 1;
-                                      debug!("{}: connected [pending={}, open={}]",
-                                             peer_addr,
-                                             s.pending_conns,
-                                             s.open_conns);
-                                  }
+                    Err(e) => {
+                        let mut s = state.borrow_mut();
+                        s.consecutive_failures += 1;
+                        s.pending_conns -= 1;
+                        error!(
+                            "{}: connection failed: {} [pending={}, failures={}]",
+                            peer_addr,
+                            e,
+                            s.pending_conns,
+                            s.consecutive_failures
+                        );
+                        Err(e)
+                    }
+                    Ok(sock) => {
+                        {
+                            let mut s = state.borrow_mut();
+                            s.consecutive_failures = 0;
+                            s.pending_conns -= 1;
+                            s.open_conns += 1;
+                            debug!(
+                                "{}: connected [pending={}, open={}]",
+                                peer_addr,
+                                s.pending_conns,
+                                s.open_conns
+                            );
+                        }
 
-                                  let ctx = Ctx {
-                                      state,
-                                      duration,
-                                      start: Instant::now(),
-                                  };
-                                  Ok(Connection::new(sock, ctx))
-                              }
-                          })
+                        let ctx = Ctx {
+                            state,
+                            duration,
+                            start: Instant::now(),
+                        };
+                        Ok(Connection::new(sock, ctx))
+                    }
+                })
             })
         };
 
