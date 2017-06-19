@@ -1,18 +1,17 @@
 use super::Path;
 use super::connector::Connector;
 use super::resolver::Resolve;
-use futures::{Async, Future, Poll, unsync};
+use futures::{Async, Future, Stream, Poll, unsync};
 use std::{io, net};
 use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
-mod channelq;
 mod dispatcher;
+mod dispatchq;
 mod endpoint;
 mod endpoints;
 mod factory;
-mod task;
 
 pub use self::endpoint::{Connection as EndpointConnection, Ctx as EndpointCtx};
 use self::endpoints::{EndpointMap, Endpoints};
@@ -41,14 +40,17 @@ pub fn new(reactor: &Handle,
            metrics: &tacho::Scope)
            -> Balancer {
     let (tx, rx) = unsync::mpsc::unbounded();
-    let task = task::new(reactor.clone(),
-                         timer.clone(),
-                         dst.clone(),
-                         connector,
-                         resolve,
-                         rx,
-                         metrics);
-    reactor.spawn(task.map_err(|_| {}));
+    let endpoints = Endpoints::new(dst.clone(),
+                                   resolve,
+                                   connector.failure_limit(),
+                                   connector.failure_penalty(),
+                                   &metrics.clone().prefixed("endpoint"));
+    let dispatcher = dispatcher::new(reactor.clone(),
+                                     timer.clone(),
+                                     connector,
+                                     endpoints,
+                                     metrics);
+    reactor.spawn(rx.forward(dispatcher).map(|_| {}));
     Balancer(tx)
 }
 

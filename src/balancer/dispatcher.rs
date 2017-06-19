@@ -1,284 +1,263 @@
-use super::{channelq, EndpointMap, Waiter};
-use super::endpoint::{self, Endpoint};
-use super::super::Path;
-use super::super::connection::Connection;
+use super::{dispatchq, Endpoints, EndpointMap, Waiter};
+use super::endpoint::{Connection, Endpoint};
 use super::super::connector::Connector;
-use futures::{Future, Stream, Poll, Async, Sink, AsyncSink, sink};
+use futures::{Future, Poll, Async, Sink, StartSend};
 use rand::{self, Rng};
-use std::collections::VecDeque;
+use std::cmp;
 use std::io;
+use std::time::Instant;
 use tacho;
 use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
-type ConnectingQ = VecDeque<tacho::Timed<endpoint::Connecting>>;
-type ConnectedQ = VecDeque<Connection<endpoint::Ctx>>;
-type WaiterQ = VecDeque<Waiter>;
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum State {
-    Done,
-    NotReady,
-    NeedsPoll,
+pub fn new(reactor: Handle,
+           timer: Timer,
+           connector: Connector,
+           endpoints: Endpoints,
+           metrics: &tacho::Scope)
+           -> Dispatcher {
+    let (dispatch_tx, dispatch_rx) = dispatchq::channel(connector.max_waiters());
+    Dispatcher {
+        reactor,
+        timer,
+        endpoints,
+        dispatch_tx,
+        dispatch_rx,
+        connector,
+        metrics: Metrics::new(metrics),
+    }
 }
 
-pub struct Dispatcher<W> {
-    dst_name: Path,
-
-    connector: Connector,
+pub struct Dispatcher {
     reactor: Handle,
     timer: Timer,
-
-    /// Provides new connection requests as a Stream.
-    rx: Option<Rx<W>>,
-    pending: Option<Waiter>,
-
-    channelq: channelq::ChannelQ<Waiter>,
-
+    connector: Connector,
+    endpoints: Endpoints,
+    dispatch_tx: dispatchq::Sender<Waiter>,
+    dispatch_rx: dispatchq::Receiver<Waiter>,
     metrics: Metrics,
 }
 
-impl<W> Dispatcher<W>
-    where W: Stream<Item = Waiter>
-{
-    pub fn new(reactor: Handle,
-               timer: Timer,
-               dst_name: Path,
-               recv: W,
-               connector: Connector,
-               metrics: &tacho::Scope)
-               -> Dispatcher<W> {
-        let rx = Rx {
-            recv,
-            is_ready: true,
-        };
-        let channelq = channelq::channel(connector.max_waiters());
-        Dispatcher {
-            reactor,
-            timer,
-            dst_name,
-            connector,
-            rx: Some(rx),
-            pending: None,
-            channelq,
-            metrics: Metrics::new(metrics),
-        }
-    }
-
-    // pub fn poll(&mut self) -> State {
-    //     self.recv_waiters();
-    //     //self.metrics.waiters.set(self.waiters.len());
-
-    //     self.state()
-    // }
-
-    // pub fn init(&mut self, available: &EndpointMap) -> State {
-    //     self.init_connecting(available);
-    //     self.dispatch_connected_to_waiters();
-    //     self.recv_waiters();
-    //     // TODO self.metrics.waiters.set(self.waiters.len());
-    //     self.state()
-    // }
-
-    fn init_connecting(&mut self, available: &EndpointMap, needed: usize) {
-        debug!("initiating {} connections", needed);
-        if available.is_empty() {
-            trace!("no available endpoints");
-            return;
-        }
-
-        let mut rng = rand::thread_rng();
-        for _ in 0..needed {
-            match select_endpoint(&mut rng, available) {
-                None => {
-                    trace!("no endpoints ready");
-                    self.metrics.unavailable.incr(1);
-                    return;
-                }
-                Some(ep) => {
-                    self.metrics.attempts.incr(1);
-                    let mut conn = {
-                        let sock = self.connector
-                            .connect(&ep.peer_addr(), &self.reactor, &self.timer);
-                        let waiter = self.channelq.recv();
-                        let c = ep.connect(sock, &self.metrics.connection_duration);
-                        self.metrics
-                            .connect_latency
-                            .time(c)
-                            .map_err(|e| {
-                                         error!("connection error: {}", e);
-                                         ()
-                                     })
-                            .and_then(move |dst| {
-                                waiter.then(|res| match res {
-                                                Err(_) => Err(()),
-                                                Ok(w) => {
-                                                    w.send(dst);
-                                                    Ok(())
-                                                }
-                                            })
-                            })
-                    };
-                    self.reactor.spawn(conn);
-                }
-            }
-        }
-    }
+impl Sink for Dispatcher {
+    type SinkItem = Waiter;
+    type SinkError = ();
 
     /// Receives and attempts to dispatch new waiters.
     ///
     /// If there are no available connections to be dispatched, up to `max_waiters` are
     /// buffered.
-    pub fn start_recv(&mut self) -> Async<()> {
-        if let Some(pending) = self.pending.take() {
-            if let Ok(AsyncSink::NotReady(p)) = self.channelq.start_send(pending) {
-                self.pending = Some(p);
-                return Async::NotReady;
-            }
-        }
-
-        match self.rx.take() {
-            None => Async::Ready(()),
-            Some(mut rx) => {
-                loop {
-                    match rx.poll() {
-                        Err(_) => {}
-                        Ok(Async::Ready(None)) => {
-                            return Async::Ready(());
-                        }
-                        Ok(Async::Ready(Some(waiter))) => {
-                            if let Ok(AsyncSink::NotReady(waiter)) =
-                                self.channelq.start_send(waiter) {
-                                self.pending = Some(waiter);
-                                self.rx = Some(rx);
-                                return Async::NotReady;
-                            }
-                        }
-                        Ok(Async::NotReady) => {
-                            self.rx = Some(rx);
-                            return Async::NotReady;
-                        }
-                    }
-                }
-            }
-        }
+    fn start_send(&mut self, w: Waiter) -> StartSend<Waiter, ()> {
+        let t0 = Instant::now();
+        let res = self.dispatch_tx.start_send(w);
+        self.init_connecting();
+        self.record(t0);
+        res
     }
 
-    pub fn poll_complete(&mut self, ) 
-}
-
-struct Rx<W> {
-    recv: W,
-    is_ready: bool,
-}
-impl<W> Stream for Rx<W>
-    where W: Stream<Item = Waiter>
-{
-    type Item = W::Item;
-    type Error = W::Error;
-    fn poll(&mut self) -> Poll<Option<W::Item>, W::Error> {
-        let poll = self.recv.poll();
-        self.is_ready = poll.as_ref().map(|p| p.is_ready()).unwrap_or(true);
-        poll
+    fn poll_complete(&mut self) -> Poll<(), ()> {
+        let t0 = Instant::now();
+        let dispatch_ready = self.dispatch_tx.poll_complete()?.is_ready();
+        let connecting_ready = self.init_connecting().is_ready();
+        self.record(t0);
+        if dispatch_ready && connecting_ready {
+            Ok(Async::Ready(()))
+        } else {
+            Ok(Async::NotReady)
+        }
     }
 }
 
-/// Selects an endpoint using the power of two choices.
-///
-/// Two endpoints are chosen randomly and return the lesser-loaded endpoint.
-/// If no endpoints are available, `None` is retruned.
-fn select_endpoint<'r, 'e, R: Rng>(rng: &'r mut R,
-                                   available: &'e EndpointMap)
-                                   -> Option<&'e Endpoint> {
-    match available.len() {
-        0 => None,
-        1 => {
-            // One endpoint, use it.
-            available.get_index(0).map(|(_, ep)| ep)
-        }
-        sz => {
-            // Pick 2 candidate indices.
-            let (i0, i1) = if sz == 2 {
-                if rng.gen::<bool>() { (0, 1) } else { (1, 0) }
+impl Dispatcher {
+    fn init_connecting(&mut self) -> Async<()> {
+        let needed = {
+            let required = cmp::max(self.dispatch_tx.sendq_size(),
+                                    self.connector.min_connections());
+            let listeners = self.dispatch_rx.pending();
+            let needed = if listeners < required {
+                required - listeners
             } else {
-                // 3 or more endpoints: choose two distinct endpoints at random.
-                let i0 = rng.gen_range(0, sz);
-                let mut i1 = rng.gen_range(0, sz);
-                while i0 == i1 {
-                    i1 = rng.gen_range(0, sz);
-                }
-                (i0, i1)
+                0
             };
+            let space = self.dispatch_tx.sendq_capacity() - self.dispatch_tx.sendq_size();
+            cmp::min(needed, space)
+        };
+        debug!("initiating {} connections", needed);
+        if needed == 0 {
+            return Async::Ready(());
+        }
 
-            // Determine the the scores of each endpoint
-            let (addr0, ep0) = available.get_index(i0).unwrap();
-            let (load0, weight0) = (ep0.load(), ep0.weight());
-            let score0 = (load0 + 1) as f64 * (1.0 - weight0);
+        let available = self.endpoints.updated_available();
+        trace!("{} endpoints available", available.len());
+        if available.is_empty() {
+            return Async::NotReady;
+        }
 
-            let (addr1, ep1) = available.get_index(i1).unwrap();
-            let (load1, weight1) = (ep1.load(), ep1.weight());
-            let score1 = (load1 + 1) as f64 * (1.0 - weight1);
-
-            if score0 <= score1 {
-                trace!("dst: {} {}*{} (not {} {}*{})",
-                       addr0,
-                       load0,
-                       weight0,
-                       addr1,
-                       load1,
-                       weight1);
-                Some(ep0)
-            } else {
-                trace!("dst: {} {}*{} (not {} {}*{})",
-                       addr1,
-                       load1,
-                       weight1,
-                       addr0,
-                       load0,
-                       weight0);
-                Some(ep1)
+        let mut rng = rand::thread_rng();
+        for i in 0..needed {
+            debug!("dispatching {}/{}", i + 1, needed);
+            match Dispatcher::select_endpoint(&mut rng, available) {
+                None => {
+                    trace!("no endpoints ready");
+                    self.metrics.unavailable.incr(1);
+                    return Async::NotReady;
+                }
+                Some(ep) => {
+                    self.metrics.attempts.incr(1);
+                    let conn = {
+                        let sock = self.connector
+                            .connect(&ep.peer_addr(), &self.reactor, &self.timer);
+                        let c = ep.connect(sock, &self.metrics.connection_duration);
+                        self.metrics.connect_latency.time(c)
+                    };
+                    Dispatcher::dispatch(conn,
+                                         &self.reactor,
+                                         self.dispatch_rx.clone(),
+                                         self.metrics.connects.clone(),
+                                         self.metrics.failures.clone());
+                }
             }
         }
+        Async::Ready(())
+    }
+
+    fn dispatch<C>(conn: C,
+                   reactor: &Handle,
+                   dispatch_rx: dispatchq::Receiver<Waiter>,
+                   connects: tacho::Counter,
+                   failures: Failures)
+        where C: Future<Item = Connection, Error = io::Error> + 'static
+    {
+        let task = conn.map_err(move |e| {
+                                    error!("connection error: {}", e);
+                                    failures.record(&e);
+                                })
+            .and_then(move |dst| {
+                debug!("receiving inbound waiter for {}", dst.peer_addr());
+                connects.incr(1);
+                let rx = dispatch_rx.recv();
+                let tx = rx.and_then(move |w| {
+                                         trace!("dispatching outbound to waiter");
+                                         w.send(dst).map_err(|_| {})
+                                     });
+                tx.map(|_| trace!("dispatched outbound to waiter"))
+                    .map_err(|_| warn!("dropped outbound connection"))
+            });
+        reactor.spawn(task)
+    }
+
+    /// Selects an endpoint using the power of two choices.
+    ///
+    /// Two endpoints are chosen randomly and return the lesser-loaded endpoint.
+    /// If no endpoints are available, `None` is retruned.
+    fn select_endpoint<'r, 'e, R: Rng>(rng: &'r mut R,
+                                       available: &'e EndpointMap)
+                                       -> Option<&'e Endpoint> {
+        match available.len() {
+            0 => None,
+            1 => {
+                // One endpoint, use it.
+                available.get_index(0).map(|(_, ep)| ep)
+            }
+            sz => {
+                // Pick 2 candidate indices.
+                let (i0, i1) = if sz == 2 {
+                    if rng.gen::<bool>() { (0, 1) } else { (1, 0) }
+                } else {
+                    // 3 or more endpoints: choose two distinct endpoints at random.
+                    let i0 = rng.gen_range(0, sz);
+                    let mut i1 = rng.gen_range(0, sz);
+                    while i0 == i1 {
+                        i1 = rng.gen_range(0, sz);
+                    }
+                    (i0, i1)
+                };
+
+                // Determine the the scores of each endpoint
+                let (addr0, ep0) = available.get_index(i0).unwrap();
+                let (load0, weight0) = (ep0.load(), ep0.weight());
+                let score0 = (load0 + 1) as f64 * (1.0 - weight0);
+
+                let (addr1, ep1) = available.get_index(i1).unwrap();
+                let (load1, weight1) = (ep1.load(), ep1.weight());
+                let score1 = (load1 + 1) as f64 * (1.0 - weight1);
+
+                if score0 <= score1 {
+                    trace!("dst: {} {}*{} (not {} {}*{})",
+                           addr0,
+                           load0,
+                           weight0,
+                           addr1,
+                           load1,
+                           weight1);
+                    Some(ep0)
+                } else {
+                    trace!("dst: {} {}*{} (not {} {}*{})",
+                           addr1,
+                           load1,
+                           weight1,
+                           addr0,
+                           load0,
+                           weight0);
+                    Some(ep1)
+                }
+            }
+        }
+    }
+
+    fn record(&self, t0: Instant) {
+        self.metrics.waiters.set(self.dispatch_tx.sendq_size());
+        self.metrics.poll_time.record_since(t0);
     }
 }
 
 struct Metrics {
-    pending: tacho::Gauge,
-    open: tacho::Gauge,
     waiters: tacho::Gauge,
     attempts: tacho::Counter,
     unavailable: tacho::Counter,
+    failures: Failures,
     connects: tacho::Counter,
-    timeouts: tacho::Counter,
-    refused: tacho::Counter,
-    failures: tacho::Counter,
     connect_latency: tacho::Timer,
     connection_duration: tacho::Timer,
+    poll_time: tacho::Timer,
 }
 
 impl Metrics {
     fn new(base: &tacho::Scope) -> Metrics {
         let conn = base.clone().prefixed("connection");
+        let dspt = base.clone().prefixed("dispatch");
         Metrics {
-            pending: conn.gauge("pending"),
-            open: conn.gauge("open"),
-            waiters: base.gauge("waiters"),
-            unavailable: base.counter("unavailable"),
             attempts: conn.counter("attempts"),
             connects: conn.counter("connects"),
-            timeouts: conn.clone().labeled("cause", "timeout").counter("failure"),
-            refused: conn.clone().labeled("cause", "refused").counter("failure"),
-            failures: conn.clone().labeled("cause", "other").counter("failure"),
             connect_latency: conn.timer_us("latency_us"),
             connection_duration: conn.timer_ms("duration_ms"),
+            failures: Failures {
+                timeouts: conn.clone().labeled("cause", "timeout").counter("failure"),
+                refused: conn.clone().labeled("cause", "refused").counter("failure"),
+                reset: conn.clone().labeled("cause", "reset").counter("failure"),
+                other: conn.clone().labeled("cause", "other").counter("failure"),
+            },
+
+            poll_time: dspt.timer_us("poll_time_us"),
+            unavailable: dspt.counter("unavailable"),
+            waiters: dspt.gauge("waiters"),
         }
     }
+}
 
-    fn failure(&self, err: &io::Error) {
+#[derive(Clone)]
+struct Failures {
+    timeouts: tacho::Counter,
+    refused: tacho::Counter,
+    reset: tacho::Counter,
+    other: tacho::Counter,
+}
+impl Failures {
+    fn record(&self, err: &io::Error) {
         match err.kind() {
             io::ErrorKind::TimedOut => self.timeouts.incr(1),
             io::ErrorKind::ConnectionRefused => self.refused.incr(1),
-            _ => self.failures.incr(1),
+            io::ErrorKind::ConnectionReset => self.reset.incr(1),
+            _ => self.other.incr(1),
         }
     }
 }
