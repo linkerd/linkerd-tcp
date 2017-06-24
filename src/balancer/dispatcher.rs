@@ -3,8 +3,10 @@ use super::endpoint::{Connection, Endpoint};
 use super::super::connector::Connector;
 use futures::{Future, Poll, Async, Sink, StartSend};
 use rand::{self, Rng};
+use std::cell::RefCell;
 use std::cmp;
 use std::io;
+use std::rc::Rc;
 use std::time::Instant;
 use tacho;
 use tokio_core::reactor::Handle;
@@ -24,6 +26,7 @@ pub fn new(
         endpoints,
         dispatch_tx,
         dispatch_rx,
+        needed_connections: Rc::new(RefCell::new(connector.min_connections())),
         connector,
         metrics: Metrics::new(metrics),
     }
@@ -34,6 +37,7 @@ pub struct Dispatcher {
     timer: Timer,
     connector: Connector,
     endpoints: Endpoints,
+    needed_connections: Rc<RefCell<usize>>,
     dispatch_tx: dispatchq::Sender<Waiter>,
     dispatch_rx: dispatchq::Receiver<Waiter>,
     metrics: Metrics,
@@ -48,23 +52,18 @@ impl Sink for Dispatcher {
     /// If there are no available connections to be dispatched, up to `max_waiters` are
     /// buffered.
     fn start_send(&mut self, w: Waiter) -> StartSend<Waiter, ()> {
-        let t0 = Instant::now();
-        debug!("start_send: dispatching waiter");
-        let res = self.dispatch_tx.start_send(w);
-        self.init_connecting();
-        self.record(t0);
-        debug!(
-            "start_send: dispatched waiter ready={}",
-            res.as_ref().map(|a| a.is_ready()).unwrap_or(false)
-        );
-        res
+        let res = self.dispatch_tx.start_send(w)?;
+        if res.is_ready() {
+            *self.needed_connections.borrow_mut() += 1;
+        }
+        Ok(res)
     }
 
     fn poll_complete(&mut self) -> Poll<(), ()> {
         let t0 = Instant::now();
         debug!("poll_complete: connecting");
-        let dispatch_ready = self.dispatch_tx.poll_complete()?.is_ready();
         let connecting_ready = self.init_connecting().is_ready();
+        let dispatch_ready = self.dispatch_tx.poll_complete()?.is_ready();
         self.record(t0);
         debug!(
             "poll_complete: dispatch={} connect={}",
@@ -82,18 +81,8 @@ impl Sink for Dispatcher {
 impl Dispatcher {
     fn init_connecting(&mut self) -> Async<()> {
         let needed = {
-            let required = cmp::max(
-                self.dispatch_tx.sendq_size(),
-                self.connector.min_connections(),
-            );
-            let listeners = self.dispatch_rx.pending();
-            let needed = if listeners < required {
-                required - listeners
-            } else {
-                0
-            };
-            let space = self.dispatch_tx.sendq_capacity() - self.dispatch_tx.sendq_size();
-            cmp::min(needed, space)
+            let space = self.dispatch_tx.available_capacity();
+            cmp::min(*self.needed_connections.borrow(), space)
         };
         debug!("initiating {} connections", needed);
         if needed == 0 {
@@ -130,6 +119,7 @@ impl Dispatcher {
                         conn,
                         &self.reactor,
                         self.dispatch_rx.clone(),
+                        self.needed_connections.clone(),
                         self.metrics.connects.clone(),
                         self.metrics.failures.clone(),
                     );
@@ -143,6 +133,7 @@ impl Dispatcher {
         conn: C,
         reactor: &Handle,
         dispatch_rx: dispatchq::Receiver<Waiter>,
+        needed_connections: Rc<RefCell<usize>>,
         connects: tacho::Counter,
         failures: Failures,
     ) where
@@ -153,10 +144,10 @@ impl Dispatcher {
             failures.record(&e);
         }).and_then(move |dst| {
                 debug!("receiving inbound waiter for {}", dst.peer_addr());
-                connects.incr(1);
-                let rx = dispatch_rx.recv();
-                let tx = rx.and_then(move |w| {
+                let tx = dispatch_rx.recv().map_err(|_| {}).and_then(move |w| {
                     trace!("dispatching outbound to waiter");
+                    connects.incr(1);
+                    *needed_connections.borrow_mut() -= 1;
                     w.send(dst).map_err(|_| {})
                 });
                 tx.map(|_| trace!("dispatched outbound to waiter"))
@@ -230,7 +221,7 @@ impl Dispatcher {
     }
 
     fn record(&self, t0: Instant) {
-        self.metrics.waiters.set(self.dispatch_tx.sendq_size());
+        self.metrics.waiters.set(self.dispatch_tx.len());
         self.metrics.poll_time.record_since(t0);
     }
 }
