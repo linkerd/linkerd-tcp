@@ -96,8 +96,8 @@ impl Dispatcher {
         }
 
         let mut rng = rand::thread_rng();
-        for i in 0..needed {
-            debug!("dispatching {}/{}", i + 1, needed);
+        let mut needed = self.needed_connections.borrow_mut();
+        while *needed != 0 {
             match Dispatcher::select_endpoint(&mut rng, available) {
                 None => {
                     trace!("no endpoints ready");
@@ -106,20 +106,31 @@ impl Dispatcher {
                 }
                 Some(ep) => {
                     self.metrics.attempts.incr(1);
+                    // We're initiating a new connection, so decrement the number of
+                    // needed  connections.
+                    *needed -= 1;
                     let conn = {
-                        let sock = self.connector.connect(
-                            &ep.peer_addr(),
-                            &self.reactor,
-                            &self.timer,
+                        let conn = ep.connect(
+                            self.connector.connect(
+                                &ep.peer_addr(),
+                                &self.reactor,
+                                &self.timer,
+                            ),
+                            &self.metrics.connection_duration,
                         );
-                        let c = ep.connect(sock, &self.metrics.connection_duration);
-                        self.metrics.connect_latency.time(c)
+                        let nc = self.needed_connections.clone();
+                        self.metrics.connect_latency.time(conn).map_err(move |e| {
+                            // When a connection fails, increment the number of needed
+                            // connections (in order to replace it).  This is safe because
+                            // it will be run from the reactor and not from this loop.
+                            *nc.borrow_mut() += 1;
+                            e
+                        })
                     };
                     Dispatcher::dispatch(
                         conn,
                         &self.reactor,
                         self.dispatch_rx.clone(),
-                        self.needed_connections.clone(),
                         self.metrics.connects.clone(),
                         self.metrics.failures.clone(),
                     );
@@ -133,27 +144,28 @@ impl Dispatcher {
         conn: C,
         reactor: &Handle,
         dispatch_rx: dispatchq::Receiver<Waiter>,
-        needed_connections: Rc<RefCell<usize>>,
         connects: tacho::Counter,
         failures: Failures,
     ) where
         C: Future<Item = Connection, Error = io::Error> + 'static,
     {
-        let task = conn.map_err(move |e| {
+        let dst = conn.map_err(move |e| {
             error!("connection error: {}", e);
             failures.record(&e);
-        }).and_then(move |dst| {
-                debug!("receiving inbound waiter for {}", dst.peer_addr());
-                let tx = dispatch_rx.recv().map_err(|_| {}).and_then(move |w| {
-                    trace!("dispatching outbound to waiter");
-                    connects.incr(1);
-                    *needed_connections.borrow_mut() -= 1;
-                    w.send(dst).map_err(|_| {})
-                });
-                tx.map(|_| trace!("dispatched outbound to waiter"))
-                    .map_err(|_| warn!("dropped outbound connection"))
+        });
+        let dispatch = dst.and_then(move |dst| {
+            debug!("receiving inbound waiter for {}", dst.peer_addr());
+            connects.incr(1);
+            let rx = dispatch_rx.recv().map_err(|_| {});
+            let tx = rx.and_then(move |w| {
+                trace!("dispatching outbound to waiter");
+                w.send(dst).map_err(|_| {}).map(|_| {
+                    trace!("dispatched outbound to waiter")
+                })
             });
-        reactor.spawn(task)
+            tx.map_err(|_| warn!("dropped outbound connection"))
+        });
+        reactor.spawn(dispatch);
     }
 
     /// Selects an endpoint using the power of two choices.

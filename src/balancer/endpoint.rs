@@ -5,7 +5,7 @@ use std::{io, net};
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 use std::time::Instant;
-use tacho;
+use tacho::{self, Timing};
 
 pub type Connection = _Connection<Ctx>;
 
@@ -103,6 +103,7 @@ impl Endpoint {
                         }
 
                         let ctx = Ctx {
+                            peer_addr,
                             state,
                             duration,
                             start: Instant::now(),
@@ -131,6 +132,7 @@ impl Future for Connecting {
 }
 
 pub struct Ctx {
+    peer_addr: net::SocketAddr,
     state: Rc<RefCell<State>>,
     duration: tacho::Timer,
     start: Instant,
@@ -151,7 +153,12 @@ impl Drop for Ctx {
         {
             let mut s = self.state.borrow_mut();
             s.open_conns -= 1;
-            debug!("connection dropped [open={}]", s.open_conns);
+            debug!(
+                "{}: connection dropped duration={} open={} ",
+                self.peer_addr,
+                self.start.elapsed_ms(),
+                s.open_conns
+            );
         }
         self.duration.record_since(self.start)
     }

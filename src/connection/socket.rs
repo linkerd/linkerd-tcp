@@ -97,24 +97,26 @@ impl Socket {
 /// Reads the socket without blocking.
 impl Read for Socket {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        trace!("{:?}.read({})", self, buf.len());
-        match self.kind {
+        let ret = match self.kind {
             Kind::Plain(ref mut stream) => stream.read(buf),
             Kind::SecureClient(ref mut stream) => stream.read(buf),
             Kind::SecureServer(ref mut stream) => stream.read(buf),
-        }
+        };
+        trace!("{:?}.read({}) -> {:?}", self, buf.len(), ret);
+        ret
     }
 }
 
 /// Writes to the socket without blocking.
 impl Write for Socket {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        trace!("{:?}.write({})", self, buf.len());
-        match self.kind {
+        let ret = match self.kind {
             Kind::Plain(ref mut stream) => stream.write(buf),
             Kind::SecureClient(ref mut stream) => stream.write(buf),
             Kind::SecureServer(ref mut stream) => stream.write(buf),
-        }
+        };
+        trace!("{:?}.write({}) -> {:?}", self, buf.len(), ret);
+        ret
     }
 
     fn flush(&mut self) -> io::Result<()> {
