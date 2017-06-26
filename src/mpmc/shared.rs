@@ -110,12 +110,12 @@ impl<T> Sink for Shared<T> {
             self.sendq.push_back(item);
             Ok(AsyncSink::Ready)
         } else {
-            if self.blocked_send.is_none() {
-                // Ask to be notified when there's more capacity in the channel and ensure
-                // that pending receivers have been informed that there are pending values.
-                self.blocked_send = Some(task::current());
-            }
+            // Attempt to notify waiting receivers of available items.
             self.notify_recvs();
+
+            // Ask to be notified when there's more capacity in the channel and ensure
+            // that pending receivers have been informed that there are pending values.
+            self.blocked_send = Some(task::current());
             Ok(AsyncSink::NotReady(item))
         }
     }
@@ -125,11 +125,11 @@ impl<T> Sink for Shared<T> {
             self.blocked_send = None;
             Ok(Async::Ready(()))
         } else {
-            if self.blocked_send.is_none() {
-                // Ask to be notified when more receivers are available.
-                self.blocked_send = Some(task::current());
-            }
+            // Attempt to notify waiting receivers of available items.
             self.notify_recvs();
+
+            // Ask to be notified when receivers have acted consumed the sendq.
+            self.blocked_send = Some(task::current());
             Ok(Async::NotReady)
         }
     }
