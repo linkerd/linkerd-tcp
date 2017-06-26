@@ -55,6 +55,10 @@ impl<T> Stream for Receiver<T> {
                 match rx.borrow_mut().poll_recv() {
                     PollRecv::Ready(item) => Ok(Async::Ready(Some(item))),
                     PollRecv::NotReady(task) => {
+                        // Hold a reference to the current task so that the shared channel
+                        // knows this receiver is still interested in receiving a result.
+                        // If this receiver is dropped, the shared channel is able to
+                        // notify another receiver instead.
                         self.current = Some(task);
                         Ok(Async::NotReady)
                     }
@@ -64,7 +68,7 @@ impl<T> Stream for Receiver<T> {
     }
 }
 
-/// Obtains a single value from the channel.
+/// Obtains a single value from the channel asynchronously.
 pub struct Recv<T>(Option<Receiver<T>>);
 impl<T> Future for Recv<T> {
     type Item = T;

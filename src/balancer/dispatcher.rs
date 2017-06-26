@@ -1,6 +1,7 @@
-use super::{dispatchq, Endpoints, EndpointMap, Waiter};
+use super::{Endpoints, EndpointMap, Waiter};
 use super::endpoint::{Connection, Endpoint};
 use super::super::connector::Connector;
+use super::super::mpmc;
 use futures::{Future, Poll, Async, Sink, StartSend};
 use rand::{self, Rng};
 use std::cell::RefCell;
@@ -19,7 +20,7 @@ pub fn new(
     endpoints: Endpoints,
     metrics: &tacho::Scope,
 ) -> Dispatcher {
-    let (dispatch_tx, dispatch_rx) = dispatchq::channel(connector.max_waiters());
+    let (dispatch_tx, dispatch_rx) = mpmc::channel(connector.max_waiters());
     Dispatcher {
         reactor,
         timer,
@@ -38,8 +39,8 @@ pub struct Dispatcher {
     connector: Connector,
     endpoints: Endpoints,
     needed_connections: Rc<RefCell<usize>>,
-    dispatch_tx: dispatchq::Sender<Waiter>,
-    dispatch_rx: dispatchq::Receiver<Waiter>,
+    dispatch_tx: mpmc::Sender<Waiter>,
+    dispatch_rx: mpmc::Receiver<Waiter>,
     metrics: Metrics,
 }
 
@@ -143,7 +144,7 @@ impl Dispatcher {
     fn dispatch<C>(
         conn: C,
         reactor: &Handle,
-        dispatch_rx: dispatchq::Receiver<Waiter>,
+        dispatch_rx: mpmc::Receiver<Waiter>,
         connects: tacho::Counter,
         failures: Failures,
     ) where

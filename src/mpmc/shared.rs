@@ -17,7 +17,9 @@ pub fn new<T>(capacity: usize) -> Shared<T> {
 /// A `Sink` is exposed to accept T-typed values into an internal queue. The sink will
 /// buffer up to `sendq_capacity` items before applying backpressure.
 ///
-/// As `Receiver`s attempt to pull values from the sendq,
+/// If a `Receiver` attempts to obtain a value but the sendq is empty (or other receivers
+/// are blocked), then the receiver's task is saved to be notified when the sendq has a
+/// value for the receiver..
 pub struct Shared<T> {
     sendq_capacity: usize,
     sendq: VecDeque<T>,
@@ -104,12 +106,15 @@ impl<T> Sink for Shared<T> {
 
     fn start_send(&mut self, item: T) -> StartSend<T, Self::SinkError> {
         if self.sendq.len() < self.sendq_capacity {
+            self.blocked_send = None;
             self.sendq.push_back(item);
             Ok(AsyncSink::Ready)
         } else {
-            // Ask to be notified when there's more capacity in the channel and ensure
-            // that pending receivers have been informed that there are pending values.
-            self.blocked_send = Some(task::current());
+            if self.blocked_send.is_none() {
+                // Ask to be notified when there's more capacity in the channel and ensure
+                // that pending receivers have been informed that there are pending values.
+                self.blocked_send = Some(task::current());
+            }
             self.notify_recvs();
             Ok(AsyncSink::NotReady(item))
         }
@@ -117,10 +122,13 @@ impl<T> Sink for Shared<T> {
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
         if self.sendq.is_empty() {
+            self.blocked_send = None;
             Ok(Async::Ready(()))
         } else {
-            // Ask to be notified when more receivers are available.
-            self.blocked_send = Some(task::current());
+            if self.blocked_send.is_none() {
+                // Ask to be notified when more receivers are available.
+                self.blocked_send = Some(task::current());
+            }
             self.notify_recvs();
             Ok(Async::NotReady)
         }

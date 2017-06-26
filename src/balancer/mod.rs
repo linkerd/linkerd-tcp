@@ -8,7 +8,6 @@ use tokio_core::reactor::Handle;
 use tokio_timer::Timer;
 
 mod dispatcher;
-mod dispatchq;
 mod endpoint;
 mod endpoints;
 mod factory;
