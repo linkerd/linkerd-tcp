@@ -71,9 +71,8 @@ impl Endpoint {
             let peer_addr = self.peer_addr;
             let state = self.state.clone();
             let duration = duration.clone();
+
             state.borrow_mut().pending_conns += 1;
-
-
             futures::lazy(move || {
                 debug!("{}: connecting", peer_addr);
                 sock.then(move |res| match res {
