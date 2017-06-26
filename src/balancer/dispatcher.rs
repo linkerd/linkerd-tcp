@@ -157,9 +157,9 @@ impl Dispatcher {
             debug!("receiving inbound waiter for {}", dst.peer_addr());
             connects.incr(1);
             let rx = dispatch_rx.recv().map_err(|_| {});
-            let tx = rx.and_then(move |w| {
+            let tx = rx.and_then(move |waiter| {
                 trace!("dispatching outbound to waiter");
-                w.send(dst).map_err(|_| {}).map(|_| {
+                waiter.send(dst).map_err(|_| {}).map(|_| {
                     trace!("dispatched outbound to waiter")
                 })
             });

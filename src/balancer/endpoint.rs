@@ -71,9 +71,11 @@ impl Endpoint {
             let peer_addr = self.peer_addr;
             let state = self.state.clone();
             let duration = duration.clone();
+            state.borrow_mut().pending_conns += 1;
+
+
             futures::lazy(move || {
                 debug!("{}: connecting", peer_addr);
-                state.borrow_mut().pending_conns += 1;
                 sock.then(move |res| match res {
                     Err(e) => {
                         let mut s = state.borrow_mut();
@@ -95,8 +97,9 @@ impl Endpoint {
                             s.pending_conns -= 1;
                             s.open_conns += 1;
                             debug!(
-                                "{}: connected [pending={}, open={}]",
+                                "{}: connected {} [pending={}, open={}]",
                                 peer_addr,
+                                sock.local_addr(),
                                 s.pending_conns,
                                 s.open_conns
                             );

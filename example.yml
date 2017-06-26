@@ -30,4 +30,6 @@ routers:
     client:
       kind: io.l5d.global
       #connectTimeoutMs: 500
+      minimumConnections: 16
+
 

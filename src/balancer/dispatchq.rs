@@ -1,4 +1,4 @@
-use futures::{Future, Poll, Async, AsyncSink, Sink, StartSend};
+use futures::{Future, Stream, Poll, Async, AsyncSink, Sink, StartSend};
 use futures::task::{self, Task};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -6,46 +6,54 @@ use std::error::Error;
 use std::fmt;
 use std::rc::{Rc, Weak};
 
-/// Creates a dispatching channel.
+/// Creates a channel capable of receiving values from an .
 ///
-/// This channel supports a single producer task and many consumers.
-/// It is intended to be used by a producer task that
+/// It is intended to be used by producer task that dispatches to an arbitrary number of
+/// worker tasks on a single Core.
 pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     let shared = Rc::new(RefCell::new(Shared {
-        capacity,
-        buffer: VecDeque::new(),
+        sendq_capacity: capacity,
+        sendq: VecDeque::new(),
         blocked_recvs: VecDeque::new(),
-        blocked_sender: None,
+        blocked_send: None,
     }));
-    let rx = Receiver(Rc::downgrade(&shared));
-    let tx = Sender(shared);
-    (tx, rx)
+    let rx = Receiver {
+        current: None,
+        shared: Rc::downgrade(&shared),
+    };
+    (Sender(shared), rx)
 }
 
-#[derive(Debug)]
+/// Holds the shared internal state of a single-producer multi-consumer channel.
+///
+/// A `Sink` is exposed to accept T-typed values into an internal queue. The sink will
+/// buffer up to `sendq_capacity` items before applying backpressure.
+///
+/// As `Receiver`s attempt to pull values from the sendq,
 struct Shared<T> {
-    buffer: VecDeque<T>,
-    capacity: usize,
-    blocked_sender: Option<Task>,
+    sendq_capacity: usize,
+    sendq: VecDeque<T>,
     blocked_recvs: VecDeque<Weak<Task>>,
+    blocked_send: Option<Task>,
 }
+
 impl<T> Shared<T> {
     fn available_capacity(&self) -> usize {
-        self.capacity - self.buffer.len()
+        self.sendq_capacity - self.len()
     }
     fn is_empty(&self) -> bool {
-        self.buffer.is_empty()
+        self.sendq.is_empty()
     }
     fn is_full(&self) -> bool {
         self.available_capacity() == 0
     }
     fn len(&self) -> usize {
-        self.buffer.len()
+        self.sendq.len()
     }
 
     fn notify_recvs(&mut self) -> usize {
         let mut notified = 0;
-        while notified != self.buffer.len() {
+        while notified != self.len() {
             match self.blocked_recvs.pop_front() {
                 None => break,
                 Some(t) => {
@@ -59,47 +67,39 @@ impl<T> Shared<T> {
         notified
     }
 }
+
 impl<T> Sink for Shared<T> {
     type SinkItem = T;
     type SinkError = ();
 
     fn start_send(&mut self, item: T) -> StartSend<T, Self::SinkError> {
-        if self.buffer.len() == self.capacity {
-            warn!("start_send: sendq at capacity");
+        if self.sendq.len() < self.sendq_capacity {
+            self.sendq.push_back(item);
+            Ok(AsyncSink::Ready)
+        } else {
+            // Ask to be notified when there's more capacity in the channel and ensure
+            // that pending receivers have been informed that there are pending values.
+            self.blocked_send = Some(task::current());
             self.notify_recvs();
-            self.blocked_sender = Some(task::current());
-            return Ok(AsyncSink::NotReady(item));
+            Ok(AsyncSink::NotReady(item))
         }
-
-        self.buffer.push_back(item);
-        trace!(
-            "start_send: sendq={}/{} recvq={}",
-            self.buffer.len(),
-            self.capacity,
-            self.blocked_recvs.len(),
-        );
-        Ok(AsyncSink::Ready)
     }
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        let res = if self.notify_recvs() == self.buffer.len() {
-            Async::Ready(())
+        if self.sendq.is_empty() {
+            Ok(Async::Ready(()))
         } else {
-            self.blocked_sender = Some(task::current());
-            Async::NotReady
-        };
-        trace!(
-            "poll_complete: dispatch sendq={}/{} recvq={} ready={}",
-            self.buffer.len(),
-            self.capacity,
-            self.blocked_recvs.len(),
-            res.is_ready()
-        );
-        Ok(res)
+            // Ask to be notified when more receivers are available.
+            self.blocked_send = Some(task::current());
+            self.notify_recvs();
+            Ok(Async::NotReady)
+        }
     }
 }
 
+/// Exposes the shared channel as a Sink.
 pub struct Sender<T>(Rc<RefCell<Shared<T>>>);
+
 impl<T> Sender<T> {
     pub fn available_capacity(&self) -> usize {
         self.0.borrow().available_capacity()
@@ -114,6 +114,7 @@ impl<T> Sender<T> {
         self.0.borrow().len()
     }
 }
+
 impl<T> Sink for Sender<T> {
     type SinkItem = T;
     type SinkError = ();
@@ -126,6 +127,7 @@ impl<T> Sink for Sender<T> {
         self.0.borrow_mut().poll_complete()
     }
 }
+
 impl<'a, T> Sink for &'a Sender<T> {
     type SinkItem = T;
     type SinkError = ();
@@ -139,74 +141,99 @@ impl<'a, T> Sink for &'a Sender<T> {
     }
 }
 
-pub struct Receiver<T>(Weak<RefCell<Shared<T>>>);
+/// A Stream of values from a shared channel.
+///
+/// Streams obtain values on-demand and in the order requested.
+///
+/// Receivers may be cloned. Cloned receivers act independently to compete for values on
+/// the underlying channel.
+pub struct Receiver<T> {
+    /// Holds a strong reference to the pending task in the shared recv queue. The shared
+    /// recv queue holds weak references so that dropped receivers are ignored.
+    current: Option<Rc<Task>>,
+
+    /// Holds a weak reference to the shared state of the channel. The Stream is closed
+    /// when then sender is dropped.
+    shared: Weak<RefCell<Shared<T>>>,
+}
+
 impl<T> Clone for Receiver<T> {
     fn clone(&self) -> Self {
-        Receiver(self.0.clone())
+        Receiver {
+            current: None,
+            shared: self.shared.clone(),
+        }
     }
 }
 impl<T> Receiver<T> {
-    pub fn recv(&self) -> Recv<T> {
-        Recv {
-            shared: self.0.clone(),
-            current: None,
+    pub fn recv(self) -> Recv<T> {
+        Recv(Some(self))
+    }
+}
+
+impl<T> Stream for Receiver<T> {
+    type Item = T;
+    type Error = ();
+    fn poll(&mut self) -> Poll<Option<T>, ()> {
+        self.current.take();
+        match self.shared.upgrade() {
+            None => Ok(Async::Ready(None)),
+            Some(shared) => {
+                let mut shared = shared.borrow_mut();
+
+                // If  the sender is waiting for receivers, notify it.
+                if let Some(task) = shared.blocked_send.take() {
+                    task.notify();
+                }
+
+                // If there are no pending receivers, try to take a queued item.
+                let item = if shared.blocked_recvs.is_empty() {
+                    shared.sendq.pop_front()
+                } else {
+                    None
+                };
+
+                // If an item isn't immediately available, queue the current task to be
+                // notified by the sender.
+                if item.is_some() {
+                    Ok(Async::Ready(item))
+                } else {
+                    let task = Rc::new(task::current());
+                    shared.blocked_recvs.push_back(Rc::downgrade(&task));
+                    self.current = Some(task);
+                    Ok(Async::NotReady)
+                }
+            }
         }
     }
 }
 
-pub struct Recv<T> {
-    current: Option<Rc<Task>>,
-    shared: Weak<RefCell<Shared<T>>>,
-}
+/// Obtains a single value from the channel.
+pub struct Recv<T>(Option<Receiver<T>>);
 impl<T> Future for Recv<T> {
     type Item = T;
-    type Error = RecvError;
-    fn poll(&mut self) -> Poll<T, RecvError> {
-        match self.shared.upgrade() {
-            None => {
-                trace!("recv.poll: lost sender");
-                self.current = None;
-                Err(RecvError())
+    type Error = RecvLostSender;
+    fn poll(&mut self) -> Poll<T, RecvLostSender> {
+        let mut recv = self.0.take().expect("polled after completion");
+        match recv.poll() {
+            Ok(Async::Ready(Some(t))) => Ok(Async::Ready(t)),
+            Ok(Async::NotReady) => {
+                self.0 = Some(recv);
+                Ok(Async::NotReady)
             }
-            Some(s) => {
-                let mut shared = s.borrow_mut();
-                if let Some(sender) = shared.blocked_sender.take() {
-                    trace!("recv.poll: notifying sender");
-                    // If the sender was waiting, notify that a receiver is freeing
-                    // capacity or ready to receive..
-                    sender.notify();
-                }
-                trace!("recv.poll: send={}", shared.buffer.len());
-                match shared.buffer.pop_front() {
-                    None => {
-                        trace!(
-                            "recv.poll: not ready recv={}",
-                            shared.blocked_recvs.len() + 1
-                        );
-                        let current = Rc::new(task::current());
-                        shared.blocked_recvs.push_back(Rc::downgrade(&current));
-                        self.current = Some(current);
-                        Ok(Async::NotReady)
-                    }
-                    Some(item) => {
-                        trace!("recv.poll: ready");
-                        self.current = None;
-                        Ok(Async::Ready(item))
-                    }
-                }
-            }
+            _ => Err(RecvLostSender()),
         }
     }
 }
 
 #[derive(Debug)]
-pub struct RecvError();
-impl fmt::Display for RecvError {
+pub struct RecvLostSender();
+impl fmt::Display for RecvLostSender {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         write!(fmt, "recv failed because sender is gone")
     }
 }
-impl Error for RecvError {
+impl Error for RecvLostSender {
     fn description(&self) -> &str {
         "recv failed because sender is gone"
     }

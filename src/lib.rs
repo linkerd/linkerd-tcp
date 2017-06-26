@@ -31,6 +31,7 @@ pub mod app;
 mod balancer;
 mod connection;
 mod connector;
+mod mpmc;
 mod path;
 mod resolver;
 mod router;
