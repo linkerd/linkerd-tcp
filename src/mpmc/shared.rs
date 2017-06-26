@@ -95,6 +95,8 @@ impl<T> Shared<T> {
     }
 }
 
+/// Either an item from the channel or a reference to the task that will be notified if it
+/// is held by the receiver.
 pub enum PollRecv<T> {
     Ready(T),
     NotReady(Rc<Task>),
