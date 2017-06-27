@@ -1,11 +1,13 @@
 use std::cell::RefCell;
+use std::error::Error;
+use std::fmt;
 use std::rc::Rc;
 
 mod receiver;
 mod sender;
 mod shared;
 
-pub use self::receiver::{Receiver, Recv, RecvLostSender};
+pub use self::receiver::{Receiver, Recv};
 pub use self::sender::Sender;
 
 /// Creates a bounded, unsynchronized, multi-producer/multi-consumer channel.
@@ -21,4 +23,18 @@ pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     let rx = receiver::new(&shared);
     let tx = sender::new(shared);
     (tx, rx)
+}
+
+
+#[derive(Debug)]
+pub struct SenderLost();
+impl fmt::Display for SenderLost {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "recv failed because sender is gone")
+    }
+}
+impl Error for SenderLost {
+    fn description(&self) -> &str {
+        "recv failed because sender is gone"
+    }
 }
