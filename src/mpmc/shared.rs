@@ -7,9 +7,9 @@ use std::rc::{Rc, Weak};
 
 pub fn new<T>(capacity: usize) -> Shared<T> {
     Shared {
-        sendq_capacity: capacity,
+        send_capacity: capacity,
         state: None,
-        dispatching: VecDeque::new(),
+        sending: VecDeque::new(),
         blocked_send: None,
     }
 }
@@ -17,28 +17,27 @@ pub fn new<T>(capacity: usize) -> Shared<T> {
 /// Holds the shared internal state of a single-producer multi-consumer channel.
 ///
 /// A `Sink` is exposed to accept T-typed values into an internal queue. The sink will
-/// buffer up to `sendq_capacity` items before applying backpressure.
+/// buffer up to `send_capacity` items before applying backpressure.
 ///
 /// If a `Receiver` attempts to obtain a value but the sendq is empty (or other receivers
 /// are blocked), then the receiver's task is saved to be notified when the sendq has a
 /// value for the receiver..
 pub struct Shared<T> {
     blocked_send: Option<Task>,
-    sendq_capacity: usize,
-
+    send_capacity: usize,
     state: Option<State<T>>,
-    dispatching: VecDeque<DispatchedRecv<T>>,
+    sending: VecDeque<Sending<T>>,
 }
 
 enum State<T> {
-    Sending(VecDeque<T>),
+    Buffering(VecDeque<T>),
     Receiving(VecDeque<BlockedRecv<T>>),
 }
 
 impl<T> Shared<T> {
     /// Gets the number of items that may be enqueued currently.
     pub fn available_capacity(&self) -> usize {
-        self.sendq_capacity - self.len()
+        self.send_capacity - self.len()
     }
 
     /// Indicates whether the channel is currently at capacity.
@@ -49,16 +48,16 @@ impl<T> Shared<T> {
     /// Gets the numbner of items buffered in the channel.
     pub fn len(&self) -> usize {
         let sendq = match self.state.as_ref() {
-            Some(&State::Sending(ref sq)) => sq.len(),
+            Some(&State::Buffering(ref sq)) => sq.len(),
             _ => 0,
         };
-        sendq + self.dispatching.len()
+        sendq + self.sending.len()
     }
 
     /// Indicates whether the channel has no buffered items.
     pub fn is_empty(&self) -> bool {
         match self.state.as_ref() {
-            Some(&State::Sending(ref sq)) => sq.is_empty(),
+            Some(&State::Buffering(ref sq)) => sq.is_empty(),
             _ => true,
         }
     }
@@ -76,9 +75,9 @@ impl<T> Shared<T> {
     /// notified when an item may be consumed (i.e. by `notify_recvs`).
     pub fn recv(&mut self) -> RecvHandle<T> {
         let mut recvq = match self.state.take() {
-            Some(State::Sending(mut sendq)) => {
+            Some(State::Buffering(mut sendq)) => {
                 if let Some(item) = sendq.pop_front() {
-                    self.state = Some(State::Sending(sendq));
+                    self.state = Some(State::Buffering(sendq));
                     self.notify_sender();
                     return RecvHandle::Ready(Some(item));
                 }
@@ -95,6 +94,45 @@ impl<T> Shared<T> {
         self.notify_sender();
         handle
     }
+
+    fn resend(&mut self, item: T) {
+        let mut sendq = match self.state.take() {
+            Some(State::Receiving(mut recvq)) => {
+                if let Some(BlockedRecv(task, mut slot)) = recvq.pop_front() {
+                    slot.set(item);
+                    task.notify();
+                    self.sending.push_back(Sending(slot));
+                    if !recvq.is_empty() {
+                        self.state = Some(State::Receiving(recvq));
+                    }
+                    return;
+                }
+
+                VecDeque::new()
+            }
+            None => VecDeque::new(),            
+            Some(State::Buffering(sendq)) => sendq,
+        };
+
+        // Cut the line, ignoring capacity limitations (because the provided item must
+        // have been taken out of the sending queue).
+        sendq.push_front(item);
+        self.state = Some(State::Buffering(sendq));
+    }
+
+    fn drain_sending(&mut self) {
+        for _ in 0..self.sending.len() {
+            let send = self.sending.pop_front().unwrap();
+            if send.lost_receiver() {
+                if let Some(item) = send.reclaim() {
+                    self.resend(item);
+                }
+                drop(send);
+            } else {
+                self.sending.push_back(send);
+            }
+        }
+    }
 }
 
 impl<T> Sink for Shared<T> {
@@ -107,74 +145,63 @@ impl<T> Sink for Shared<T> {
                 if let Some(BlockedRecv(task, mut slot)) = recvq.pop_front() {
                     slot.set(item);
                     task.notify();
-                    self.dispatching.push_back(DispatchedRecv(slot));
+                    self.sending.push_back(Sending(slot));
                     return Ok(AsyncSink::Ready);
                 }
                 VecDeque::new()
             }
             None => VecDeque::new(),            
-            Some(State::Sending(sendq)) => sendq,
+            Some(State::Buffering(sendq)) => sendq,
         };
 
-        if sendq.len() + self.dispatching.len() < self.sendq_capacity {
-            self.blocked_send = None;
-            sendq.push_back(item);
-            self.state = Some(State::Sending(sendq));
-            Ok(AsyncSink::Ready)
-        } else {
-            // Ask to be notified when there's more capacity in the channel and ensure
-            // that pending receivers have been informed that there are pending values.
-            self.blocked_send = Some(task::current());
-            self.state = Some(State::Sending(sendq));
-            Ok(AsyncSink::NotReady(item))
+        if sendq.len() + self.sending.len() == self.send_capacity {
+            self.drain_sending();
+            if sendq.len() + self.sending.len() == self.send_capacity {
+                // Ask to be notified when there's more capacity in the channel and ensure
+                // that pending receivers have been informed that there are pending values.
+                self.blocked_send = Some(task::current());
+                self.state = Some(State::Buffering(sendq));
+                return Ok(AsyncSink::NotReady(item));
+            }
         }
+
+        self.blocked_send = None;
+        sendq.push_back(item);
+        self.state = Some(State::Buffering(sendq));
+        Ok(AsyncSink::Ready)
     }
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        for _ in 0..self.dispatching.len() {
-            let DispatchedRecv(slot) = self.dispatching.pop_front().unwrap();
-            if slot.is_orphaned() {
-                if let Some(item) = slot.take() {
-                    let sendq = match self.state.take() {
-                        Some(State::Receiving(mut recvq)) => {
-                            if let Some(BlockedRecv(task, mut slot)) = recvq.pop_front() {
-                                slot.set(item);
-                                task.notify();
-                                self.dispatching.push_back(DispatchedRecv(slot));
-                                continue;
-                            }
-                            VecDeque::new()
-                        }
-                        None => VecDeque::new(),            
-                        Some(State::Sending(sendq)) => sendq,
-                    };
-                    unimplemented!();
-                }
-            }
-            self.dispatching.push_back(DispatchedRecv(slot));
+        self.drain_sending();
+        if !self.sending.is_empty() {
+            self.blocked_send = Some(task::current());
+            return Ok(Async::NotReady);
         }
 
-        if self.dispatching.is_empty() {
-            if let Some(&State::Sending(ref sendq)) = self.state.as_ref() {
-                if sendq.is_empty() {
-                    return Ok(Async::Ready(()));
-                }
+        match self.state.as_ref() {
+            Some(&State::Buffering(ref sq)) if !sq.is_empty() => {
+                self.blocked_send = Some(task::current());
+                Ok(Async::NotReady)
             }
+            _ => Ok(Async::Ready(())),
         }
-        Ok(Async::NotReady)
     }
 }
 
 struct BlockedRecv<T>(Task, RecvSlot<T>);
 
-struct DispatchedRecv<T>(RecvSlot<T>);
-impl<T> DispatchedRecv<T> {
+struct Sending<T>(RecvSlot<T>);
+impl<T> Sending<T> {
     fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    fn is_orphaned(&self) -> bool {
-        self.0.is_orphaned()
+    fn lost_receiver(&self) -> bool {
+        self.0.ref_count() == 1
+    }
+
+    fn reclaim(&self) -> Option<T> {
+        self.0.take()
     }
 }
 
@@ -201,8 +228,8 @@ impl<T> RecvSlot<T> {
         self.0.borrow_mut().take()
     }
 
-    fn is_orphaned(&self) -> bool {
-        Rc::strong_count(&self.0) == 1
+    fn ref_count(&self) -> usize {
+        Rc::strong_count(&self.0)
     }
 
     fn pending(&self) -> RecvHandle<T> {
