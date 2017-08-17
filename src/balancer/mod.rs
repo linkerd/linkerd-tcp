@@ -239,7 +239,7 @@ impl Endpoints {
                 continue;
             }
 
-            if let Some(mut ep) = self.available.get_mut(&addr) {
+            if let Some(ep) = self.available.get_mut(&addr) {
                 ep.set_weight(weight);
                 continue;
             }
