@@ -239,7 +239,7 @@ fn to_weighted_addrs(namerd_addrs: &[NamerdAddr]) -> Vec<WeightedAddr> {
         dsts.push(WeightedAddr::new(addr, w));
     }
     // Normalize weights on [0.0, 0.1].
-    for mut dst in &mut dsts {
+    for dst in &mut dsts {
         dst.weight /= sum;
     }
     dsts
