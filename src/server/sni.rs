@@ -41,16 +41,12 @@ pub struct Sni {
     identities: Arc<HashMap<String, ServerIdentity>>,
 }
 
-fn to_chain_and_signer(id: &ServerIdentity) -> sign::CertChainAndSigner {
-    (id.certs.clone(), id.key.clone())
-}
-
 impl ResolvesServerCert for Sni {
     fn resolve(
         &self,
         server_name: Option<&str>,
         _sigschemes: &[SignatureScheme],
-    ) -> Option<sign::CertChainAndSigner> {
+    ) -> Option<sign::CertifiedKey> {
         debug!("finding cert resolver for {:?}", server_name);
         server_name
             .and_then(|n| {
@@ -61,13 +57,12 @@ impl ResolvesServerCert for Sni {
                 debug!("reverting to default");
                 self.default.as_ref()
             })
-            .map(to_chain_and_signer)
+            .map(|id| id.key.clone())
     }
 }
 
 struct ServerIdentity {
-    certs: Vec<Certificate>,
-    key: Arc<Box<sign::Signer>>,
+    key: sign::CertifiedKey,
 }
 
 impl ServerIdentity {
@@ -76,9 +71,9 @@ impl ServerIdentity {
         for p in &c.certs {
             certs.append(&mut load_certs(p));
         }
+        let key = Arc::new(load_private_key(&c.private_key));
         ServerIdentity {
-            certs: certs,
-            key: Arc::new(load_private_key(&c.private_key)),
+            key: sign::CertifiedKey::new(certs, key),
         }
     }
 }
@@ -91,12 +86,12 @@ fn load_certs(filename: &str) -> Vec<Certificate> {
 }
 
 // from rustls example
-fn load_private_key(filename: &str) -> Box<sign::Signer> {
+fn load_private_key(filename: &str) -> Box<sign::SigningKey> {
     let keyfile = File::open(filename).expect("cannot open private key file");
     let mut r = BufReader::new(keyfile);
     let keys = pemfile::rsa_private_keys(&mut r).unwrap();
     assert_eq!(keys.len(), 1);
-    Box::new(sign::RSASigner::new(&keys[0]).expect(
+    Box::new(sign::RSASigningKey::new(&keys[0]).expect(
         "Invalid RSA private key",
     ))
 }
