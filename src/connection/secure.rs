@@ -221,6 +221,9 @@ impl Future for ServerHandshake {
             return Ok(Async::NotReady);
         }
 
+        trace!("server handshake completed: SNI={:?}, ALPN={:?}",
+            ss.session.get_sni_hostname(), ss.session.get_alpn_protocol());
+
         // Finally, acknowledge the handshake is complete.
         if ss.session.wants_write() {
             trace!("server handshake: write_session_to_tcp: {}: final", ss.peer);
