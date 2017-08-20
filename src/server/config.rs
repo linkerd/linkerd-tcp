@@ -65,7 +65,7 @@ impl ServerConfig {
                             tls.set_protocols(protos);
                         }
                         let sni = sni::new(identities, default_identity).map_err(Error::Sni)?;
-                        tls.cert_resolver = Box::new(sni);
+                        tls.cert_resolver = Arc::new(sni);
                         Some(super::UnboundTls { config: Arc::new(tls) })
                     }
                 };
