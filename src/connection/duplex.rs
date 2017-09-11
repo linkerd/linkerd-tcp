@@ -47,18 +47,14 @@ impl<S: Ctx, D: Ctx> Future for Duplex<S, D> {
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Summary, io::Error> {
         if let Some(mut to_dst) = self.to_dst.take() {
-            trace!(
-                "polling dstward from {} to {}",
-                self.src_addr,
-                self.dst_addr
-            );
+            trace!("polling dstward from {} to {}",
+                   self.src_addr,
+                   self.dst_addr);
             match to_dst.poll()? {
                 Async::Ready(sz) => {
-                    trace!(
-                        "dstward complete from {} to {}",
-                        self.src_addr,
-                        self.dst_addr
-                    );
+                    trace!("dstward complete from {} to {}",
+                           self.src_addr,
+                           self.dst_addr);
                     self.to_dst_bytes = sz;
                 }
                 Async::NotReady => {
@@ -69,18 +65,14 @@ impl<S: Ctx, D: Ctx> Future for Duplex<S, D> {
         }
 
         if let Some(mut to_src) = self.to_src.take() {
-            trace!(
-                "polling srcward from {} to {}",
-                self.dst_addr,
-                self.src_addr
-            );
+            trace!("polling srcward from {} to {}",
+                   self.dst_addr,
+                   self.src_addr);
             match to_src.poll()? {
                 Async::Ready(sz) => {
-                    trace!(
-                        "srcward complete from {} to {}",
-                        self.dst_addr,
-                        self.src_addr
-                    );
+                    trace!("srcward complete from {} to {}",
+                           self.dst_addr,
+                           self.src_addr);
                     self.to_src_bytes = sz;
                 }
                 Async::NotReady => {

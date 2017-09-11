@@ -4,8 +4,8 @@
 // balancers can be shared across logical names. In the meantime, it's sufficient to have
 // a balancer per logical name.
 
-use super::{WeightedAddr, Result, Error};
-use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
+use super::{Error, Result, WeightedAddr};
+use bytes::{Buf, BufMut, Bytes, BytesMut, IntoBuf};
 use futures::{Async, Future, IntoFuture, Poll, Stream};
 use hyper::{Body, Chunk, Client, StatusCode, Uri};
 use hyper::client::{Connect as HyperConnect, HttpConnector};
@@ -15,12 +15,19 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use tacho;
 use tokio_core::reactor::Handle;
-use tokio_timer::{Timer, Interval};
+use tokio_timer::{Interval, Timer};
 use url::Url;
 
 type HttpConnectorFactory = Client<HttpConnector>;
 
-type AddrsFuture = Box<Future<Item = Vec<WeightedAddr>, Error = Error>>;
+pub struct AddrsFuture(Box<Future<Item = Vec<WeightedAddr>, Error = Error>>);
+impl Future for AddrsFuture {
+    type Item = Vec<WeightedAddr>;
+    type Error = Error;
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        self.0.poll()
+    }
+}
 
 // pub struct Addrs(Box<Stream<Item = Result<Vec<WeightedAddr>>, Error = ()>>);
 // impl Stream for Addrs {
@@ -165,7 +172,7 @@ fn request<C: HyperConnect>(client: Rc<Client<C>>, uri: Uri, stats: Stats) -> Ad
             }
             rsp
         });
-    Box::new(rsp)
+    AddrsFuture(Box::new(rsp))
 }
 
 fn handle_response(result: ::hyper::Result<::hyper::client::Response>) -> AddrsFuture {
@@ -188,15 +195,13 @@ fn handle_response(result: ::hyper::Result<::hyper::client::Response>) -> AddrsF
 
 fn parse_body(body: Body) -> AddrsFuture {
     trace!("parsing namerd response");
-    body.collect()
-        .then(|res| match res {
-            Ok(ref chunks) => parse_chunks(chunks),
-            Err(e) => {
-                info!("error: {}", e);
-                Err(Error::Hyper(e))
-            }
-        })
-        .boxed()
+    let f = body.collect().then(|res| match res {
+                                    Ok(ref chunks) => parse_chunks(chunks),
+                                    Err(e) => {
+                                        info!("error: {}", e);
+                                        Err(Error::Hyper(e))
+                                    }
+                                });
 }
 
 fn bytes_in(chunks: &[Chunk]) -> usize {

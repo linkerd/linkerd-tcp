@@ -30,10 +30,10 @@ impl NamerdConfig {
             return Err(Error::InvalidBaseUrl(self.base_url, e));
         }
 
-        let metrics = metrics.clone().prefixed("resolver").labeled(
-            "namespace".into(),
-            self.namespace.clone(),
-        );
+        let metrics = metrics
+            .clone()
+            .prefixed("resolver")
+            .labeled("namespace".into(), self.namespace.clone());
         let namerd = Namerd::new(self.base_url, period, self.namespace, metrics);
         Ok(namerd)
     }

@@ -42,16 +42,14 @@ pub fn new(
     metrics: &tacho::Scope,
 ) -> Balancer {
     let (tx, rx) = unsync::mpsc::unbounded();
-    let dispatcher = dispatcher::new(
-        reactor.clone(),
-        timer.clone(),
-        dst.clone(),
-        connector,
-        resolve,
-        rx,
-        Endpoints::default(),
-        metrics,
-    );
+    let dispatcher = dispatcher::new(reactor.clone(),
+                                     timer.clone(),
+                                     dst.clone(),
+                                     connector,
+                                     resolve,
+                                     rx,
+                                     Endpoints::default(),
+                                     metrics);
     reactor.spawn(dispatcher.map_err(|_| {}));
     Balancer(tx)
 }
@@ -62,7 +60,8 @@ impl Balancer {
     /// Obtains a connection to the destination.
     pub fn connect(&self) -> Connect {
         let (tx, rx) = unsync::oneshot::channel();
-        let result = unsync::mpsc::UnboundedSender::send(&self.0, tx)
+        let result = self.0
+            .unbounded_send(tx)
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "lost dispatcher"))
             .map(|_| rx);
         Connect(Some(result))
@@ -74,9 +73,9 @@ impl Future for Connect {
     type Item = endpoint::Connection;
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let mut recv = self.0.take().expect(
-            "connect must not be polled after completion",
-        )?;
+        let mut recv = self.0
+            .take()
+            .expect("connect must not be polled after completion")?;
         match recv.poll() {
             Err(_) => Err(io::Error::new(io::ErrorKind::Interrupted, "canceled")),
             Ok(Async::Ready(conn)) => Ok(Async::Ready(conn)),

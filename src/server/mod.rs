@@ -72,9 +72,8 @@ impl Unbound {
         metrics: &Metrics,
         tls: &Option<BoundTls>,
     ) -> Box<Future<Item = Connection<SrcCtx>, Error = io::Error>> {
-
         let sock: Box<Future<Item = Socket, Error = io::Error>> = match tls.as_ref() {
-            None => future::ok(socket::plain(src_tcp)).boxed(),
+            None => Box::new(future::ok(socket::plain(src_tcp))),
             Some(tls) => {
                 // TODO we should be able to get metadata from a TLS handshake but we can't!
                 let sock = tls.handshake_latency
@@ -160,33 +159,32 @@ impl Unbound {
                 // outbound connection and begin streaming. We obtain an outbound connection after
                 // the incoming handshake is complete so that we don't waste outbound connections
                 // on failed inbound connections.
-                let connect = src.join(balancer).and_then(move |(src, b)| {
-                    b.connect().map(move |dst| (src, dst))
-                });
+                let connect = src.join(balancer)
+                    .and_then(move |(src, b)| b.connect().map(move |dst| (src, dst)));
 
                 // Enforce a connection timeout, measure successful connection
                 // latencies and failure counts.
                 let connect = {
                     // Measure the time until the connection is established, if it completes.
-                    let c = timeout(
-                        metrics.per_conn.latency.time(connect),
-                        connect_timeout,
-                        &timer,
-                    );
+                    let c = timeout(metrics.per_conn.latency.time(connect),
+                                    connect_timeout,
+                                    &timer);
                     let fails = metrics.connect_failures.clone();
                     c.then(move |res| match res {
-                        Ok((src, dst)) => {
-                            trace!("connection ready for {} to {}", src_addr, dst.peer_addr());
-                            waiters.decr(1);
-                            Ok((src, dst))
-                        }
-                        Err(e) => {
-                            trace!("connection failed for {}: {}", src_addr, e);
-                            waiters.decr(1);
-                            fails.record(&e);
-                            Err(e)
-                        }
-                    })
+                               Ok((src, dst)) => {
+                                   trace!("connection ready for {} to {}",
+                                          src_addr,
+                                          dst.peer_addr());
+                                   waiters.decr(1);
+                                   Ok((src, dst))
+                               }
+                               Err(e) => {
+                                   trace!("connection failed for {}: {}", src_addr, e);
+                                   waiters.decr(1);
+                                   fails.record(&e);
+                                   Err(e)
+                               }
+                           })
                 };
 
                 // Copy data between the endpoints.
@@ -200,19 +198,24 @@ impl Unbound {
                         // Enforce a timeout on total connection lifetime.
                         let dst_addr = dst.peer_addr();
                         let duplex = src.into_duplex(dst, buf);
-                        duration.time(timeout(duplex, lifetime, &timer)).then(
-                            move |res| match res {
-                                Ok(_) => {
-                                    trace!("stream succeeded for {} to {}", src_addr, dst_addr);
-                                    Ok(())
-                                }
-                                Err(e) => {
-                                    trace!("stream failed for {} to {}: {}", src_addr, dst_addr, e);
-                                    stream_fails.record(&e);
-                                    Err(e)
-                                }
-                            },
-                        )
+                        duration
+                            .time(timeout(duplex, lifetime, &timer))
+                            .then(move |res| match res {
+                                      Ok(_) => {
+                                          trace!("stream succeeded for {} to {}",
+                                                 src_addr,
+                                                 dst_addr);
+                                          Ok(())
+                                      }
+                                      Err(e) => {
+                                          trace!("stream failed for {} to {}: {}",
+                                                 src_addr,
+                                                 dst_addr,
+                                                 e);
+                                          stream_fails.record(&e);
+                                          Err(e)
+                                      }
+                                  })
                     })
                 };
 
@@ -340,11 +343,11 @@ impl ctx::Ctx for SrcCtx {
 }
 impl Drop for SrcCtx {
     fn drop(&mut self) {
-        self.metrics.rx_bytes_per_conn.add(
-            self.rx_bytes_total as u64,
-        );
-        self.metrics.tx_bytes_per_conn.add(
-            self.tx_bytes_total as u64,
-        );
+        self.metrics
+            .rx_bytes_per_conn
+            .add(self.rx_bytes_total as u64);
+        self.metrics
+            .tx_bytes_per_conn
+            .add(self.tx_bytes_total as u64);
     }
 }

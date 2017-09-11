@@ -11,8 +11,8 @@ use tokio_timer::Timer;
 
 mod config;
 
-pub use self::config::{ConnectorFactoryConfig, ConnectorConfig, TlsConnectorFactoryConfig,
-                       Error as ConfigError};
+pub use self::config::{ConnectorConfig, ConnectorFactoryConfig, Error as ConfigError,
+                       TlsConnectorFactoryConfig};
 
 /// Builds a connector for each name.
 pub struct ConnectorFactory(ConnectorFactoryInner);
@@ -133,9 +133,8 @@ impl Connector {
             }
             Some(ref tls) => {
                 let tls = tls.clone();
-                let f = tcp.and_then(move |tcp| tls.handshake(tcp)).map(
-                    socket::secure_client,
-                );
+                let f = tcp.and_then(move |tcp| tls.handshake(tcp))
+                    .map(socket::secure_client);
                 Box::new(self.timeout(f, timer))
             }
         };

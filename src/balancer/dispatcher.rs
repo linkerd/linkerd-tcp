@@ -1,10 +1,10 @@
-use super::{Endpoints, EndpointMap, Waiter, WeightedAddr};
+use super::{EndpointMap, Endpoints, Waiter, WeightedAddr};
 use super::endpoint::{self, Endpoint};
 use super::super::Path;
 use super::super::connection::Connection;
 use super::super::connector::Connector;
 use super::super::resolver::Resolve;
-use futures::{Future, Stream, Poll, Async};
+use futures::{Async, Future, Poll, Stream};
 use rand::{self, Rng};
 use std::collections::VecDeque;
 use std::io;
@@ -150,18 +150,14 @@ where
     fn update_endpoints(&mut self) {
         if let Some(addrs) = self.poll_resolve() {
             self.endpoints.update_resolved(&addrs);
-            debug!(
-                "balancer updated: available={} failed={}, retired={}",
-                self.endpoints.available().len(),
-                self.endpoints.failed().len(),
-                self.endpoints.retired().len()
-            );
+            debug!("balancer updated: available={} failed={}, retired={}",
+                   self.endpoints.available().len(),
+                   self.endpoints.failed().len(),
+                   self.endpoints.retired().len());
         }
 
-        self.endpoints.update_failed(
-            self.fail_limit,
-            self.fail_penalty,
-        );
+        self.endpoints
+            .update_failed(self.fail_limit, self.fail_penalty);
 
     }
 
@@ -220,11 +216,8 @@ where
                 Some(ep) => {
                     self.metrics.attempts.incr(1);
                     let mut conn = {
-                        let sock = self.connector.connect(
-                            &ep.peer_addr(),
-                            &self.reactor,
-                            &self.timer,
-                        );
+                        let sock = self.connector
+                            .connect(&ep.peer_addr(), &self.reactor, &self.timer);
                         let c = ep.connect(sock, &self.metrics.connection_duration);
                         self.metrics.connect_latency.time(c)
                     };
@@ -252,11 +245,9 @@ where
     }
 
     fn dispatch_connected_to_waiters(&mut self) {
-        debug!(
-            "dispatching {} connections to {} waiters",
-            self.connected.len(),
-            self.waiters.len()
-        );
+        debug!("dispatching {} connections to {} waiters",
+               self.connected.len(),
+               self.waiters.len());
         while let Some(conn) = self.connected.pop_front() {
             if let Err(conn) = self.dispatch_to_next_waiter(conn) {
                 self.connected.push_front(conn);
@@ -409,26 +400,22 @@ fn select_endpoint<'r, 'e, R: Rng>(
             let score1 = (load1 + 1) as f64 * (1.0 - weight1);
 
             if score0 <= score1 {
-                trace!(
-                    "dst: {} {}*{} (not {} {}*{})",
-                    addr0,
-                    load0,
-                    weight0,
-                    addr1,
-                    load1,
-                    weight1
-                );
+                trace!("dst: {} {}*{} (not {} {}*{})",
+                       addr0,
+                       load0,
+                       weight0,
+                       addr1,
+                       load1,
+                       weight1);
                 Some(ep0)
             } else {
-                trace!(
-                    "dst: {} {}*{} (not {} {}*{})",
-                    addr1,
-                    load1,
-                    weight1,
-                    addr0,
-                    load0,
-                    weight0
-                );
+                trace!("dst: {} {}*{} (not {} {}*{})",
+                       addr1,
+                       load1,
+                       weight1,
+                       addr0,
+                       load0,
+                       weight0);
                 Some(ep1)
             }
         }

@@ -13,9 +13,7 @@ pub fn new(
     let n_identities = identities.as_ref().map(|ids| ids.len()).unwrap_or(0);
     let default = match default {
         &Some(ref c) => Some(ServerIdentity::load(c)?),
-        &None if n_identities > 0 => {
-            return Err(Error::NoIdentities)
-        },
+        &None if n_identities > 0 => return Err(Error::NoIdentities),
         &None => None,
     };
     let sni = Sni {
@@ -82,9 +80,7 @@ impl ServerIdentity {
             certs.append(&mut load_certs(p)?);
         }
         let key = load_private_key(&c.private_key)?;
-        Ok(ServerIdentity {
-            key: sign::CertifiedKey::new(certs, Arc::new(key)),
-        })
+        Ok(ServerIdentity { key: sign::CertifiedKey::new(certs, Arc::new(key)) })
     }
 }
 
@@ -98,8 +94,7 @@ fn load_certs(cert_file_path: &String) -> Result<Vec<Certificate>, Error> {
 }
 
 // from rustls example
-fn load_private_key(key_file_path: &String)
-                    -> Result<Box<sign::SigningKey>, Error> {
+fn load_private_key(key_file_path: &String) -> Result<Box<sign::SigningKey>, Error> {
     let file = File::open(&key_file_path)
         .map_err(|e| Error::FailedToOpenPrivateKeyFile(key_file_path.clone(), e))?;
     let mut r = io::BufReader::new(file);

@@ -103,14 +103,12 @@ impl ConnectorConfig {
                 .unwrap_or(DEFAULT_FAILURE_PENALTY_SECS);
             time::Duration::from_secs(s)
         };
-        Ok(super::new(
-            connect_timeout,
-            tls,
-            max_waiters,
-            min_conns,
-            max_fails,
-            fail_penalty,
-        ))
+        Ok(super::new(connect_timeout,
+                      tls,
+                      max_waiters,
+                      min_conns,
+                      max_fails,
+                      fail_penalty))
     }
 
     pub fn update(&mut self, other: &ConnectorConfig) {

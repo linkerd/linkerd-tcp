@@ -72,17 +72,15 @@ impl ServerConfig {
                 let timeout = connect_timeout_ms.map(Duration::from_millis);
                 let lifetime = connection_lifetime_secs.map(Duration::from_secs);
                 let max_concurrency = max_concurrency.unwrap_or(super::DEFAULT_MAX_CONCURRENCY);
-                Ok(super::unbound(
-                    addr,
-                    dst_name.into(),
-                    router,
-                    buf,
-                    tls,
-                    timeout,
-                    lifetime,
-                    max_concurrency,
-                    metrics,
-                ))
+                Ok(super::unbound(addr,
+                                  dst_name.into(),
+                                  router,
+                                  buf,
+                                  tls,
+                                  timeout,
+                                  lifetime,
+                                  max_concurrency,
+                                  metrics))
             }
         }
     }

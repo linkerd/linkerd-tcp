@@ -31,13 +31,6 @@ impl BalancerFactory {
     ) -> Result<Balancer, ConfigError> {
         let connector = self.connector_factory.borrow().mk_connector(dst_name)?;
         let metrics = self.metrics.clone().labeled("dst", dst_name);
-        Ok(super::new(
-            reactor,
-            timer,
-            dst_name,
-            connector,
-            resolve,
-            &metrics,
-        ))
+        Ok(super::new(reactor, timer, dst_name, connector, resolve, &metrics))
     }
 }

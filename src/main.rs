@@ -8,8 +8,8 @@ extern crate pretty_env_logger;
 extern crate tokio_core;
 extern crate tokio_timer;
 
-use clap::{Arg, App as ClapApp};
-use linkerd_tcp::app::{self, AppConfig, App, AdminRunner, RouterSpawner};
+use clap::{App as ClapApp, Arg};
+use linkerd_tcp::app::{self, AdminRunner, App, AppConfig, RouterSpawner};
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;
@@ -30,12 +30,10 @@ fn main() {
     let opts = ClapApp::new(crate_name!())
         .version(crate_version!())
         .about(crate_description!())
-        .arg(
-            Arg::with_name(CONFIG_PATH_ARG)
-                .required(true)
-                .index(1)
-                .help("Config file path."),
-        )
+        .arg(Arg::with_name(CONFIG_PATH_ARG)
+                 .required(true)
+                 .index(1)
+                 .help("Config file path."))
         .get_matches();
 
     // Parse configuration file.
@@ -81,9 +79,9 @@ fn spawn_admin(admin: AdminRunner, closer: app::Closer, timer: &Timer) -> thread
         .spawn(move || {
             debug!("running admin server");
             let mut core = Core::new().expect("failed to initialize admin reactor");
-            admin.run(closer, &mut core, &timer).expect(
-                "failed to run the admin server",
-            );
+            admin
+                .run(closer, &mut core, &timer)
+                .expect("failed to run the admin server");
         })
         .expect("failed to spawn admin thread")
 }

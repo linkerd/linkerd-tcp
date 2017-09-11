@@ -1,5 +1,5 @@
-use super::{WeightedAddr, Path};
-use futures::{Future, Stream, Poll};
+use super::{Path, WeightedAddr};
+use futures::{Future, Poll, Stream};
 use futures::sync::mpsc;
 use tokio_core::reactor::Handle;
 use tokio_timer::{Timer, TimerError};
@@ -7,7 +7,7 @@ use tokio_timer::{Timer, TimerError};
 mod config;
 mod namerd;
 pub use self::config::{Error as ConfigError, NamerdConfig};
-pub use self::namerd::{Namerd, Addrs};
+pub use self::namerd::{Addrs, Namerd};
 
 #[derive(Debug)]
 pub enum Error {
@@ -55,9 +55,8 @@ impl Resolver {
         let addrs = {
             let reqs = &self.requests;
             let (tx, rx) = mpsc::unbounded();
-            reqs.send((path, tx)).expect(
-                "failed to send resolution request",
-            );
+            reqs.unbounded_send((path, tx))
+                .expect("failed to send resolution request");
             rx
         };
         Resolve(addrs)
