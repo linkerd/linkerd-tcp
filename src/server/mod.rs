@@ -1,9 +1,9 @@
 //! TODO `dst_name` should be chosen dynamically.
 
 use super::Path;
-use super::connection::{Connection, Socket, ctx, secure, socket};
+use super::connection::{ctx, secure, socket, Connection, Socket};
 use super::router::Router;
-use futures::{Async, Future, Poll, Stream, future};
+use futures::{future, Async, Future, Poll, Stream};
 use rustls;
 use std::{io, net};
 use std::cell::RefCell;
@@ -198,24 +198,19 @@ impl Unbound {
                         // Enforce a timeout on total connection lifetime.
                         let dst_addr = dst.peer_addr();
                         let duplex = src.into_duplex(dst, buf);
-                        duration
-                            .time(timeout(duplex, lifetime, &timer))
-                            .then(move |res| match res {
-                                      Ok(_) => {
-                                          trace!("stream succeeded for {} to {}",
-                                                 src_addr,
-                                                 dst_addr);
-                                          Ok(())
-                                      }
-                                      Err(e) => {
-                                          trace!("stream failed for {} to {}: {}",
-                                                 src_addr,
-                                                 dst_addr,
-                                                 e);
-                                          stream_fails.record(&e);
-                                          Err(e)
-                                      }
-                                  })
+                        duration.time(timeout(duplex, lifetime, &timer)).then(
+                            move |res| match res {
+                                Ok(_) => {
+                                    trace!("stream succeeded for {} to {}", src_addr, dst_addr);
+                                    Ok(())
+                                }
+                                Err(e) => {
+                                    trace!("stream failed for {} to {}: {}", src_addr, dst_addr, e);
+                                    stream_fails.record(&e);
+                                    Err(e)
+                                }
+                            },
+                        )
                     })
                 };
 
@@ -246,8 +241,7 @@ impl Future for Bound {
             match self.0.poll() {
                 Ok(Async::NotReady) => return Ok(Async::NotReady),
                 Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
-                Ok(Async::Ready(Some(_))) |
-                Err(_) => {}
+                Ok(Async::Ready(Some(_))) | Err(_) => {}
             }
         }
     }

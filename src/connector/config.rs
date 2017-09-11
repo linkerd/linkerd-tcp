@@ -20,11 +20,9 @@ pub enum Error {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "kind")]
 pub enum ConnectorFactoryConfig {
-    #[serde(rename = "io.l5d.global")]
-    Global(ConnectorConfig),
+    #[serde(rename = "io.l5d.global")] Global(ConnectorConfig),
 
-    #[serde(rename = "io.l5d.static")]
-    Static { configs: Vec<ConnectorConfig> },
+    #[serde(rename = "io.l5d.static")] Static { configs: Vec<ConnectorConfig> },
 }
 
 impl Default for ConnectorFactoryConfig {

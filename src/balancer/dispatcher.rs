@@ -103,8 +103,7 @@ where
     fn recv_waiters(&mut self) {
         while self.waiters.len() < self.max_waiters {
             match self.waiters_rx.poll() {
-                Ok(Async::Ready(None)) |
-                Ok(Async::NotReady) => return,
+                Ok(Async::Ready(None)) | Ok(Async::NotReady) => return,
                 Err(_) => {
                     error!("{}: error from waiters channel", self.dst_name);
                 }
@@ -158,7 +157,6 @@ where
 
         self.endpoints
             .update_failed(self.fail_limit, self.fail_penalty);
-
     }
 
     fn poll_resolve(&mut self) -> Option<Vec<WeightedAddr>> {
@@ -379,7 +377,11 @@ fn select_endpoint<'r, 'e, R: Rng>(
         sz => {
             // Pick 2 candidate indices.
             let (i0, i1) = if sz == 2 {
-                if rng.gen::<bool>() { (0, 1) } else { (1, 0) }
+                if rng.gen::<bool>() {
+                    (0, 1)
+                } else {
+                    (1, 0)
+                }
             } else {
                 // 3 or more endpoints: choose two distinct endpoints at random.
                 let i0 = rng.gen_range(0, sz);

@@ -11,8 +11,12 @@ use tokio_timer::Timer;
 
 mod config;
 
-pub use self::config::{ConnectorConfig, ConnectorFactoryConfig, Error as ConfigError,
-                       TlsConnectorFactoryConfig};
+pub use self::config::{
+    ConnectorConfig,
+    ConnectorFactoryConfig,
+    Error as ConfigError,
+    TlsConnectorFactoryConfig,
+};
 
 /// Builds a connector for each name.
 pub struct ConnectorFactory(ConnectorFactoryInner);

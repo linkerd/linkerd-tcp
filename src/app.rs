@@ -5,7 +5,7 @@ use super::balancer::BalancerFactory;
 use super::connector::{ConfigError as ConnectorConfigError, ConnectorFactoryConfig};
 use super::resolver::{ConfigError as ResolverConfigError, NamerdConfig};
 use super::server::ConfigError as ServerConfigError;
-use futures::{Future, Stream, sync};
+use futures::{sync, Future, Stream};
 use hyper::server::Http;
 use serde_json;
 use serde_yaml;

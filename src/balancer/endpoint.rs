@@ -1,4 +1,4 @@
-use super::super::connection::{Connection as _Connection, ctx};
+use super::super::connection::{ctx, Connection as _Connection};
 use super::super::connector;
 use futures::{Future, Poll};
 use std::{io, net};

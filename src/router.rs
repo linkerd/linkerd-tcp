@@ -1,4 +1,4 @@
-use super::{Path, connector};
+use super::{connector, Path};
 use super::balancer::{Balancer, BalancerFactory};
 use super::resolver::Resolver;
 use futures::{Async, Future, Poll};
@@ -99,7 +99,8 @@ impl Future for Route {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.0
             .take()
-            .expect("route must not be polled more than once") {
+            .expect("route must not be polled more than once")
+        {
             Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("config error: {:?}", e))),
             Ok(selector) => Ok(Async::Ready(selector)),
         }

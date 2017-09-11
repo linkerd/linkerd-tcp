@@ -1,7 +1,7 @@
 use super::Path;
 use super::connector::Connector;
 use super::resolver::Resolve;
-use futures::{Async, Future, Poll, unsync};
+use futures::{unsync, Async, Future, Poll};
 use ordermap::OrderMap;
 use std::{cmp, io, net};
 use std::collections::VecDeque;

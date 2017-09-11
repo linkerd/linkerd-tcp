@@ -1,5 +1,5 @@
 use super::config::TlsServerIdentityConfig;
-use rustls::{Certificate, ResolvesServerCert, SignatureScheme, sign};
+use rustls::{sign, Certificate, ResolvesServerCert, SignatureScheme};
 use rustls::internal::pemfile;
 use std::collections::HashMap;
 use std::fs::File;
@@ -80,7 +80,9 @@ impl ServerIdentity {
             certs.append(&mut load_certs(p)?);
         }
         let key = load_private_key(&c.private_key)?;
-        Ok(ServerIdentity { key: sign::CertifiedKey::new(certs, Arc::new(key)) })
+        Ok(ServerIdentity {
+               key: sign::CertifiedKey::new(certs, Arc::new(key)),
+           })
     }
 }
 
@@ -89,8 +91,7 @@ fn load_certs(cert_file_path: &String) -> Result<Vec<Certificate>, Error> {
     let file = File::open(&cert_file_path)
         .map_err(|e| Error::FailedToOpenCertificateFile(cert_file_path.clone(), e))?;
     let mut r = io::BufReader::new(file);
-    pemfile::certs(&mut r)
-        .map_err(|()| Error::FailedToReadCertificateFile(cert_file_path.clone()))
+    pemfile::certs(&mut r).map_err(|()| Error::FailedToReadCertificateFile(cert_file_path.clone()))
 }
 
 // from rustls example

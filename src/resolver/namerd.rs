@@ -252,8 +252,7 @@ fn to_weighted_addrs(namerd_addrs: &[NamerdAddr]) -> Vec<WeightedAddr> {
 
 #[derive(Debug, Deserialize)]
 struct NamerdResponse {
-    #[serde(rename = "type")]
-    kind: String,
+    #[serde(rename = "type")] kind: String,
     addrs: Vec<NamerdAddr>,
     meta: HashMap<String, String>,
 }
@@ -269,8 +268,7 @@ struct NamerdAddr {
 struct Meta {
     authority: Option<String>,
 
-    #[serde(rename = "nodeName")]
-    node_name: Option<String>,
+    #[serde(rename = "nodeName")] node_name: Option<String>,
 
     endpoint_addr_weight: Option<f64>,
 }

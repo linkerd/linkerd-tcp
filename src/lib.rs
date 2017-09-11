@@ -7,10 +7,10 @@
 #![deny(missing_docs)]
 
 extern crate bytes;
-#[macro_use]
-extern crate log;
 extern crate futures;
 extern crate hyper;
+#[macro_use]
+extern crate log;
 extern crate ordermap;
 extern crate rand;
 extern crate rustls;

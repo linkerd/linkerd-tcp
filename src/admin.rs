@@ -1,5 +1,5 @@
 use super::app::Closer;
-use futures::{Future, future};
+use futures::{future, Future};
 use hyper::{self, Get, Post, StatusCode};
 use hyper::header::ContentLength;
 use hyper::server::{Request, Response, Service};

@@ -1,4 +1,4 @@
-use super::{Unbound, sni};
+use super::{sni, Unbound};
 use super::super::router::Router;
 use rustls;
 use std::cell::RefCell;
@@ -66,7 +66,9 @@ impl ServerConfig {
                         }
                         let sni = sni::new(identities, default_identity).map_err(Error::Sni)?;
                         tls.cert_resolver = Arc::new(sni);
-                        Some(super::UnboundTls { config: Arc::new(tls) })
+                        Some(super::UnboundTls {
+                                 config: Arc::new(tls),
+                             })
                     }
                 };
                 let timeout = connect_timeout_ms.map(Duration::from_millis);
