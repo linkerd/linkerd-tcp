@@ -4,7 +4,7 @@
 // balancers can be shared across logical names. In the meantime, it's sufficient to have
 // a balancer per logical name.
 
-use super::{WeightedAddr, Result, Error};
+use super::{WeightedAddr, Result, Error, Namer, WithHandle};
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
 use futures::{Async, Future, IntoFuture, Poll, Stream};
 use hyper::{Body, Chunk, Client, StatusCode, Uri};
@@ -55,24 +55,24 @@ impl Namerd {
     }
 }
 
-impl Namerd {
-    pub fn with_client(self, handle: &Handle, timer: &Timer) -> WithClient {
-        WithClient {
+impl Namer for Namerd {
+    fn with_handle(self: Box<Namerd>, handle: &Handle, timer: &Timer) -> Box<WithHandle> {
+        Box::new(WithClient {
             namerd: self,
             client: Rc::new(Client::new(handle)),
             timer: timer.clone(),
-        }
+        })
     }
 }
 
 /// A name
 pub struct WithClient {
-    namerd: Namerd,
+    namerd: Box<Namerd>,
     client: Rc<HttpConnectorFactory>,
     timer: Timer,
 }
-impl WithClient {
-    pub fn resolve(&self, target: &str) -> Addrs {
+impl WithHandle for WithClient {
+    fn resolve(&self, target: &str) -> Box<Stream<Item = Result<Vec<WeightedAddr>>, Error = Error>> {
         let uri = Url::parse_with_params(&self.namerd.base_url, &[("path", &target)])
             .expect("invalid namerd url")
             .as_str()
@@ -80,12 +80,12 @@ impl WithClient {
             .expect("Could not parse namerd URI");
         let init = request(self.client.clone(), uri.clone(), self.namerd.stats.clone());
         let interval = self.timer.interval(self.namerd.period);
-        Addrs {
+        Box::new(Addrs {
             client: self.client.clone(),
             stats: self.namerd.stats.clone(),
             state: Some(State::Pending(init, interval)),
             uri,
-        }
+        })
     }
 }
 

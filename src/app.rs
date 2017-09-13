@@ -3,7 +3,7 @@
 use super::{admin, resolver, router, server};
 use super::balancer::BalancerFactory;
 use super::connector::{ConfigError as ConnectorConfigError, ConnectorFactoryConfig};
-use super::resolver::{ConfigError as ResolverConfigError, NamerdConfig};
+use super::resolver::{ConfigError as ResolverConfigError, NamerdConfig, Namer, WithHandle};
 use super::server::ConfigError as ServerConfigError;
 use futures::{Future, Stream, sync};
 use hyper::server::Http;
