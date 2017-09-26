@@ -3,7 +3,7 @@
 use super::{admin, resolver, router, server};
 use super::balancer::BalancerFactory;
 use super::connector::{ConfigError as ConnectorConfigError, ConnectorFactoryConfig};
-use super::resolver::{ConfigError as ResolverConfigError, NamerdConfig};
+use super::resolver::{ConfigError as ResolverConfigError, ConstantConfig, NamerdConfig, Namer};
 use super::server::ConfigError as ServerConfigError;
 use futures::{Future, Stream, sync};
 use hyper::server::Http;
@@ -200,7 +200,11 @@ impl RouterConfig {
         let (resolver, resolver_exec) = match self.interpreter {
             InterpreterConfig::NamerdHttp(config) => {
                 let namerd = config.into_namerd(&metrics).map_err(Error::Interpreter)?;
-                resolver::new(namerd)
+                resolver::new(Namer::Namerd(namerd))
+            },
+            InterpreterConfig::Constant(config) => {
+                let constant = config.into_namer().map_err(Error::Interpreter)?;
+                resolver::new(Namer::Constant(constant))
             }
         };
 
@@ -263,6 +267,9 @@ pub enum InterpreterConfig {
     /// Polls namerd for updates.
     #[serde(rename = "io.l5d.namerd.http")]
     NamerdHttp(NamerdConfig),
+    /// Static list of addresses
+    #[serde(rename = "io.l5d.static")]
+    Constant(ConstantConfig),
 }
 
 /// Configures the admin server.

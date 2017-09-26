@@ -5,9 +5,9 @@ use tokio_core::reactor::Handle;
 use tokio_timer::{Timer, TimerError};
 
 mod config;
-mod namerd;
-pub use self::config::{Error as ConfigError, NamerdConfig};
-pub use self::namerd::{Namerd, Addrs};
+mod namer;
+pub use self::config::{Error as ConfigError, ConstantConfig, NamerdConfig};
+pub use self::namer::Namer;
 
 #[derive(Debug)]
 pub enum Error {
@@ -29,14 +29,14 @@ pub type Result<T> = ::std::result::Result<T, Error>;
 
 /// Creates a multithreaded resolver.
 ///
-/// The `Resolver` side is a client of the `Executor`. Namerd work is performed on
+/// The `Resolver` side is a client of the `Executor`. Namer work is performed on
 /// whatever thread the executor is spawned on.
-pub fn new(namerd: Namerd) -> (Resolver, Executor) {
+pub fn new(namer: Namer) -> (Resolver, Executor) {
     let (tx, rx) = mpsc::unbounded();
     let res = Resolver { requests: tx };
     let exe = Executor {
         requests: rx,
-        namerd: namerd,
+        namer: namer,
     };
     (res, exe)
 }
@@ -77,16 +77,16 @@ impl Stream for Resolve {
 /// Serves resolutions from `Resolver`s.
 pub struct Executor {
     requests: mpsc::UnboundedReceiver<(Path, mpsc::UnboundedSender<Result<Vec<WeightedAddr>>>)>,
-    namerd: Namerd,
+    namer: Namer,
 }
 
 impl Executor {
     pub fn execute(self, handle: &Handle, timer: &Timer) -> Execute {
         let handle = handle.clone();
-        let namerd = self.namerd.with_client(&handle, timer);
+        let namer = self.namer.with_handle(&handle, timer);
         let f = self.requests.for_each(move |(path, rsp_tx)| {
-            // Stream namerd resolutions to the response channel.
-            let resolve = namerd.resolve(path.as_str());
+            // Stream namer resolutions to the response channel.
+            let resolve = namer.resolve(path.as_str());
             let respond = resolve.forward(rsp_tx).map_err(|_| {}).map(|_| {});
             // Do all of this work in another task so that we can receive
             // additional requests.
