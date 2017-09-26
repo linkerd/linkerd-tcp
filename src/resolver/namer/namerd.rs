@@ -4,7 +4,7 @@
 // balancers can be shared across logical names. In the meantime, it's sufficient to have
 // a balancer per logical name.
 
-use super::{WeightedAddr, Result, Error, Namer, WithHandle};
+use super::{WeightedAddr, Result, Error};
 use bytes::{Buf, BufMut, IntoBuf, Bytes, BytesMut};
 use futures::{Async, Future, IntoFuture, Poll, Stream};
 use hyper::{Body, Chunk, Client, StatusCode, Uri};
@@ -18,24 +18,11 @@ use tokio_core::reactor::Handle;
 use tokio_timer::{Timer, Interval};
 use url::Url;
 
-type HttpConnectorFactory = Client<HttpConnector>;
+pub type HttpConnectorFactory = Client<HttpConnector>;
 
-type AddrsFuture = Box<Future<Item = Vec<WeightedAddr>, Error = Error>>;
-
-// pub struct Addrs(Box<Stream<Item = Result<Vec<WeightedAddr>>, Error = ()>>);
-// impl Stream for Addrs {
-//     type Item = Result<Vec<WeightedAddr>>;
-//     type Error = ();
-//     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-//         self.0.poll()
-//     }
-// }
-
-#[derive(Clone)]
 pub struct Namerd {
     base_url: String,
     period: time::Duration,
-    namespace: String,
     stats: Stats,
 }
 
@@ -49,45 +36,44 @@ impl Namerd {
         Namerd {
             base_url: format!("{}/api/1/resolve/{}", base_url, namespace),
             stats: Stats::new(metrics),
-            namespace,
             period,
+        }
+    }
+
+    pub fn with_handle(self, handle: &Handle, timer: &Timer) -> WithClient {
+        WithClient {
+            namerd: self,
+            client: Rc::new(Client::new(handle)),
+            timer: timer.clone(),
         }
     }
 }
 
-impl Namer for Namerd {
-    fn with_handle(self: Box<Namerd>, handle: &Handle, timer: &Timer) -> Box<WithHandle> {
-        Box::new(WithClient {
-            namerd: self,
-            client: Rc::new(Client::new(handle)),
-            timer: timer.clone(),
-        })
-    }
+pub struct WithClient {
+  namerd: Namerd,
+  client: Rc<HttpConnectorFactory>,
+  timer: Timer
 }
 
-/// A name
-pub struct WithClient {
-    namerd: Box<Namerd>,
-    client: Rc<HttpConnectorFactory>,
-    timer: Timer,
-}
-impl WithHandle for WithClient {
-    fn resolve(&self, target: &str) -> Box<Stream<Item = Result<Vec<WeightedAddr>>, Error = Error>> {
-        let uri = Url::parse_with_params(&self.namerd.base_url, &[("path", &target)])
+impl WithClient {
+    pub fn resolve(&self, target: &str) -> Addrs {
+        let uri = Url::parse_with_params(self.namerd.base_url.as_ref(), &[("path", &target)])
             .expect("invalid namerd url")
             .as_str()
             .parse::<Uri>()
             .expect("Could not parse namerd URI");
         let init = request(self.client.clone(), uri.clone(), self.namerd.stats.clone());
         let interval = self.timer.interval(self.namerd.period);
-        Box::new(Addrs {
+        Addrs {
             client: self.client.clone(),
             stats: self.namerd.stats.clone(),
             state: Some(State::Pending(init, interval)),
             uri,
-        })
+        }
     }
 }
+
+type AddrsFuture = Box<Future<Item = Vec<WeightedAddr>, Error = Error>>;
 
 /// Streams
 pub struct Addrs {
@@ -269,7 +255,6 @@ struct Meta {
 
     endpoint_addr_weight: Option<f64>,
 }
-
 
 #[derive(Clone)]
 pub struct Stats {

@@ -1,7 +1,11 @@
-use super::namerd::Namerd;
+use super::WeightedAddr;
+use super::namer::namerd::Namerd;
 use std::time::Duration;
 use tacho;
 use url::{self, Url};
+use std::net;
+use std::collections::HashMap;
+use std::iter::FromIterator;
 
 pub type Result<T> = ::std::result::Result<T, Error>;
 
@@ -38,3 +42,42 @@ impl NamerdConfig {
         Ok(namerd)
     }
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConstantConfig {
+    addrs: HashMap<String, Vec<Addr>>
+}
+
+impl ConstantConfig {
+    pub fn into_namer(mut self) -> Result<HashMap<String, Vec<WeightedAddr>>> {
+        let weighted_iter = self.addrs.drain().map(|(path, addrs)| (path, to_weighted_addrs(&addrs)));
+        let weighted_addrs = HashMap::from_iter(weighted_iter);
+        Ok(weighted_addrs)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Addr {
+    ip: String,
+    port: u16,
+    weight: Option<f64>,
+}
+
+fn to_weighted_addrs(addrs: &[Addr]) -> Vec<WeightedAddr> {
+    // We never intentionally clear the EndpointMap.
+    let mut dsts: Vec<WeightedAddr> = Vec::new();
+    let mut sum = 0.0;
+    for na in addrs {
+        let addr = net::SocketAddr::new(na.ip.parse().unwrap(), na.port);
+        let w = na.weight.unwrap_or(1.0);
+        sum += w;
+        dsts.push(WeightedAddr::new(addr, w));
+    }
+    // Normalize weights on [0.0, 0.1].
+    for dst in &mut dsts {
+        dst.weight /= sum;
+    }
+    dsts
+}
+
