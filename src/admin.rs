@@ -45,7 +45,7 @@ impl Admin {
             .with_status(StatusCode::Ok)
             .with_header(ContentLength(body.len() as u64))
             .with_body(body.clone());
-        future::ok(rsp).boxed()
+        Box::new(future::ok(rsp))
     }
 
     /// Tell the serving thread to stop what it's doing.
@@ -57,7 +57,7 @@ impl Admin {
             let _ = c.send(Instant::now() + self.grace);
         }
         let rsp = Response::new().with_status(StatusCode::Ok);
-        future::ok(rsp).boxed()
+        Box::new(future::ok(rsp))
     }
 
     fn abort(&self) -> RspFuture {
@@ -66,7 +66,7 @@ impl Admin {
 
     fn not_found(&self) -> RspFuture {
         let rsp = Response::new().with_status(StatusCode::NotFound);
-        future::ok(rsp).boxed()
+        Box::new(future::ok(rsp))
     }
 }
 

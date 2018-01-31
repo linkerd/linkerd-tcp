@@ -188,15 +188,15 @@ fn handle_response(result: ::hyper::Result<::hyper::client::Response>) -> AddrsF
 
 fn parse_body(body: Body) -> AddrsFuture {
     trace!("parsing namerd response");
-    body.collect()
+    let f = body.collect()
         .then(|res| match res {
             Ok(ref chunks) => parse_chunks(chunks),
             Err(e) => {
                 info!("error: {}", e);
                 Err(Error::Hyper(e))
             }
-        })
-        .boxed()
+        });
+    Box::new(f)
 }
 
 fn bytes_in(chunks: &[Chunk]) -> usize {
