@@ -7,6 +7,7 @@
 * Switch the official Rust base docker image.
 * Remove use of deprecated downstream API members.
 * Remove dependency on nightly Rust to build linkerd-tcp.
+
 ## 0.1.0
 linkerd-tcp 0.1.0 constitutes a major rewrite.
 
@@ -47,20 +48,3 @@ Introducing linkerd-tcp. :balloon:
 * Run a TCP load balancer for the [Linkerd][https://linkerd.io] service mesh.
 * Support TLS and integrate with Namerd for service discovery.
 * Read a YAML or JSON configuration file at startup.
-
-
-+    available: tacho::Gauge,
-+    failed: tacho::Gauge,
-+    retired: tacho::Gauge,
-+    pending: tacho::Gauge,
-+    open: tacho::Gauge,
-+    waiters: tacho::Gauge,
-+    poll_time: tacho::Timer,
-+    attempts: tacho::Counter,
-+    unavailable: tacho::Counter,
-+    connects: tacho::Counter,
-+    timeouts: tacho::Counter,
-+    refused: tacho::Counter,
-+    failures: tacho::Counter,
-+    connect_latency: tacho::Timer,
-+    connection_duration: tacho::Timer,
