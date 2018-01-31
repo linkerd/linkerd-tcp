@@ -6,6 +6,7 @@ use super::connector::{ConfigError as ConnectorConfigError, ConnectorFactoryConf
 use super::resolver::{ConfigError as ResolverConfigError, NamerdConfig};
 use super::server::ConfigError as ServerConfigError;
 use futures::{Future, Stream, sync};
+use hyper;
 use hyper::server::Http;
 use serde_json;
 use serde_yaml;
@@ -325,6 +326,7 @@ impl AdminRunner {
                 },
             )
         };
+
         handle.spawn(reporting);
 
         let serving = {
@@ -333,14 +335,22 @@ impl AdminRunner {
                 TcpListener::bind(&addr, &handle).expect("unable to listen")
             };
 
+            let serve_handle = handle.clone();
             let server =
                 admin::Admin::new(prom_export, closer, grace, handle.clone(), timer.clone());
-            let http = Http::new();
-            listener.incoming().for_each(move |(tcp, src)| {
-                http.bind_connection(&handle, tcp, src, server.clone());
-                Ok(())
-            })
+            let http = Http::<hyper::Chunk>::new();
+            listener.incoming()
+                .for_each(move |(tcp, _)| {
+                    let serve = http.serve_connection(tcp, server.clone())
+                        .map_err(|err| {
+                            error!("error serving admin: {:?}", err);
+                        })
+                        .map(|_| ());
+                    serve_handle.spawn(serve);
+                    Ok(())
+                })
         };
+
         reactor.run(serving).unwrap();
 
         Ok(())
