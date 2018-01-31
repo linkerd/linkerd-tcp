@@ -62,7 +62,7 @@ impl Balancer {
     /// Obtains a connection to the destination.
     pub fn connect(&self) -> Connect {
         let (tx, rx) = unsync::oneshot::channel();
-        let result = unsync::mpsc::UnboundedSender::send(&self.0, tx)
+        let result = unsync::mpsc::UnboundedSender::unbounded_send(&self.0, tx)
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "lost dispatcher"))
             .map(|_| rx);
         Connect(Some(result))

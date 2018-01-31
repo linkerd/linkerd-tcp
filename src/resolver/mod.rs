@@ -55,7 +55,7 @@ impl Resolver {
         let addrs = {
             let reqs = &self.requests;
             let (tx, rx) = mpsc::unbounded();
-            reqs.send((path, tx)).expect(
+            reqs.unbounded_send((path, tx)).expect(
                 "failed to send resolution request",
             );
             rx

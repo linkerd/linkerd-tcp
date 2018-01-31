@@ -74,7 +74,7 @@ impl Unbound {
     ) -> Box<Future<Item = Connection<SrcCtx>, Error = io::Error>> {
 
         let sock: Box<Future<Item = Socket, Error = io::Error>> = match tls.as_ref() {
-            None => future::ok(socket::plain(src_tcp)).boxed(),
+            None => Box::new(future::ok(socket::plain(src_tcp))),
             Some(tls) => {
                 // TODO we should be able to get metadata from a TLS handshake but we can't!
                 let sock = tls.handshake_latency
