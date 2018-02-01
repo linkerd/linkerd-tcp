@@ -1,6 +1,10 @@
 ## In the next release
 
 ## 0.1.1
+
+linkerd-tcp 0.1.1 focuses on improving TLS support, and on updating linkerd-tcp's
+dependencies.
+
 * Trace negotiated SNI & ALPN at the end of the server handshake.
 * Improve handling and reporting of TLS configuration errors.
 * Update to latest versions of dependencies.
