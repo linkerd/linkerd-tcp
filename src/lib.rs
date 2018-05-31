@@ -2,7 +2,7 @@
 //!
 //!
 //!
-//! Copyright 2017 Buoyant, Inc.
+//! Copyright 2017 Linkerd-TCP authors.
 
 #![deny(missing_docs)]
 #![deny(warnings)]
