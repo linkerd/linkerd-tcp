@@ -27,7 +27,7 @@ rustls = { git = "https://github.com/briansmith/rustls", branch = "make_server_s
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
-serde_yaml = "0.7"
+serde_yaml = "0.8"
 # tacho = { path = "../tacho" }
 tacho = "0.4.1"
 tokio-core = "0.1"
